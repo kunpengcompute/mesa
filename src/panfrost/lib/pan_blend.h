@@ -120,9 +120,7 @@ pan_blend_get_constant(unsigned mask, float *constants)
 }
 
 void
-pan_blend_to_fixed_function_equation(const struct panfrost_device *dev,
-                                     const struct pan_blend_state *state,
-                                     unsigned rt,
+pan_blend_to_fixed_function_equation(const struct pan_blend_equation eq,
                                      struct MALI_BLEND_EQUATION *equation);
 
 nir_shader *
