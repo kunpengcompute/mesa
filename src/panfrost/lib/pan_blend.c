@@ -80,15 +80,12 @@ blend_factor_constant_mask(enum blend_factor factor)
 }
 
 unsigned
-pan_blend_constant_mask(const struct pan_blend_state *state,
-                        unsigned rt)
+pan_blend_constant_mask(const struct pan_blend_equation eq)
 {
-        const struct pan_blend_equation *e = &state->rts[rt].equation;
-
-        return blend_factor_constant_mask(e->rgb_src_factor) |
-               blend_factor_constant_mask(e->rgb_dst_factor) |
-               blend_factor_constant_mask(e->alpha_src_factor) |
-               blend_factor_constant_mask(e->alpha_dst_factor);
+        return blend_factor_constant_mask(eq.rgb_src_factor) |
+               blend_factor_constant_mask(eq.rgb_dst_factor) |
+               blend_factor_constant_mask(eq.alpha_src_factor) |
+               blend_factor_constant_mask(eq.alpha_dst_factor);
 }
 
 static bool
@@ -96,7 +93,7 @@ can_blend_constant(const struct panfrost_device *dev,
                    const struct pan_blend_state *state,
                    unsigned rt)
 {
-        unsigned constant_mask = pan_blend_constant_mask(state, rt);
+        unsigned constant_mask = pan_blend_constant_mask(state->rts[rt].equation);
         if (!constant_mask)
                 return true;
 
@@ -104,31 +101,14 @@ can_blend_constant(const struct panfrost_device *dev,
         if (dev->arch == 6)
                 return false;
 
-        unsigned first_constant = ffs(constant_mask) - 1;
-        float constant = state->constants[first_constant];
+        float constant = pan_blend_get_constant(constant_mask, state->constants);
 
-        for (unsigned i = first_constant + 1; i < ARRAY_SIZE(state->constants); i++) {
-                if (((1 << i) & constant_mask) &&
-                    state->constants[i] != constant)
+        u_foreach_bit(i, constant_mask) {
+                if (state->constants[i] != constant)
                         return false;
         }
 
         return true;
-}
-
-float
-pan_blend_get_constant(ASSERTED const struct panfrost_device *dev,
-                       const struct pan_blend_state *state,
-                       unsigned rt)
-{
-        assert(can_blend_constant(dev, state, rt));
-
-        unsigned constant_mask = pan_blend_constant_mask(state, rt);
-
-        if (!constant_mask)
-                return 0.0f;
-
-        return state->constants[ffs(constant_mask) - 1];
 }
 
 bool
@@ -621,7 +601,7 @@ pan_blend_get_shader_locked(const struct panfrost_device *dev,
         struct pan_blend_shader_key key = {
                 .format = state->rts[rt].format,
                 .rt = rt,
-                .has_constants = pan_blend_constant_mask(state, rt) != 0,
+                .has_constants = pan_blend_constant_mask(state->rts[rt].equation) != 0,
                 .logicop_enable = state->logicop_enable,
                 .logicop_func = state->logicop_func,
                 .nr_samples = state->rts[rt].nr_samples,
