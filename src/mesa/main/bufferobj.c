@@ -5021,4 +5021,61 @@ _mesa_GetBufferArray(GLuint count, GLuint *buffer_num, GLuint *buffer_array)
    _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
 }
 
+/**
+ * 获取 buffer 的size 和 usage
+ * buffer: buffer name
+ * size: buffer size
+ * usage: buffer usage
+ */
+void GLAPIENTRY
+_mesa_GetBufferInfo(GLuint buffer, GLsizeiptr *size, GLenum *usage)
+{
+   if (!size || !usage){
+      _mesa_warning(NULL, "input NULL size or usage");
+      return;
+   }
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufObj;
+   bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+   if (!bufObj || bufObj == &DummyBufferObject) {
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "glInvalidateBufferData(name = %u) invalid object",
+                  buffer);
+      return;
+   }
+   *size = bufObj->Size;
+   *usage = bufObj->Usage;
+}
+
+/**
+ * 获取 buffer 的 数据
+ * buffer: buffer name
+ * size: buffer size
+ * usage: buffer usage
+ */
+void GLAPIENTRY
+_mesa_GetBufferData(GLuint buffer,  GLsizeiptr *size, GLvoid *data)
+{
+   if (!size || !data){
+      _mesa_warning(NULL, "input NULL size or data");
+      return;
+   }
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufObj;
+   bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+   if (!bufObj || bufObj == &DummyBufferObject) {
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "glInvalidateBufferData(name = %u) invalid object",
+                  buffer);
+      return;
+   }
+   GLubyte *dest = data;
+   if (*size < bufObj->Size) {
+       _mesa_error(ctx, GL_INVALID_VALUE, "buffer %u not long enought, expected less than %ld but bufData has size of %ld.",
+                   buffer, *size, bufObj->Size);
+       return;
+   }
+   *size = bufObj->Size;
+   memcpy(data, bufObj->Data, bufObj->Size);
+}
 

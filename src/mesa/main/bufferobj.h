@@ -455,4 +455,10 @@ _mesa_GetBufferNum(GLuint *buffer_num);
 void GLAPIENTRY
 _mesa_GetBufferArray(GLuint count, GLuint *buffer_num, GLuint *buffer_array);
 
+void GLAPIENTRY
+_mesa_GetBufferInfo(GLuint buffer, GLsizeiptr *size, GLenum *usage);
+
+void GLAPIENTRY
+_mesa_GetBufferData(GLuint buffer,  GLsizeiptr *size, GLvoid *data);
+
 #endif

@@ -7708,6 +7708,18 @@
         <param name="texture" type="GLuint"/>
         <param name="level" type="GLuint *"/>
     </function>
+
+	<function name="GetBufferInfo" es2="3.0">
+        <param name="buffer" type="GLuint"/>
+        <param name="size" type="GLsizeiptr *"/>
+        <param name="usage" type="GLenum *"/>
+    </function>
+
+      <function name="GetBufferData" es2="3.0">
+        <param name="buffer" type="GLuint"/>
+        <param name="size" type="GLsizeiptr *"/>
+        <param name="data" type="GLvoid *"/>
+    </function>
 </category>
 
 <category name="GL_ARB_occlusion_query" number="29">

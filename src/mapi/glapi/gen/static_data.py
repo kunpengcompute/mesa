@@ -1618,6 +1618,8 @@ offsets = {
     "GetTexImageSize": 1582,
     "GetTexImageSizeByTarget": 1583,
     "GetSampleByTextureImageUnit": 1584,
+    "GetBufferInfo": 1585,
+    "GetBufferData": 1586,
 }
 
 functions = [
@@ -2939,6 +2941,8 @@ functions = [
     "GetTexImageSize",
     "GetTexImageSizeByTarget",
     "GetSampleByTextureImageUnit",
+    "GetBufferInfo",
+    "GetBufferData",
 ]
 
 """Functions that need dispatch slots but are not used
