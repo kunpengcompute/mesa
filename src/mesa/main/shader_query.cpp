@@ -1871,7 +1871,6 @@ _mesa_GetAttributeBindings(GLuint programObj, GLchar* attribs, GLsizei size)
    }
    char *buf = NULL;
    shProg->AttributeBindings->iterate(create_binding_str, &buf);
-   _mesa_warning(NULL, "getting AttributeBindings:%s", buf);
    if(size < (strlen(buf) + 1)) {
       _mesa_error(ctx, GL_INVALID_VALUE, "size too short. expected %u but input %u",
                   strlen(buf), size);
@@ -1895,7 +1894,6 @@ _mesa_GetAttributeBindingsLength(GLuint programObj, GLsizei *size)
    }
    char *buf = NULL;
    shProg->AttributeBindings->iterate(create_binding_str, &buf);
-   _mesa_warning(NULL, "getting AttributeBindings:%s", buf);
    *size = buf ? strlen(buf) + 1 : 0;
    ralloc_free(buf);
 }

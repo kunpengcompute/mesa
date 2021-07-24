@@ -1622,6 +1622,9 @@ offsets = {
     "GetBufferData": 1586,
     "GetAttributeBindings": 1587,
     "GetAttributeBindingsLength": 1588,
+    "GetFramebufferAttachmentParameterivByName": 1589,
+    "GetDrawBuffers": 1590,
+    "GetReadBuffer": 1591,
 }
 
 functions = [
@@ -2947,6 +2950,9 @@ functions = [
     "GetBufferData",
     "GetAttributeBindings",
     "GetAttributeBindingsLength",
+    "GetFramebufferAttachmentParameterivByName",
+    "GetDrawBuffers",
+    "GetReadBuffer",
 ]
 
 """Functions that need dispatch slots but are not used

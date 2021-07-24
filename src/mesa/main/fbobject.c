@@ -5544,3 +5544,56 @@ _mesa_GetBindFramebuffer(GLenum target, GLuint *frame_buffer)
    }
 }
 
+void GLAPIENTRY
+_mesa_GetFramebufferAttachmentParameterivByName(GLuint framebuffer,
+                                               GLenum attachment,
+                                               GLenum pname, GLint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *buffer;
+
+   buffer = _mesa_lookup_framebuffer_err(ctx, framebuffer,
+                           "VmiGetFramebufferAttachmentParameterivByName");
+   if (!buffer)
+      return;
+   get_framebuffer_attachment_parameter(ctx, buffer, attachment, pname,
+                                        params,
+                              "VmiGetFramebufferAttachmentParameterivByName");
+}
+
+void GLAPIENTRY
+_mesa_GetDrawBuffers(GLuint framebuffer, GLsizei *n, GLenum *bufs)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *buffer;
+
+   buffer = _mesa_lookup_framebuffer_err(ctx, framebuffer,
+                           "VmiGetDrawBuffers");
+   if (!buffer || !n) {
+      _mesa_warning(NULL, "NULL frame_buffer");
+      return;
+   }
+   if (*n < buffer->_NumColorDrawBuffers) {
+      _mesa_warning(NULL, "Lack of space for ColorDrawBuffer array");
+      return;
+   }
+   *n = buffer->_NumColorDrawBuffers;
+   for (int i = 0; i < buffer->_NumColorDrawBuffers; i++) {
+      bufs[i] = buffer->ColorDrawBuffer[i];
+   }
+}
+
+void GLAPIENTRY
+_mesa_GetReadBuffer(GLuint framebuffer, GLenum *src)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *buffer;
+
+   buffer = _mesa_lookup_framebuffer_err(ctx, framebuffer,
+                           "VmiGetReadBuffer");
+   if (!buffer) {
+      _mesa_warning(NULL, "NULL frame_buffer");
+      return;
+   }
+   *src = buffer->ColorReadBuffer;
+}

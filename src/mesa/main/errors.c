@@ -344,7 +344,7 @@ _mesa_error( struct gl_context *ctx, GLenum error, const char *fmtString, ... )
          assert(0);
          return;
       }
-      // ALOGE("mesa %s", s2);
+      ALOGE("mesa %s", s2);
       /* Print the error to stderr if needed. */
       if (do_output) {
          output_if_debug("Mesa: User error", s2, GL_TRUE);

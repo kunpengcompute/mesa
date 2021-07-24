@@ -772,14 +772,14 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
     * time"
     */
    if (ctx->Binding && ctx->Binding != t)
-      return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+      (void)_eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
    if (draw && draw->CurrentContext && draw->CurrentContext != ctx) {
       if (draw->CurrentContext->Binding != t)
-         return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+         (void)_eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
    }
    if (read && read->CurrentContext && read->CurrentContext != ctx) {
       if (read->CurrentContext->Binding != t)
-         return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+         (void)_eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
    }
 
    /* If the context has a config then it must match that of the two
@@ -787,7 +787,7 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
    if (ctx->Config) {
       if ((draw && draw->Config != ctx->Config) ||
           (read && read->Config != ctx->Config))
-         return _eglError(EGL_BAD_MATCH, "eglMakeCurrent");
+         return _eglError(EGL_BAD_MATCH, "eglMakeCurrent444");
    } else {
       /* Otherwise we must be using the EGL_KHR_no_config_context
        * extension */
