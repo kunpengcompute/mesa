@@ -2879,3 +2879,16 @@ _mesa_GetMultiTexParameterIuivEXT(GLenum texunit, GLenum target, GLenum pname,
 
    get_tex_parameterIiv(ctx, texObj, pname, (GLint *) params, true);
 }
+
+void GLAPIENTRY
+_mesa_GetTextureParameterByName(GLuint texture, GLenum pname, GLint *params)
+{
+   struct gl_texture_object *obj;
+   GET_CURRENT_CONTEXT(ctx);
+
+   obj = get_texobj_by_name(ctx, texture, "VmiGetTextureParameterByName");
+   if (!obj)
+      return;
+
+   get_tex_parameteriv(ctx, obj, pname, params, true);
+}

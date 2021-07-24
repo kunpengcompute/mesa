@@ -61,7 +61,6 @@
 #include "util/mesa-sha1.h"
 #include "util/crc32.h"
 #include "util/os_file.h"
-
 /**
  * Return mask of GLSL_x flags by examining the MESA_GLSL env var.
  */
@@ -3217,3 +3216,72 @@ _mesa_program_init_subroutine_defaults(struct gl_context *ctx,
       binding->IndexPtr[i] = find_compat_subroutine(p, uni->type);
    }
 }
+
+/**
+ * 获取 shader 和 pragrom 的数量
+ * 因为在 mesa 的实现里，shader 和 pragrom 在同一个 hash 表里保存，所以一起获取出去
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值等于 shader + pragrom + 1
+ */
+void GLAPIENTRY
+_mesa_GetShaderProgramNum(GLuint *shader_program_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!shader_program_num) {
+      _mesa_warning(NULL, "input NULL shader_program_num");
+      return;
+   }
+
+   _mesa_HashLockMutex(ctx->Shared->ShaderObjects);
+   *shader_program_num = _mesa_HashNumEntries(ctx->Shared->ShaderObjects);
+   _mesa_HashUnlockMutex(ctx->Shared->ShaderObjects);
+}
+
+static GLuint g_shader_program_index = 0;
+static void
+save_shader_program_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+   GET_CURRENT_CONTEXT(ctx);
+   
+   GLuint *shader_program_array = (GLuint *)userData;
+
+   if (is_program(ctx, key) || is_shader(ctx, key)) {
+      shader_program_array[g_shader_program_index++] = key;
+   }
+}
+
+/**
+ * 获取 shader 和 pragrom 的数组
+ * 因为在 mesa 的实现里，shader 和 pragrom 在同一个 hash 表里保存，所以一起获取出去
+ * count：shader_program_array 的长度
+ * shader_program_num：实际获取的长度
+ * shader_program_array：输出的 shader 和 pragrom 的数组
+ */
+void GLAPIENTRY
+_mesa_GetShaderProgramArray(GLuint count, GLuint *shader_program_num, GLuint *shader_program_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!shader_program_num || !shader_program_array) {
+      _mesa_warning(NULL, "input NULL shader_program_num or shader_program_array");
+      return;
+   }
+   
+   _mesa_HashLockMutex(ctx->Shared->ShaderObjects);
+
+   *shader_program_num = _mesa_HashNumEntries(ctx->Shared->ShaderObjects);
+   if (count < *shader_program_num) {
+      *shader_program_num = 0;
+      _mesa_warning(NULL, "Lack of space for all shaders and programs");
+      _mesa_HashUnlockMutex(ctx->Shared->ShaderObjects);
+      return; 
+   }
+
+   g_shader_program_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->ShaderObjects, save_shader_program_entry, shader_program_array);
+   *shader_program_num = g_shader_program_index;
+   
+   _mesa_HashUnlockMutex(ctx->Shared->ShaderObjects);
+}
+

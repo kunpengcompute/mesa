@@ -34,7 +34,7 @@ LOCAL_C_INCLUDES += \
     $(MESA_TOP)/src/amd/common \
     $(MESA_TOP)/src/amd/llvm
 
-LOCAL_SHARED_LIBRARIES := libdrm_radeon
+LOCAL_SHARED_LIBRARIES := libvmidrm_radeon
 LOCAL_MODULE := libmesa_pipe_r600
 
 LOCAL_MODULE_CLASS := STATIC_LIBRARIES

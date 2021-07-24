@@ -648,7 +648,6 @@ _mesa_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
          case GL_INTENSITY:
          case GL_RED:
          case GL_RG:
-            fb->_Status = GL_FRAMEBUFFER_UNSUPPORTED;
             return;
 
          default:
@@ -789,7 +788,7 @@ is_format_color_renderable(const struct gl_context *ctx, mesa_format format,
    case GL_RGB10:
    case GL_RGB9_E5:
    case GL_SR8_EXT:
-      return GL_FALSE;
+      return GL_TRUE;
    default:
       break;
    }
@@ -2223,7 +2222,7 @@ _mesa_base_fbo_format(const struct gl_context *ctx, GLenum internalFormat)
          ? GL_RG : 0;
    case GL_RGB16F:
    case GL_RGB32F:
-      return (_mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_float)
+      return ctx->Extensions.ARB_texture_float
          ? GL_RGB : 0;
    case GL_RGBA16F:
    case GL_RGBA32F:
@@ -5349,4 +5348,270 @@ _mesa_EvaluateDepthValuesARB(void)
 
    if (ctx->Driver.EvaluateDepthValues)
       ctx->Driver.EvaluateDepthValues(ctx);
+}
+
+/**
+ * 获取 RenderBuffer 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 buffer + 1
+*/
+
+void GLAPIENTRY
+_mesa_GetRenderBufferNum(GLuint *render_buffer_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!render_buffer_num) {
+      _mesa_warning(NULL, "input NULL render_buffer_num");
+      return;
+ 
+   }
+ 
+   _mesa_HashLockMutex(ctx->Shared->RenderBuffers);
+   *render_buffer_num = _mesa_HashNumEntries(ctx->Shared->RenderBuffers);
+   _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
+}
+
+static GLuint g_render_buffer_array_index = 0;
+static void
+save_render_buffer_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+  
+    GLuint *render_buffer_array = (GLuint *)userData;
+    if (_mesa_IsRenderbuffer(key)) {
+      render_buffer_array[g_render_buffer_array_index++] = key;
+   }
+}
+
+/**
+ * 获取 RenderBuffer 的数组
+ * count：buffer_array 的长度
+ * render_buffer_num：实际获取的长度
+ * render_buffer_array：输出的 RenderBuffer 的数组
+*/
+
+void GLAPIENTRY
+_mesa_GetRenderBufferArray(GLuint count, GLuint *render_buffer_num, GLuint *render_buffer_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!render_buffer_num || !render_buffer_array) {
+      _mesa_warning(NULL, "input NULL render_buffer_num or render_buffer_array");
+      return;
+ 
+   }
+ 
+   _mesa_HashLockMutex(ctx->Shared->RenderBuffers);
+   *render_buffer_num = _mesa_HashNumEntries(ctx->Shared->RenderBuffers);
+   if (count < *render_buffer_num) {
+      *render_buffer_num = 0;
+      _mesa_warning(NULL, "Lack of space for all Render Buffer array");
+      _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
+      return; 
+   }
+
+   g_render_buffer_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->RenderBuffers, save_render_buffer_array_entry, render_buffer_array);
+   *render_buffer_num = g_render_buffer_array_index;
+  
+   _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
+}
+
+/**
+ * 获取 FrameBuffer 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 buffer + 1
+*/
+void GLAPIENTRY
+_mesa_GetFrameBufferNum(GLuint *frame_buffer_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!frame_buffer_num) {
+      _mesa_warning(NULL, "input NULL frame_buffer_num");
+      return;
+   }
+ 
+   _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
+   *frame_buffer_num = _mesa_HashNumEntries(ctx->Shared->FrameBuffers);
+   _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
+}
+
+static GLuint g_frame_buffer_array_index = 0;
+static void
+save_frame_buffer_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+  
+   GLuint *frame_buffer_array = (GLuint *)userData;
+   if (_mesa_IsFramebuffer(key)) {
+      frame_buffer_array[g_frame_buffer_array_index++] = key;
+   }
+}
+
+
+/**
+ * 获取 FrameBuffer 的数组
+ * count：buffer_array 的长度
+ * frame_buffer_num：实际获取的长度
+ * frame_buffer_array：输出的 FrameBuffer 的数组
+*/
+void GLAPIENTRY
+_mesa_GetFrameBufferArray(GLuint count, GLuint *frame_buffer_num, GLuint *frame_buffer_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!frame_buffer_num || !frame_buffer_array) {
+      _mesa_warning(NULL, "input NULL render_buffer_num or render_buffer_array");
+      return;
+ 
+   }
+ 
+   _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
+   *frame_buffer_num = _mesa_HashNumEntries(ctx->Shared->FrameBuffers);
+   if (count < *frame_buffer_num) {
+      *frame_buffer_num = 0;
+      _mesa_warning(NULL, "Lack of space for all Frame Buffer array");
+      _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
+      return; 
+   }
+
+   g_frame_buffer_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->FrameBuffers, save_frame_buffer_array_entry, frame_buffer_array);
+   *frame_buffer_num = g_frame_buffer_array_index;
+  
+   _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
+}
+
+void GLAPIENTRY
+_mesa_GetBindRenderbuffer(GLenum target, GLuint *render_buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!render_buffer) {
+      _mesa_warning(NULL, "input NULL render_buffer");
+      return;
+   }
+   
+   if (target != GL_RENDERBUFFER_EXT) {
+      _mesa_warning(NULL, "_mesa_GetBindRenderbuffer: input wrong target");
+      *render_buffer = 0;
+      return;
+   }
+
+   if (!ctx->CurrentRenderbuffer) {
+      _mesa_warning(NULL, "_mesa_GetBindRenderbuffer: no renderbuffer bound)");
+      *render_buffer = 0;
+      return;
+   }
+
+   *render_buffer = ctx->CurrentRenderbuffer->Name;
+}
+
+void GLAPIENTRY
+_mesa_GetBindFramebuffer(GLenum target, GLuint *frame_buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!frame_buffer) {
+      _mesa_warning(NULL, "input NULL frame_buffer");
+      return;
+   }
+
+   if ((target != GL_READ_FRAMEBUFFER_EXT) && (target != GL_DRAW_FRAMEBUFFER_EXT)) {
+      _mesa_warning(NULL, "_mesa_GetBindFramebuffer: input wrong target");
+      *frame_buffer = 0;
+      return;
+   }
+
+   if (target == GL_READ_FRAMEBUFFER_EXT) {
+      if (!ctx->ReadBuffer) {
+         _mesa_warning(NULL, "_mesa_GetBindFramebuffer: no rend frame buffer bound)");
+         *frame_buffer = 0;
+      } else {
+         *frame_buffer = ctx->ReadBuffer->Name;
+      }
+      return;
+   }
+
+   if (target == GL_DRAW_FRAMEBUFFER_EXT) {
+      if (!ctx->DrawBuffer) {
+         _mesa_warning(NULL, "_mesa_GetBindFramebuffer: no dram frame buffer bound)");
+         *frame_buffer = 0;
+      } else {
+         *frame_buffer = ctx->DrawBuffer->Name;
+      }
+      return;
+   }
+}
+
+void GLAPIENTRY
+_mesa_GetFramebufferAttachmentParameterivByName(GLuint framebuffer,
+                                               GLenum attachment,
+                                               GLenum pname, GLint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *buffer;
+
+   buffer = _mesa_lookup_framebuffer_err(ctx, framebuffer,
+                           "VmiGetFramebufferAttachmentParameterivByName");
+   if (!buffer)
+      return;
+   get_framebuffer_attachment_parameter(ctx, buffer, attachment, pname,
+                                        params,
+                              "VmiGetFramebufferAttachmentParameterivByName");
+}
+
+void GLAPIENTRY
+_mesa_GetDrawBuffers(GLuint framebuffer, GLsizei *n, GLenum *bufs)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *buffer;
+
+   buffer = _mesa_lookup_framebuffer_err(ctx, framebuffer,
+                           "VmiGetDrawBuffers");
+   if (!buffer || !n) {
+      _mesa_warning(NULL, "NULL frame_buffer");
+      return;
+   }
+   if (*n < buffer->_NumColorDrawBuffers) {
+      _mesa_warning(NULL, "Lack of space for ColorDrawBuffer array");
+      return;
+   }
+   *n = buffer->_NumColorDrawBuffers;
+   for (int i = 0; i < buffer->_NumColorDrawBuffers; i++) {
+      bufs[i] = buffer->ColorDrawBuffer[i];
+   }
+}
+
+void GLAPIENTRY
+_mesa_GetReadBuffer(GLuint framebuffer, GLenum *src)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_framebuffer *buffer;
+
+   buffer = _mesa_lookup_framebuffer_err(ctx, framebuffer,
+                           "VmiGetReadBuffer");
+   if (!buffer) {
+      _mesa_warning(NULL, "NULL frame_buffer");
+      return;
+   }
+   *src = buffer->ColorReadBuffer;
+}
+
+void GLAPIENTRY
+_mesa_GetRenderbufferParameterByName(GLuint renderbuffer, GLenum pname,
+                                      GLint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_renderbuffer *rb = _mesa_lookup_renderbuffer(ctx, renderbuffer);
+   if (!rb || rb == &DummyRenderbuffer) {
+      /* ID was reserved, but no real renderbuffer object made yet */
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glGetNamedRenderbufferParameteriv"
+                  "(invalid renderbuffer %i)", renderbuffer);
+      return;
+   }
+
+   get_render_buffer_parameteriv(ctx, rb, pname, params,
+                                 "VmiGetRenderbufferParameterByName");
 }

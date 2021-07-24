@@ -62,6 +62,7 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
 
    switch (internalFormat) {
    case GL_RGB:
+   case GL_SRGB8:
    case GL_R3_G3_B2:
    case GL_RGB4:
    case GL_RGB5:
@@ -69,6 +70,12 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
    case GL_RGB10:
    case GL_RGB12:
    case GL_RGB16:
+   case GL_RGB16I:
+   case GL_RGB16UI:
+   case GL_RGB8_SNORM:
+   case GL_RGB16_SNORM:
+   case GL_RGB8I:
+   case GL_RGB8UI:
       rb->Format = MESA_FORMAT_BGR_UNORM8;
       break;
    case GL_RGBA:
@@ -76,8 +83,13 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
    case GL_RGBA4:
    case GL_RGB5_A1:
    case GL_RGBA8:
+   case GL_RGBA8I:
+   case GL_RGBA8UI:
+   case GL_SRGB8_ALPHA8:
+   case GL_RGBA8_SNORM:
 #if 1
    case GL_RGB10_A2:
+   case GL_RGB10_A2UI:
    case GL_RGBA12:
 #endif
       if (_mesa_little_endian())
@@ -86,9 +98,13 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
          rb->Format = MESA_FORMAT_A8B8G8R8_UNORM;
       break;
    case GL_RGBA16:
+   case GL_RGBA16I:
    case GL_RGBA16_SNORM:
       /* for accum buffer */
       rb->Format = MESA_FORMAT_RGBA_SNORM16;
+      break;
+   case GL_RGBA16UI:
+      rb->Format = MESA_FORMAT_RGBA_UINT16;
       break;
    case GL_STENCIL_INDEX:
    case GL_STENCIL_INDEX1_EXT:
@@ -111,9 +127,100 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
    case GL_DEPTH24_STENCIL8_EXT:
       rb->Format = MESA_FORMAT_S8_UINT_Z24_UNORM;
       break;
+   case GL_RGBA32UI:
+      rb->Format = MESA_FORMAT_RGBA_UINT32;
+      break;
+   case GL_RG32UI:
+      rb->Format = MESA_FORMAT_RG_UINT32;
+      break;
+   case GL_RGBA32I:
+      rb->Format = MESA_FORMAT_RGBA_SINT32;
+      break;
+   case GL_R8:
+   case GL_R8I:
+   case GL_R8_SNORM:
+      rb->Format = MESA_FORMAT_R_SINT8;
+      break;
+   case GL_R8UI:
+      rb->Format = MESA_FORMAT_R_UINT8;
+      break;
+   case GL_R16F:
+      rb->Format = MESA_FORMAT_R_FLOAT16;
+      break;
+   case GL_R16UI:
+      rb->Format = MESA_FORMAT_R_UINT16;
+      break;
+   case GL_R16:
+   case GL_R16I:
+   case GL_R16_SNORM:
+      rb->Format = MESA_FORMAT_R_SINT16;
+      break;
+   case GL_R32UI:
+      rb->Format = MESA_FORMAT_R_UINT32;
+      break;
+   case GL_R32I:
+      rb->Format = MESA_FORMAT_R_SINT32;
+      break;
+   case GL_R32F:
+      rb->Format = MESA_FORMAT_R_FLOAT32;
+      break;
+   case GL_RG8UI:
+      rb->Format = MESA_FORMAT_RG_UINT8;
+      break;
+   case GL_RG8:
+   case GL_RG8I:
+   case GL_RG8_SNORM:
+      rb->Format = MESA_FORMAT_RG_SINT8;
+      break;
+   case GL_RG16UI:
+      rb->Format = MESA_FORMAT_RG_UINT16;
+      break;
+   case GL_RG16:
+   case GL_RG16I:
+   case GL_RG16_SNORM:
+      rb->Format = MESA_FORMAT_RG_SINT16;
+      break;
+   case GL_RG16F:
+      rb->Format = MESA_FORMAT_RG_FLOAT16;
+      break;
+   case GL_RG32I:
+      rb->Format = MESA_FORMAT_RG_SINT32;
+      break;
+   case GL_RG32F:
+      rb->Format = MESA_FORMAT_RG_FLOAT32;
+      break;
+   case GL_RGB32I:
+      rb->Format = MESA_FORMAT_RGB_SINT32;
+      break;
+   case GL_RGB32UI:
+      rb->Format = MESA_FORMAT_RGB_UINT32;
+      break;
+   case GL_RGB32F:
+      rb->Format = MESA_FORMAT_RGB_FLOAT32;
+      break;
+   case GL_DEPTH_COMPONENT32F:
+      rb->Format = MESA_FORMAT_Z_FLOAT32;
+      break;
+   case GL_DEPTH32F_STENCIL8:
+      rb->Format = MESA_FORMAT_Z32_FLOAT_S8X24_UINT;
+      break;
+   case GL_RGBA16F:
+      rb->Format = MESA_FORMAT_RGBA_FLOAT16;
+      break;
+   case GL_RGBA32F:
+      rb->Format = MESA_FORMAT_RGBA_FLOAT32;
+      break;
+   case GL_R11F_G11F_B10F:
+      rb->Format = MESA_FORMAT_R11G11B10_FLOAT;
+      break;
+   case GL_RGB9_E5:
+      rb->Format = MESA_FORMAT_R9G9B9E5_FLOAT;
+      break;
    default:
       /* unsupported format */
-      return GL_FALSE;
+      _mesa_log("format[%d] not support", internalFormat);
+      rb->Format = MESA_FORMAT_RGBA_FLOAT32;
+      break;
    }
 
    bpp = _mesa_get_format_bytes(rb->Format);

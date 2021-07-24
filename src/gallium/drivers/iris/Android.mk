@@ -173,7 +173,7 @@ LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/include/drm-uapi \
 	$(MESA_TOP)/src/gallium/include
 
-LOCAL_SHARED_LIBRARIES := libdrm_intel
+LOCAL_SHARED_LIBRARIES := libvmidrm_intel
 
 LOCAL_STATIC_LIBRARIES := \
 	libmesa_intel_common \

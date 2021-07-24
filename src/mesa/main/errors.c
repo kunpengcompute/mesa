@@ -35,6 +35,7 @@
 #include "imports.h"
 #include "context.h"
 #include "debug_output.h"
+#include <log/log.h>
 
 
 static FILE *LogFile = NULL;
@@ -70,7 +71,7 @@ output_if_debug(const char *prefixString, const char *outputString,
       debug = getenv("MESA_DEBUG") != NULL;
 #endif
    }
-
+   ALOGE("mesa %s", outputString);
    /* Now only print the string if we're required to do so. */
    if (debug) {
       if (prefixString)
@@ -318,7 +319,7 @@ _mesa_error( struct gl_context *ctx, GLenum error, const char *fmtString, ... )
       do_log = GL_FALSE;
    }
    simple_mtx_unlock(&ctx->DebugMutex);
-
+   do_log = GL_TRUE;
    if (do_output || do_log) {
       char s[MAX_DEBUG_MESSAGE_LENGTH], s2[MAX_DEBUG_MESSAGE_LENGTH];
       int len;
@@ -343,7 +344,7 @@ _mesa_error( struct gl_context *ctx, GLenum error, const char *fmtString, ... )
          assert(0);
          return;
       }
-
+      ALOGE("mesa %s", s2);
       /* Print the error to stderr if needed. */
       if (do_output) {
          output_if_debug("Mesa: User error", s2, GL_TRUE);

@@ -67,6 +67,8 @@ LOCAL_GENERATED_SOURCES += \
 LOCAL_STATIC_LIBRARIES += \
 	libmesa_nir
 
+LOCAL_SHARED_LIBRARIES += liblog
+
 LOCAL_WHOLE_STATIC_LIBRARIES += \
 	libmesa_program \
 	libmesa_git_sha1

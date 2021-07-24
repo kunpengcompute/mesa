@@ -36,6 +36,7 @@
 #include "extensions.h"
 #include "macros.h"
 #include "mtypes.h"
+#include <log/log.h>
 
 struct gl_extensions _mesa_extension_override_enables;
 struct gl_extensions _mesa_extension_override_disables;
@@ -184,6 +185,40 @@ _mesa_enable_sw_extensions(struct gl_context *ctx)
    ctx->Extensions.TDFX_texture_compression_FXT1 = GL_TRUE;
    ctx->Extensions.ANGLE_texture_compression_dxt = GL_TRUE;
    ctx->Extensions.EXT_texture_compression_s3tc = GL_TRUE;
+   ctx->Extensions.ARB_ES3_compatibility = GL_TRUE;
+   ctx->Extensions.ARB_internalformat_query = GL_TRUE;
+   ctx->Extensions.ARB_shader_texture_lod = GL_TRUE;
+   ctx->Extensions.OES_texture_float = GL_TRUE;
+   ctx->Extensions.OES_texture_half_float = GL_TRUE;
+   ctx->Extensions.OES_texture_half_float_linear = GL_TRUE;
+   ctx->Extensions.ARB_depth_buffer_float = GL_TRUE;
+   ctx->Extensions.EXT_sRGB = GL_TRUE;
+   ctx->Extensions.EXT_packed_float = GL_TRUE;
+   ctx->Extensions.EXT_transform_feedback = GL_TRUE;
+   ctx->Extensions.ARB_uniform_buffer_object = GL_TRUE;
+   ctx->Extensions.EXT_texture_snorm = GL_TRUE;
+   ctx->Extensions.NV_primitive_restart = GL_TRUE;
+   ctx->Extensions.OES_depth_texture_cube_map = GL_TRUE;
+   ctx->Extensions.EXT_texture_type_2_10_10_10_REV = GL_TRUE;
+
+   ctx->Extensions.OES_compressed_ETC1_RGB8_texture = GL_TRUE;
+   ctx->Extensions.OES_texture_compression_astc = GL_TRUE;
+   ctx->Extensions.KHR_texture_compression_astc_ldr = GL_TRUE;
+   ctx->Extensions.EXT_texture_compression_s3tc = GL_TRUE;
+   ctx->Extensions.ARB_instanced_arrays = GL_TRUE;
+   ctx->Extensions.EXT_color_buffer_float = GL_TRUE;
+   ctx->Extensions.NV_fbo_color_attachments = GL_TRUE;
+   ctx->Extensions.ARB_framebuffer_no_attachments = GL_TRUE;
+
+   ctx->Extensions.EXT_robustness = GL_TRUE;
+   ctx->Extensions.KHR_robustness = GL_TRUE;
+   ctx->Extensions.OES_EGL_image = GL_TRUE;
+   ctx->Extensions.OES_EGL_image_external = GL_TRUE;
+   ctx->Extensions.OES_vertex_array_object = GL_TRUE;
+   ctx->Extensions.EXT_color_buffer_half_float = GL_TRUE;
+
+   ctx->Extensions.ARB_draw_buffers_blend = GL_TRUE;
+   ctx->Extensions.OES_copy_image = GL_TRUE;
 }
 
 /**

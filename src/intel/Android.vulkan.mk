@@ -57,9 +57,9 @@ ANV_STATIC_LIBRARIES := \
 	libmesa_genxml \
 	libmesa_nir
 
-ANV_SHARED_LIBRARIES := libdrm
+ANV_SHARED_LIBRARIES := libvmidrm
 
-ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7),)
+ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7 9),)
 ANV_SHARED_LIBRARIES += libnativewindow
 endif
 

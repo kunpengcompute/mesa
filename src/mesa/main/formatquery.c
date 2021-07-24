@@ -628,8 +628,13 @@ _mesa_query_internal_format_default(struct gl_context *ctx, GLenum target,
 
    switch (pname) {
    case GL_SAMPLES:
+      params[0] = 8;
+      params[1] = 4;
+      params[2] = 2;
+      params[3] = 1;
+      break;
    case GL_NUM_SAMPLE_COUNTS:
-      params[0] = 1;
+      params[0] = 4;
       break;
 
    case GL_INTERNALFORMAT_SUPPORTED:

@@ -33,7 +33,7 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 	libmesa_isl \
 	libmesa_intel_dev
 
-LOCAL_SHARED_LIBRARIES := libdrm_intel
+LOCAL_SHARED_LIBRARIES := libvmidrm_intel
 LOCAL_MODULE := libmesa_winsys_iris
 
 include $(GALLIUM_COMMON_MK)

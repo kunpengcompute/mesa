@@ -1815,6 +1815,12 @@ validate_io(struct gl_program *producer, struct gl_program *consumer)
    free(outputs);
    return valid && num_outputs == 0;
 }
+static void
+create_binding_str(const char *key, unsigned value, void *closure)
+{
+   char **bindings_str = (char **) closure;
+   ralloc_asprintf_append(bindings_str, "%s:%u,", key, value);
+}
 
 /**
  * Validate inputs against outputs in a program pipeline.
@@ -1849,4 +1855,45 @@ _mesa_validate_pipeline_io(struct gl_pipeline_object *pipeline)
       }
    }
    return true;
+}
+/**
+ * 获取program的所有uniform
+ * 以key1:value1,key2:value2的格式返回到uniforms中，返回字符串
+ */
+void GLAPIENTRY
+_mesa_GetAttributeBindings(GLuint programObj, GLchar* attribs, GLsizei size)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_shader_program *shProg =
+      _mesa_lookup_shader_program(ctx, programObj);
+   if (!shProg) {
+      return;
+   }
+   char *buf = NULL;
+   shProg->AttributeBindings->iterate(create_binding_str, &buf);
+   if(size < (strlen(buf) + 1)) {
+      _mesa_error(ctx, GL_INVALID_VALUE, "size too short. expected %u but input %u",
+                  strlen(buf), size);
+      return;
+   }
+   memcpy(attribs, buf, strlen(buf));
+   attribs[strlen(buf)] = '\0';
+   ralloc_free(buf);
+}
+/**
+ * 获取program的长度
+ */
+void GLAPIENTRY
+_mesa_GetAttributeBindingsLength(GLuint programObj, GLsizei *size)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_shader_program *shProg =
+      _mesa_lookup_shader_program(ctx, programObj);
+   if (!shProg) {
+      return;
+   }
+   char *buf = NULL;
+   shProg->AttributeBindings->iterate(create_binding_str, &buf);
+   *size = buf ? strlen(buf) + 1 : 0;
+   ralloc_free(buf);
 }

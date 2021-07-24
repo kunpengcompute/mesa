@@ -37,6 +37,7 @@
 #include "imports.h"
 #include "macros.h"
 #include "mtypes.h"
+#include "errors.h"
 
 
 

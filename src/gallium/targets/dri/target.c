@@ -23,6 +23,7 @@ PUBLIC const __DRIextension **__driDriverGetExtensions_swrast(void)
 
 #if defined(HAVE_LIBDRM)
 
+#ifdef HAVE_PIPE_LOADER_KMS
 const __DRIextension **__driDriverGetExtensions_kms_swrast(void);
 
 PUBLIC const __DRIextension **__driDriverGetExtensions_kms_swrast(void)
@@ -30,7 +31,7 @@ PUBLIC const __DRIextension **__driDriverGetExtensions_kms_swrast(void)
    globalDriverAPI = &dri_kms_driver_api;
    return galliumdrm_driver_extensions;
 }
-
+#endif
 #endif
 #endif
 

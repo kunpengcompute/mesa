@@ -1209,6 +1209,5 @@
       <param name="count" type="GLsizei" />
       <param name="params" type="const GLfloat*" />
    </function>
-
 </category>
 </OpenGLAPI>

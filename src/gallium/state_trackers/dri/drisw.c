@@ -416,6 +416,10 @@ static __DRIimageExtension driSWImageExtension = {
     .destroyImage = dri2_destroy_image,
 };
 
+static const __DRIrobustnessExtension dri2Robustness = {
+   .base = {__DRI2_ROBUSTNESS, 1}
+};
+
 /*
  * Backend function for init_screen.
  */
@@ -428,6 +432,7 @@ static const __DRIextension *drisw_screen_extensions[] = {
    &dri2NoErrorExtension.base,
    &driSWImageExtension.base,
    &dri2FlushControlExtension.base,
+   &dri2Robustness.base,
    NULL
 };
 

@@ -772,14 +772,14 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
     * time"
     */
    if (ctx->Binding && ctx->Binding != t)
-      return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+      (void)_eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
    if (draw && draw->CurrentContext && draw->CurrentContext != ctx) {
       if (draw->CurrentContext->Binding != t)
-         return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+         (void)_eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
    }
    if (read && read->CurrentContext && read->CurrentContext != ctx) {
       if (read->CurrentContext->Binding != t)
-         return _eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
+         (void)_eglError(EGL_BAD_ACCESS, "eglMakeCurrent");
    }
 
    /* If the context has a config then it must match that of the two

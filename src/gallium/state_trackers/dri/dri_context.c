@@ -64,10 +64,8 @@ dri_create_context(gl_api api, const struct gl_config * visual,
       screen->sPriv->dri2.backgroundCallable;
    const struct driOptionCache *optionCache = &screen->dev->option_cache;
 
-   if (screen->has_reset_status_query) {
-      allowed_flags |= __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS;
-      allowed_attribs |= __DRIVER_CONTEXT_ATTRIB_RESET_STRATEGY;
-   }
+   allowed_flags |= __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS;
+   allowed_attribs |= __DRIVER_CONTEXT_ATTRIB_RESET_STRATEGY;
 
    if (ctx_config->flags & ~allowed_flags) {
       *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;

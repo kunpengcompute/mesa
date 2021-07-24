@@ -275,9 +275,12 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_MAX_VARYINGS:
       return TGSI_EXEC_MAX_INPUT_ATTRIBS;
+   case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+      return 1;
+   case PIPE_CAP_FBFETCH:
+   	  return 1;
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
-   case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
    case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
    case PIPE_CAP_TGSI_TXQS:
@@ -308,7 +311,6 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-   case PIPE_CAP_FBFETCH:
    case PIPE_CAP_TGSI_MUL_ZERO_WINS:
    case PIPE_CAP_TGSI_CLOCK:
    case PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE:
@@ -380,7 +382,7 @@ softpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
    case PIPE_CAPF_MAX_LINE_WIDTH:
       /* fall-through */
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
-      return 255.0; /* arbitrary */
+      return 1024.0; /* arbitrary */
    case PIPE_CAPF_MAX_POINT_WIDTH:
       /* fall-through */
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
@@ -434,9 +436,6 @@ softpipe_is_format_supported( struct pipe_screen *screen,
    if (!format_desc)
       return false;
 
-   if (sample_count > 1)
-      return false;
-
    if (bind & (PIPE_BIND_DISPLAY_TARGET |
                PIPE_BIND_SCANOUT |
                PIPE_BIND_SHARED)) {
@@ -445,9 +444,6 @@ softpipe_is_format_supported( struct pipe_screen *screen,
    }
 
    if (bind & PIPE_BIND_RENDER_TARGET) {
-      if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS)
-         return false;
-
       /*
        * Although possible, it is unnatural to render into compressed or YUV
        * surfaces. So disable these here to avoid going into weird paths
