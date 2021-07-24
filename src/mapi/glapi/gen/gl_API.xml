@@ -7720,6 +7720,17 @@
         <param name="size" type="GLsizeiptr *"/>
         <param name="data" type="GLvoid *"/>
     </function>
+
+    <function name="GetAttributeBindings" es2="3.0">
+        <param name="programObj" type="GLuint"/>
+        <param name="attribs" type="GLchar *"/>
+        <param name="size" type="GLsizei"/>
+    </function>
+
+    <function name="GetAttributeBindingsLength" es2="3.0">
+        <param name="programObj" type="GLuint"/>
+        <param name="size" type="GLsizei *"/>
+    </function>
 </category>
 
 <category name="GL_ARB_occlusion_query" number="29">

@@ -393,6 +393,11 @@ _mesa_GetShaderProgramNum(GLuint *shader_program_num);
 extern void GLAPIENTRY
 _mesa_GetShaderProgramArray(GLuint count, GLuint *shader_program_num, GLuint *shader_program_array);
 
+extern void GLAPIENTRY
+_mesa_GetAttributeBindings(GLuint programObj, GLchar* attribs, GLsizei size);
+
+extern void GLAPIENTRY
+_mesa_GetAttributeBindingsLength(GLuint programObj, GLsizei *size);
 #ifdef __cplusplus
 }
 #endif

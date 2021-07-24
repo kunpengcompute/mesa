@@ -623,7 +623,7 @@ buffer_data_fallback(struct gl_context *ctx, GLenum target, GLsizeiptrARB size,
       bufObj->StorageFlags = storageFlags;
 
       if (data) {
-	 memcpy( bufObj->Data, data, size );
+	     memcpy( bufObj->Data, data, size );
       }
 
       return GL_TRUE;

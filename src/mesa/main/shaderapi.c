@@ -61,7 +61,6 @@
 #include "util/mesa-sha1.h"
 #include "util/crc32.h"
 #include "util/os_file.h"
-
 /**
  * Return mask of GLSL_x flags by examining the MESA_GLSL env var.
  */
@@ -3232,7 +3231,7 @@ _mesa_GetShaderProgramNum(GLuint *shader_program_num)
       _mesa_warning(NULL, "input NULL shader_program_num");
       return;
    }
-   
+
    _mesa_HashLockMutex(ctx->Shared->ShaderObjects);
    *shader_program_num = _mesa_HashNumEntries(ctx->Shared->ShaderObjects);
    _mesa_HashUnlockMutex(ctx->Shared->ShaderObjects);
@@ -3285,4 +3284,4 @@ _mesa_GetShaderProgramArray(GLuint count, GLuint *shader_program_num, GLuint *sh
    
    _mesa_HashUnlockMutex(ctx->Shared->ShaderObjects);
 }
-                                       
+

@@ -1620,6 +1620,8 @@ offsets = {
     "GetSampleByTextureImageUnit": 1584,
     "GetBufferInfo": 1585,
     "GetBufferData": 1586,
+    "GetAttributeBindings": 1587,
+    "GetAttributeBindingsLength": 1588,
 }
 
 functions = [
@@ -2943,6 +2945,8 @@ functions = [
     "GetSampleByTextureImageUnit",
     "GetBufferInfo",
     "GetBufferData",
+    "GetAttributeBindings",
+    "GetAttributeBindingsLength",
 ]
 
 """Functions that need dispatch slots but are not used
