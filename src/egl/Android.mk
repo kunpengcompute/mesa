@@ -72,7 +72,7 @@ ifeq ($(BOARD_USES_DRM_GRALLOC),true)
 	LOCAL_SHARED_LIBRARIES += libgralloc_drm
 endif
 
-ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7),)
+ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7 9),)
 LOCAL_SHARED_LIBRARIES += libnativewindow
 endif
 

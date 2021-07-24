@@ -81,7 +81,7 @@ LOCAL_EXPORT_C_INCLUDE_DIRS := \
 	$(intermediates)/compiler
 
 LOCAL_SHARED_LIBRARIES := \
-	libdrm_amdgpu
+	libvmidrm_amdgpu
 
 LOCAL_STATIC_LIBRARIES := \
 	libmesa_amd_common \

@@ -75,7 +75,7 @@ LOCAL_SRC_FILES := \
 
 LOCAL_MODULE := libmesa_pipe_lima
 
-LOCAL_SHARED_LIBRARIES := libdrm
+LOCAL_SHARED_LIBRARIES := libvmidrm
 
 LOCAL_STATIC_LIBRARIES := \
 	libmesa_nir \

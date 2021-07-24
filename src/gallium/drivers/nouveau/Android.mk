@@ -44,7 +44,7 @@ LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/mesa
 
 LOCAL_STATIC_LIBRARIES := libmesa_nir
-LOCAL_SHARED_LIBRARIES := libdrm_nouveau
+LOCAL_SHARED_LIBRARIES := libvmidrm_nouveau
 LOCAL_MODULE := libmesa_pipe_nouveau
 
 include $(GALLIUM_COMMON_MK)

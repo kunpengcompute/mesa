@@ -84,7 +84,7 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 # sort GALLIUM_SHARED_LIBS to remove any duplicates
 LOCAL_SHARED_LIBRARIES += $(sort $(GALLIUM_SHARED_LIBS))
 
-ifneq ($(filter 5 6 7, $(MESA_ANDROID_MAJOR_VERSION)),)
+ifneq ($(filter 5 6 7 9, $(MESA_ANDROID_MAJOR_VERSION)),)
 LOCAL_POST_INSTALL_CMD := \
 	$(foreach l, lib $(if $(filter true,$(TARGET_IS_64_BIT)),lib64), \
 	  $(eval MESA_DRI_MODULE_PATH := $(TARGET_OUT_VENDOR)/$(l)/$(MESA_DRI_MODULE_REL_PATH)) \
