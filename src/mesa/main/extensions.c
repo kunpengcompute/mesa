@@ -200,6 +200,11 @@ _mesa_enable_sw_extensions(struct gl_context *ctx)
    ctx->Extensions.NV_primitive_restart = GL_TRUE;
    ctx->Extensions.OES_depth_texture_cube_map = GL_TRUE;
    ctx->Extensions.EXT_texture_type_2_10_10_10_REV = GL_TRUE;
+
+   ctx->Extensions.OES_compressed_ETC1_RGB8_texture = GL_TRUE;
+   ctx->Extensions.OES_texture_compression_astc = GL_TRUE;
+   ctx->Extensions.KHR_texture_compression_astc_ldr = GL_TRUE;
+   ctx->Extensions.EXT_texture_compression_s3tc = GL_TRUE;
 }
 
 /**
