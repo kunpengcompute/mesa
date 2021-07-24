@@ -1680,4 +1680,6 @@ void st_init_extensions(struct pipe_screen *screen,
       consts->SpirVExtensions = CALLOC_STRUCT(spirv_supported_extensions);
       _mesa_fill_supported_spirv_extensions(consts->SpirVExtensions, spirv_caps);
    }
+   extensions->EXT_robustness = GL_TRUE;
+   extensions->KHR_robustness = GL_TRUE;
 }
