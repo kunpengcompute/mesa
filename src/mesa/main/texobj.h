@@ -311,7 +311,9 @@ _mesa_GetTexImageSizeByTarget(GLuint texture, GLenum target, GLint level, GLuint
 void GLAPIENTRY      
 _mesa_GetSampleByTextureImageUnit(GLuint unit, GLuint *sample);
 
-
+void GLAPIENTRY
+_mesa_GetPixelStoreByTexHandle(GLuint texture, GLenum *target, GLint *alignment, GLint *rowLen, GLint *skipPixel,
+                               GLint *skipRows, GLint *imageHeight, GLint *skipImages);
 
 /*@}*/
 

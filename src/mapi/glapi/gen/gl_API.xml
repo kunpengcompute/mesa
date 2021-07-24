@@ -7764,6 +7764,17 @@
       <param name="params" type="GLint *" />      
    </function>
 
+    <function name="GetPixelStoreByTexHandle" es2="3.0">
+      <param name="texture" type="GLuint " />
+      <param name="target" type="GLenum *" />
+      <param name="alignment" type="GLint *" />
+      <param name="rowLen" type="GLint *" />
+      <param name="skipPixel" type="GLint *" />
+      <param name="skipRows" type="GLint *" />
+      <param name="imageHeight" type="GLint *" />
+      <param name="skipImages" type="GLint *" />
+   </function>
+
 </category>
 
 <category name="GL_ARB_occlusion_query" number="29">

@@ -3023,6 +3023,12 @@ teximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
    texObj->dims = dims;
    texObj->compressed = compressed;
    texObj->imageSize = imageSize;
+   texObj->unpackPixelStoreAttrib.Alignment = unpack->Alignment;
+   texObj->unpackPixelStoreAttrib.ImageHeight = unpack->ImageHeight;
+   texObj->unpackPixelStoreAttrib.RowLength = unpack->RowLength;
+   texObj->unpackPixelStoreAttrib.SkipImages = unpack->SkipImages;
+   texObj->unpackPixelStoreAttrib.SkipPixels = unpack->SkipPixels;
+   texObj->unpackPixelStoreAttrib.SkipRows = unpack->SkipRows;
 
    /* Here we convert a cpal compressed image into a regular glTexImage2D
     * call by decompressing the texture.  If we really want to support cpal

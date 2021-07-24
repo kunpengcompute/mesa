@@ -46,6 +46,7 @@
 #include "mtypes.h"
 #include "program/prog_instruction.h"
 #include "texturebindless.h"
+#include "glformats.h"
 
 
 
@@ -2515,8 +2516,18 @@ _mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dim
       *width = *height = 0;
       return;
    }
+   if (!texObj->compressed || texObj->type == GL_BITMAP) {
+      const GLint bytes_per_pixel = _mesa_bytes_per_pixel(texObj->format, texObj->type);
+      if (bytes_per_pixel <= 0) {
+         _mesa_warning(NULL, "Texture has wrong format %d type %d.", texObj->format, texObj->type);
+         return;
+      }
+      GLsizei image_row_len = _mesa_image_row_stride(&ctx->Pack, texImage->Width, texObj->format, texObj->type);
+      *width = image_row_len / bytes_per_pixel;
+   } else {
+      *width = texImage->Width;
+   }
    *internalFormat = texImage->InternalFormat;
-   *width = texImage->Width;
    *height = texImage->Height;
    *depth = texImage->Depth;
    *border = texImage->Border;
@@ -2575,8 +2586,18 @@ _mesa_GetTexImageInfoByTarget(GLboolean* compressed, GLuint* dims,
       *width = *height = 0;
       return;
    }
+   if (!texObj->compressed || texObj->type == GL_BITMAP) {
+      const GLint bytes_per_pixel = _mesa_bytes_per_pixel(texObj->format, texObj->type);
+      if (bytes_per_pixel <= 0) {
+         _mesa_warning(NULL, "Texture has wrong format %d type %d.", texObj->format, texObj->type);
+         return;
+      }
+      GLsizei image_row_len = _mesa_image_row_stride(&ctx->Pack, texImage->Width, texObj->format, texObj->type);
+      *width = image_row_len / bytes_per_pixel;
+   } else {
+      *width = texImage->Width;
+   }
    *internalFormat = texImage->InternalFormat;
-   *width = texImage->Width;
    *height = texImage->Height;
    *depth = texImage->Depth;
    *border = texImage->Border;
@@ -2621,13 +2642,11 @@ _mesa_GetTexImageSize(GLuint texture, GLenum target, GLint level, GLuint* bufSiz
    if (texObj->compressed) {
       _mesa_packed_compressed_size(texObj->dims, texImage->TexFormat,
                                        texImage->Width, texImage->Height, texImage->Depth,
-                                       &ctx->Pack, bufSize);
+                                       &ctx->Pack, (GLsizei *)bufSize);
    } else {
-      const uint32_t start = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
-                              texObj->format, texObj->type, 0, 0, 0);
-      const uint32_t end = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
-                             texObj->format, texObj->type, texImage->Depth-1, texImage->Height-1, texImage->Width);
-      *bufSize = end - start;
+      GLint imageSize = _mesa_image_image_stride(&ctx->Pack, texImage->Width, texImage->Height,
+                                                 texObj->format, texObj->type);
+      *bufSize = (GLuint)imageSize;
    }
 }
 
@@ -2657,13 +2676,11 @@ _mesa_GetTexImageSizeByTarget(GLuint texture, GLenum target, GLint level, GLuint
    if (texObj->compressed) {
       _mesa_packed_compressed_size(texObj->dims, texImage->TexFormat,
                                        texImage->Width, texImage->Height, texImage->Depth,
-                                       &ctx->Pack, bufSize);
+                                       &ctx->Pack, (GLsizei *)bufSize);
    } else {
-      const uint32_t start = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
-                              texObj->format, texObj->type, 0, 0, 0);
-      const uint32_t end = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
-                             texObj->format, texObj->type, texImage->Depth-1, texImage->Height-1, texImage->Width);
-      *bufSize = end - start;
+      GLint imageSize = _mesa_image_image_stride(&ctx->Pack, texImage->Width, texImage->Height,
+                                                 texObj->format, texObj->type);
+      *bufSize = (GLuint)imageSize;
    }
 }
 
@@ -2682,6 +2699,28 @@ _mesa_GetSampleByTextureImageUnit(GLuint unit, GLuint *sample)
    } else {
       *sample = curSampleObj->Name;
    }
+}
+
+void GLAPIENTRY
+_mesa_GetPixelStoreByTexHandle(GLuint texture, GLenum *target, GLint *alignment, GLint *rowLen, GLint *skipPixel,
+                               GLint *skipRows, GLint *imageHeight, GLint *skipImages)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_texture_object *texObj;
+   texObj = _mesa_lookup_texture(ctx, texture);
+   
+   if (!texObj) {
+      _mesa_warning(NULL, "Get Texture object:%u fail.", texture);
+      return;
+   }
+
+   *target = (GLenum)texObj->Target;
+   *alignment = texObj->unpackPixelStoreAttrib.Alignment;
+   *rowLen = texObj->unpackPixelStoreAttrib.RowLength;
+   *skipPixel = texObj->unpackPixelStoreAttrib.SkipPixels;
+   *skipRows  = texObj->unpackPixelStoreAttrib.SkipRows;
+   *imageHeight = texObj->unpackPixelStoreAttrib.ImageHeight;
+   *skipImages = texObj->unpackPixelStoreAttrib.SkipImages;
 }
 
 /*@}*/

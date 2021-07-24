@@ -944,6 +944,15 @@ struct gl_sampler_object
    struct util_dynarray Handles;
 };
 
+struct gl_restore_pixelstore_attrib
+{
+   GLint Alignment;
+   GLint RowLength;
+   GLint SkipPixels;
+   GLint SkipRows;
+   GLint ImageHeight;
+   GLint SkipImages;
+};
 
 /**
  * Texture object state.  Contains the array of mipmap images, border color,
@@ -1022,6 +1031,7 @@ struct gl_texture_object
    GLboolean compressed;
    GLsizei imageSize;
 
+   struct gl_restore_pixelstore_attrib unpackPixelStoreAttrib;
 };
 
 
