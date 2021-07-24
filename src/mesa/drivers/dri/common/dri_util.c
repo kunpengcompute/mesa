@@ -164,7 +164,7 @@ driCreateNewScreen2(int scrn, int fd,
 
     api = API_OPENGLES2;
     if (_mesa_override_gl_version_contextless(&consts, &api, &version))
-       psp->max_gl_es2_version = version;
+       psp->max_gl_es2_version = 30;
 
     api = API_OPENGL_COMPAT;
     if (_mesa_override_gl_version_contextless(&consts, &api, &version)) {

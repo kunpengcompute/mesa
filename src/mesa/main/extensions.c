@@ -36,6 +36,7 @@
 #include "extensions.h"
 #include "macros.h"
 #include "mtypes.h"
+#include <log/log.h>
 
 struct gl_extensions _mesa_extension_override_enables;
 struct gl_extensions _mesa_extension_override_disables;
@@ -184,6 +185,21 @@ _mesa_enable_sw_extensions(struct gl_context *ctx)
    ctx->Extensions.TDFX_texture_compression_FXT1 = GL_TRUE;
    ctx->Extensions.ANGLE_texture_compression_dxt = GL_TRUE;
    ctx->Extensions.EXT_texture_compression_s3tc = GL_TRUE;
+   ctx->Extensions.ARB_ES3_compatibility = GL_TRUE;
+   ctx->Extensions.ARB_internalformat_query = GL_TRUE;
+   ctx->Extensions.ARB_shader_texture_lod = GL_TRUE;
+   ctx->Extensions.OES_texture_float = GL_TRUE;
+   ctx->Extensions.OES_texture_half_float = GL_TRUE;
+   ctx->Extensions.OES_texture_half_float_linear = GL_TRUE;
+   ctx->Extensions.ARB_depth_buffer_float = GL_TRUE;
+   ctx->Extensions.EXT_sRGB = GL_TRUE;
+   ctx->Extensions.EXT_packed_float = GL_TRUE;
+   ctx->Extensions.EXT_transform_feedback = GL_TRUE;
+   ctx->Extensions.ARB_uniform_buffer_object = GL_TRUE;
+   ctx->Extensions.EXT_texture_snorm = GL_TRUE;
+   ctx->Extensions.NV_primitive_restart = GL_TRUE;
+   ctx->Extensions.OES_depth_texture_cube_map = GL_TRUE;
+   ctx->Extensions.EXT_texture_type_2_10_10_10_REV = GL_TRUE;
 }
 
 /**

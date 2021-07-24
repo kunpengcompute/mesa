@@ -7577,6 +7577,11 @@
         <param name="target" type="GLenum"/>
         <return type="GLboolean"/>
     </function>
+    
+    <function name="GetBuffer" es2="3.0">
+        <param name="target" type="GLenum"/>
+        <return type="GLuint"/>
+    </function>
 </category>
 
 <category name="GL_ARB_occlusion_query" number="29">

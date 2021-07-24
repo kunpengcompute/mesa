@@ -47,6 +47,7 @@
 #include "transformfeedback.h"
 #include "varray.h"
 #include "util/u_atomic.h"
+#include "log/log.h"
 
 
 /* Debug flags */
@@ -3375,12 +3376,15 @@ _mesa_MapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length,
    }
 
    bufObj = get_buffer(ctx, "glMapBufferRange", target, GL_INVALID_OPERATION);
-   if (!bufObj)
+   if (!bufObj) {
       return NULL;
+   }
 
    if (!validate_map_buffer_range(ctx, bufObj, offset, length, access,
-                                  "glMapBufferRange"))
+                                  "glMapBufferRange")) {
       return NULL;
+   }
+      
 
    return map_buffer_range(ctx, bufObj, offset, length, access,
                            "glMapBufferRange");
@@ -4920,4 +4924,35 @@ _mesa_NamedBufferPageCommitmentARB(GLuint buffer, GLintptr offset,
 
    buffer_page_commitment(ctx, bufferObj, offset, size, commit,
                           "glNamedBufferPageCommitmentARB");
+}
+
+GLuint GLAPIENTRY
+_mesa_GetBuffer(GLenum target)
+{
+    GET_CURRENT_CONTEXT(ctx);
+    if (!ctx) {
+        return 0;
+    }
+    struct gl_buffer_object *bufObjPtr;
+    switch (target) {
+        case GL_PIXEL_UNPACK_BUFFER: {
+            bufObjPtr = ctx->Unpack.BufferObj;
+            break;
+        }
+        case GL_ELEMENT_ARRAY_BUFFER: {
+            bufObjPtr = ctx->Array.VAO->IndexBufferObj;
+            break;
+        }
+        case GL_ARRAY_BUFFER: {
+            bufObjPtr = ctx->Array.ArrayBufferObj;
+            break;
+        }
+        
+        default: {
+            return 0;
+            break;
+        }
+    }
+    ALOGI("bufobj name is :0x%x, target: 0x%x", bufObjPtr->Name, target);
+    return bufObjPtr ? bufObjPtr->Name : 0;
 }

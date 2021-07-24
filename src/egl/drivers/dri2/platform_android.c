@@ -412,7 +412,10 @@ droid_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
       //  */
       // buffer_count = CLAMP(preferred_buffer_count, min_buffer_count + 1,
       //                      max_buffer_count);
-      buffer_count = preferred_buffer_count;
+      buffer_count = min_buffer_count + 1;
+      if (buffer_count < preferred_buffer_count) {
+         buffer_count = preferred_buffer_count;
+      }
       if (native_window_set_buffer_count(window, buffer_count)) {
          _eglError(EGL_BAD_NATIVE_WINDOW, "droid_create_surface");
          goto cleanup_surface;

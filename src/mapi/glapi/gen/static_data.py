@@ -1597,6 +1597,7 @@ offsets = {
     "GenerateMultiTexMipmapEXT": 1561,
     "NamedRenderbufferStorageMultisampleEXT": 1562,
     "NamedCopyBufferSubDataEXT": 1563,
+    "GetBuffer": 1564,
 }
 
 functions = [
@@ -2897,6 +2898,7 @@ functions = [
     "WindowPos3sARB",
     "WindowPos3sv",
     "WindowPos3svARB",
+    "GetBuffer",
 ]
 
 """Functions that need dispatch slots but are not used

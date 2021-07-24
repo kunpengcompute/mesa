@@ -446,4 +446,8 @@ void GLAPIENTRY
 _mesa_NamedBufferPageCommitmentARB(GLuint buffer, GLintptr offset,
                                    GLsizeiptr size, GLboolean commit);
 
+GLuint GLAPIENTRY
+_mesa_GetBuffer(GLenum target);
+
+
 #endif

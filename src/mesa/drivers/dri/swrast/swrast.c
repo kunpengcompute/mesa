@@ -67,7 +67,7 @@
 # include <sys/sysctl.h>
 #endif
 
-const __DRIextension **__driDriverGetExtensions_swrast(void);
+const __DRIextension **__driDriverGetExtensions_libswrast1(void);
 
 const char * const swrast_vendor_string = "Mesa Project";
 const char * const swrast_renderer_string = "Software Rasterizer";
@@ -980,7 +980,7 @@ static const __DRIextension *swrast_driver_extensions[] = {
     NULL
 };
 
-PUBLIC const __DRIextension **__driDriverGetExtensions_swrast(void)
+PUBLIC const __DRIextension **__driDriverGetExtensions_libswrast1(void)
 {
    globalDriverAPI = &swrast_driver_api;
 
