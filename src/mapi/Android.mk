@@ -47,6 +47,9 @@ LOCAL_CFLAGS := \
 	-DMAPI_MODE_GLAPI \
 	-DMAPI_ABI_HEADER=\"$(abi_header)\"
 
+LOCAL_CFLAGS   += -fstack-protector-strong --param ssp-buffer-size=4 -fPIE -pie -D_FORTIFY_SOURCE=2 -O2 -fPIC -Wformat
+LOCAL_CPPFLAGS := -fstack-protector-strong --param ssp-buffer-size=4 -fPIE -pie -D_FORTIFY_SOURCE=2 -O2 -fPIC -Wformat
+
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/mapi
 
@@ -66,7 +69,6 @@ mapi_abi_headers += $(abi_header)
 
 include $(MESA_COMMON_MK)
 include $(BUILD_SHARED_LIBRARY)
-
 
 mapi_abi_deps := \
 	$(wildcard $(LOCAL_PATH)/glapi/gen/*.py) \
