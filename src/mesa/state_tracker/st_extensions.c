@@ -439,6 +439,7 @@ void st_init_limits(struct pipe_screen *screen,
          c->Program[MESA_SHADER_GEOMETRY].MaxUniformBlocks +
          c->Program[MESA_SHADER_FRAGMENT].MaxUniformBlocks +
          c->Program[MESA_SHADER_COMPUTE].MaxUniformBlocks;
+      c->MaxCombinedUniformBlocks = c->MaxUniformBufferBindings = 72;
       assert(c->MaxCombinedUniformBlocks <= MAX_COMBINED_UNIFORM_BUFFERS);
    }
 
@@ -1682,4 +1683,5 @@ void st_init_extensions(struct pipe_screen *screen,
    }
    extensions->EXT_robustness = GL_TRUE;
    extensions->KHR_robustness = GL_TRUE;
+   extensions->OES_texture_compression_astc = GL_TRUE;
 }

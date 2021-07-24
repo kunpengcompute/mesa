@@ -436,9 +436,6 @@ softpipe_is_format_supported( struct pipe_screen *screen,
    if (!format_desc)
       return false;
 
-   if (sample_count > 1)
-      return false;
-
    if (bind & (PIPE_BIND_DISPLAY_TARGET |
                PIPE_BIND_SCANOUT |
                PIPE_BIND_SHARED)) {
