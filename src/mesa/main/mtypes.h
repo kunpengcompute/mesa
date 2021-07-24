@@ -1014,6 +1014,14 @@ struct gl_texture_object
    /** GL_ARB_bindless_texture */
    struct util_dynarray SamplerHandles;
    struct util_dynarray ImageHandles;
+
+   GLuint dims;
+   GLint CreateLevel;
+   GLenum format; 
+   GLenum type;
+   GLboolean compressed;
+   GLsizei imageSize;
+   
 };
 
 

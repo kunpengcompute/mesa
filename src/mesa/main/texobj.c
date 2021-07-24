@@ -39,6 +39,7 @@
 #include "macros.h"
 #include "shaderimage.h"
 #include "teximage.h"
+#include "texgetimage.h"
 #include "texobj.h"
 #include "texstate.h"
 #include "mtypes.h"
@@ -2392,4 +2393,146 @@ _mesa_InvalidateTexImage(GLuint texture, GLint level)
    return;
 }
 
+/**
+ 
+ * 获取 Texture 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 buffer + 1
+*/
+
+void GLAPIENTRY
+_mesa_GetTextureNum(GLuint *texture_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!texture_num) {
+      _mesa_warning(NULL, "input NULL texture_num");
+      return;
+ 
+   }
+ 
+   
+   _mesa_HashLockMutex(ctx->Shared->TexObjects);
+   *texture_num = _mesa_HashNumEntries(ctx->Shared->TexObjects);
+   _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
+}
+
+static GLuint g_texture_array_index = 0;
+static void
+save_texture_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+  
+    GLuint *texture_array = (GLuint *)userData;
+    if (_mesa_IsTexture(key)) {
+      texture_array[g_texture_array_index++] = key;
+   }
+
+}
+
+
+/**
+ 
+ * 获取 buffer 的数组
+ * count：buffer_array 的长度
+ * buffer_num：实际获取的长度
+ * buffer_array：输出的 buffer 的数组
+*/
+
+void GLAPIENTRY
+_mesa_GetTextureArray(GLuint count, GLuint *texture_num, GLuint *texture_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!texture_num || !texture_array) {
+      _mesa_warning(NULL, "input NULL texture_num or texture_array");
+      return;
+ 
+   }
+ 
+  
+    _mesa_HashLockMutex(ctx->Shared->TexObjects);
+    *texture_num = _mesa_HashNumEntries(ctx->Shared->TexObjects);
+   if (count < *texture_num) {
+      *texture_num = 0;
+      _mesa_warning(NULL, "Lack of space for all texture array");
+      _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
+      return; 
+ 
+   }
+
+    g_texture_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->TexObjects, save_texture_array_entry, texture_array);
+   *texture_num = g_texture_array_index;
+  
+    _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
+}
+
+/*
+ *  texture 的 bufSize 需要借助 VmiPixelDataAlignment 来计算
+ *  compressed 为真时，是压缩纹理，imageSize 有效，format/type 无效
+ *  compressed 为假时，非压缩纹理，format/type 有效，imageSize 无效
+ */
+void GLAPIENTRY
+_mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,          
+         GLenum* target, GLint* level, GLint* internalFormat,
+         GLsizei* width, GLsizei* height, GLint* border, GLenum* format, GLenum* type,
+         GLuint bufSize, GLsizei* imageSize, GLvoid *pixels)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_texture_object *texObj;
+   texObj = _mesa_lookup_texture(ctx, texture);
+   
+   if (!texObj) {
+      _mesa_warning(NULL, "Get Texture object:%u fail.", texture);
+      *width = *height = 0;
+      return;
+   }
+   
+   *dims = texObj->dims;
+   *target = texObj->Target;
+   *level = texObj->CreateLevel;
+   *compressed = texObj->compressed;
+   if (*compressed) {
+      *imageSize = texObj->imageSize;
+      *format = 0;
+      *type = 0;
+   } else {
+      *imageSize = 0;
+      *format = texObj->format;
+      *type = texObj->type;
+   }
+   
+   const struct gl_texture_image *texImage = NULL;
+   if (*level < 0 && *level >= MAX_TEXTURE_LEVELS) {
+      _mesa_warning(NULL, "Texture level:%u has wrong value.", *level);
+      *width = *height = 0;
+      return;
+   }
+   texImage = _mesa_select_tex_image(texObj, *target, *level);
+   if (texImage) {
+      *internalFormat = texImage->InternalFormat;
+      *width = texImage->Width;
+      *height = texImage->Height;
+      *border = texImage->Border;
+   }
+
+   if (_mesa_is_zero_size_texture(texImage)) {
+      _mesa_warning(NULL, "Texture size:%u is zero, width:%d, heigh:%d.", texture, *width, *height);
+      return;
+   }
+
+   if (pixels) {
+      if (*compressed) {
+         _mesa_GetCompressedTextureImage(texture, *level, bufSize, pixels);
+      } else {
+         _mesa_GetTextureImage(texture, *level, *format, *type, bufSize, pixels);
+      }
+   }
+}
+
 /*@}*/
+
+
+
+

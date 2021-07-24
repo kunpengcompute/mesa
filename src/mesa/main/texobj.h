@@ -284,6 +284,19 @@ _mesa_InvalidateTexImage_no_error(GLuint texture, GLint level);
 extern void GLAPIENTRY
 _mesa_InvalidateTexImage(GLuint texture, GLint level);
 
+void GLAPIENTRY
+_mesa_GetTextureNum(GLuint *texture_num);
+
+void GLAPIENTRY
+_mesa_GetTextureArray(GLuint count, GLuint *texture_num, GLuint *texture_array);
+
+void GLAPIENTRY
+_mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,          
+         GLenum* target, GLint* level, GLint* internalFormat,
+         GLsizei* width, GLsizei* height, GLint* border, GLenum* format, GLenum* type,
+         GLuint bufSize, GLsizei* imageSize, GLvoid *pixels);
+
+
 /*@}*/
 
 
