@@ -1590,6 +1590,7 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *disp)
    disp->Extensions.ANDROID_recordable = EGL_TRUE;
    disp->Extensions.EXT_buffer_age = EGL_TRUE;
    disp->Extensions.KHR_image = EGL_TRUE;
+   disp->Extensions.KHR_wait_sync = EGL_TRUE;
 #if ANDROID_API_LEVEL >= 24
    if (dri2_dpy->mutable_render_buffer &&
        dri2_dpy->loader_extensions == droid_image_loader_extensions) {
