@@ -1351,3 +1351,90 @@ _mesa_GetVertexArrayiv(GLuint vaobj, GLenum pname, GLint *param)
 
    param[0] = vao->IndexBufferObj->Name;
 }
+
+/**
+ * 获取 VertexArray 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 VertexArray + 1
+ */
+void GLAPIENTRY
+_mesa_GetVertexArrayNum(GLuint *vertex_array_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!vertex_array_num) {
+      _mesa_warning(NULL, "input NULL vertex_array_num");
+      return;
+   }
+   
+   _mesa_HashLockMutex(ctx->Array.Objects);
+   *vertex_array_num = _mesa_HashNumEntries(ctx->Array.Objects);
+   _mesa_HashUnlockMutex(ctx->Array.Objects);
+}
+
+static GLuint g_vertex_array_index = 0;
+static void
+save_vertex_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+   
+   GLuint *vertex_array = (GLuint *)userData;
+
+   if (_mesa_IsVertexArray(key)) {
+      vertex_array[g_vertex_array_index++] = key;
+   }
+}
+
+/**
+ * 获取 VertexArray 的数组
+ * count：vertex_array 的长度
+ * vertex_array_num：实际获取的长度
+ * vertex_array：输出的 vertex_array 的数组
+ */
+void GLAPIENTRY
+_mesa_GetVertexArray(GLuint count, GLuint *vertex_array_num, GLuint *vertex_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!vertex_array_num || !vertex_array) {
+      _mesa_warning(NULL, "input NULL vertex_array_num or vertex_array");
+      return;
+   }
+   
+   _mesa_HashLockMutex(ctx->Array.Objects);
+
+   *vertex_array_num = _mesa_HashNumEntries(ctx->Array.Objects);
+   if (count < *vertex_array_num) {
+      *vertex_array_num = 0;
+      _mesa_warning(NULL, "Lack of space for all vertex array");
+      _mesa_HashUnlockMutex(ctx->Array.Objects);
+      return; 
+   }
+
+   g_vertex_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Array.Objects, save_vertex_array_entry, vertex_array);
+   *vertex_array_num = g_vertex_array_index;
+   
+   _mesa_HashUnlockMutex(ctx->Array.Objects);
+}
+
+/**
+ * 查询当前绑定的 VertexArray
+ */
+void GLAPIENTRY
+_mesa_GetCurrentVertexArray(GLuint *vertex_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!vertex_array) {
+      _mesa_warning(NULL, "input NULL vertex_array");
+      return;
+   }
+
+   struct gl_vertex_array_object *const currectObj = ctx->Array.VAO;
+   if (currectObj) {
+      *vertex_array = currectObj->Name;
+   } else {
+      *vertex_array = ctx->Array.DefaultVAO->Name;
+   }
+}
+
