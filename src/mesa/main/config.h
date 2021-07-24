@@ -109,7 +109,7 @@
 /**
  * Maximum number of layers in a 1D or 2D array texture - GL_MESA_texture_array
  */
-#define MAX_ARRAY_TEXTURE_LAYERS 64
+#define MAX_ARRAY_TEXTURE_LAYERS 256 // Fix WebView white screen under gl3.0
 
 /**
  * Max number of texture coordinate units.  This mainly just applies to
