@@ -1393,10 +1393,11 @@ swrast_get_drawable_info(__DRIdrawable * draw,
                       int *x, int *y, int *w, int *h,
                       void *loaderPrivate)
 {
+   struct dri2_egl_surface *dri2_surf = loaderPrivate;
    *x = 0;
    *y = 0;
-   *w = 720;
-   *h = 1280;
+   *w = dri2_surf->base.Width;
+   *h = dri2_surf->base.Height;
 }
 
 static void
