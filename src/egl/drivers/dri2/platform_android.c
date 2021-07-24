@@ -402,21 +402,24 @@ droid_create_surface(_EGLDriver *drv, _EGLDisplay *disp, EGLint type,
       /* Query for maximum buffer count, application can set this
        * to limit the total amount of buffers.
        */
-      // if (window->query(window, 21,
-      //                   &max_buffer_count)) {
-      //    _eglError(EGL_BAD_NATIVE_WINDOW, "droid_create_surface");
-      //    goto cleanup_surface;
-      // }
+#if ANDROID_API_LEVEL >= 26
+      if (window->query(window, 21,
+                        &max_buffer_count)) {
+         _eglError(EGL_BAD_NATIVE_WINDOW, "droid_create_surface");
+         goto cleanup_surface;
+      }
 
-      // /* Clamp preferred between minimum (min undequeued + 1 dequeued)
-      //  * and maximum.
-      //  */
-      // buffer_count = CLAMP(preferred_buffer_count, min_buffer_count + 1,
-      //                      max_buffer_count);
+      /* Clamp preferred between minimum (min undequeued + 1 dequeued)
+       * and maximum.
+       */
+      buffer_count = CLAMP(preferred_buffer_count, min_buffer_count + 1,
+                           max_buffer_count);
+#else
       buffer_count = min_buffer_count + 1;
       if (buffer_count < preferred_buffer_count) {
          buffer_count = preferred_buffer_count;
       }
+#endif
       if (native_window_set_buffer_count(window, buffer_count)) {
          _eglError(EGL_BAD_NATIVE_WINDOW, "droid_create_surface");
          goto cleanup_surface;
