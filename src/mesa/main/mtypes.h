@@ -4382,6 +4382,7 @@ struct gl_extensions
    GLboolean NV_conservative_raster_pre_snap_triangles;
    GLboolean NV_conservative_raster_pre_snap;
    GLboolean NVX_gpu_memory_info;
+   GLboolean NV_fbo_color_attachments;
    GLboolean TDFX_texture_compression_FXT1;
    GLboolean OES_EGL_image;
    GLboolean OES_draw_texture;
