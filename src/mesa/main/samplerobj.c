@@ -1695,3 +1695,81 @@ _mesa_init_sampler_object_functions(struct dd_function_table *driver)
 {
    driver->NewSamplerObject = _mesa_new_sampler_object;
 }
+
+
+
+/**
+ 
+ * 获取 sampler 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 sampler + 1
+*/
+
+void GLAPIENTRY
+_mesa_GetSamplerNum(GLuint *sampler_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!sampler_num) {
+      _mesa_warning(NULL, "input NULL sampler_num");
+      return;
+ 
+   }
+ 
+   
+   _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
+   *sampler_num = _mesa_HashNumEntries(ctx->Shared->SamplerObjects);
+   _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
+}
+
+static GLuint g_sampler_array_index = 0;
+static void
+save_sampler_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+  
+    GLuint *sampler_array = (GLuint *)userData;
+    if (_mesa_IsSampler(key)) {
+      sampler_array[g_sampler_array_index++] = key;
+   }
+
+}
+
+
+/**
+ 
+ * 获取 buffer 的数组
+ * count：buffer_array 的长度
+ * buffer_num：实际获取的长度
+ * buffer_array：输出的 buffer 的数组
+*/
+
+void GLAPIENTRY
+_mesa_GetSamplerArray(GLuint count, GLuint *sampler_num, GLuint *sampler_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!sampler_num || !sampler_array) {
+      _mesa_warning(NULL, "input NULL sampler_num or sampler_array");
+      return;
+ 
+   }
+ 
+  
+    _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
+    *sampler_num = _mesa_HashNumEntries(ctx->Shared->SamplerObjects);
+   if (count < *sampler_num) {
+      *sampler_num = 0;
+      _mesa_warning(NULL, "Lack of space for all sampler array");
+      _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
+      return; 
+ 
+   }
+
+    g_sampler_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->SamplerObjects, save_sampler_array_entry, sampler_array);
+   *sampler_num = g_sampler_array_index;
+  
+    _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
+}
+
+

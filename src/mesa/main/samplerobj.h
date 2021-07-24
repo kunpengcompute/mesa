@@ -149,6 +149,12 @@ _mesa_GetSamplerParameterIiv(GLuint sampler, GLenum pname, GLint *params);
 void GLAPIENTRY
 _mesa_GetSamplerParameterIuiv(GLuint sampler, GLenum pname, GLuint *params);
 
+void GLAPIENTRY
+_mesa_GetSamplerNum(GLuint *sampler_num);
+void GLAPIENTRY
+_mesa_GetSamplerArray(GLuint count, GLuint *sampler_num, GLuint *sampler_array);
+
+
 #ifdef __cplusplus
 }
 #endif
