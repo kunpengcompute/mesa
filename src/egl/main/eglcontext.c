@@ -787,7 +787,7 @@ _eglCheckMakeCurrent(_EGLContext *ctx, _EGLSurface *draw, _EGLSurface *read)
    if (ctx->Config) {
       if ((draw && draw->Config != ctx->Config) ||
           (read && read->Config != ctx->Config))
-         return _eglError(EGL_BAD_MATCH, "eglMakeCurrent444");
+         return _eglError(EGL_BAD_MATCH, "eglMakeCurrent");
    } else {
       /* Otherwise we must be using the EGL_KHR_no_config_context
        * extension */

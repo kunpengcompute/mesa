@@ -1625,6 +1625,8 @@ offsets = {
     "GetFramebufferAttachmentParameterivByName": 1589,
     "GetDrawBuffers": 1590,
     "GetReadBuffer": 1591,
+    "GetRenderbufferParameterByName": 1592,
+    "GetTextureParameterByName": 1593,
 }
 
 functions = [
@@ -2953,6 +2955,8 @@ functions = [
     "GetFramebufferAttachmentParameterivByName",
     "GetDrawBuffers",
     "GetReadBuffer",
+    "GetRenderbufferParameterByName",
+    "GetTextureParameterByName",
 ]
 
 """Functions that need dispatch slots but are not used

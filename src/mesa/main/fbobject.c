@@ -5597,3 +5597,21 @@ _mesa_GetReadBuffer(GLuint framebuffer, GLenum *src)
    }
    *src = buffer->ColorReadBuffer;
 }
+
+void GLAPIENTRY
+_mesa_GetRenderbufferParameterByName(GLuint renderbuffer, GLenum pname,
+                                      GLint *params)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_renderbuffer *rb = _mesa_lookup_renderbuffer(ctx, renderbuffer);
+   if (!rb || rb == &DummyRenderbuffer) {
+      /* ID was reserved, but no real renderbuffer object made yet */
+      _mesa_error(ctx, GL_INVALID_OPERATION, "glGetNamedRenderbufferParameteriv"
+                  "(invalid renderbuffer %i)", renderbuffer);
+      return;
+   }
+
+   get_render_buffer_parameteriv(ctx, rb, pname, params,
+                                 "VmiGetRenderbufferParameterByName");
+}

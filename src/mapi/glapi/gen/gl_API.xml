@@ -7750,6 +7750,18 @@
       <param name="src" type="GLenum *" />
    </function>
 
+    <function name="GetRenderbufferParameterByName" es2="3.0">
+      <param name="renderbuffer" type="GLuint " />
+      <param name="pname" type="GLenum" />
+      <param name="params" type="GLint *" />      
+   </function>
+
+    <function name="GetTextureParameterByName" es2="3.0">
+      <param name="texture" type="GLuint " />
+      <param name="pname" type="GLenum" />
+      <param name="params" type="GLint *" />      
+   </function>
+
 </category>
 
 <category name="GL_ARB_occlusion_query" number="29">

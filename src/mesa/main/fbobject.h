@@ -475,4 +475,7 @@ _mesa_GetDrawBuffers(GLuint framebuffer, GLsizei *n, GLenum *bufs);
 extern void GLAPIENTRY
 _mesa_GetReadBuffer(GLuint framebuffer, GLenum *src);
 
+extern void GLAPIENTRY
+_mesa_GetRenderbufferParameterByName(GLuint renderbuffer, GLenum pname,
+                                     GLint *params);
 #endif /* FBOBJECT_H */
