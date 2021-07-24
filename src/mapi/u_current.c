@@ -285,9 +285,14 @@ u_current_get_table_internal(void)
 #if defined(USE_ELF_TLS)
    return u_current_table;
 #else
+   struct _glapi_table * ret = NULL;
    if (ThreadSafe)
-      return (struct _glapi_table *) tss_get(u_current_table_tsd);
+      ret = (struct _glapi_table *) tss_get(u_current_table_tsd);
    else
-      return (struct _glapi_table *) u_current_table;
+      ret = (struct _glapi_table *) u_current_table;
+   if (ret == NULL) {
+      ret = (struct _glapi_table *) table_noop_array;
+   }
+   return ret;
 #endif
 }
