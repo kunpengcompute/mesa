@@ -255,8 +255,6 @@ swrastFillInModes(__DRIscreen *psp,
 
     msaa_samples_array[0] = 0;
     msaa_samples_array[1] = 4;
-    msaa_samples_array[2] = 8;
-    msaa_samples_array[3] = 16;
 
     depth_buffer_factor = 4;
     back_buffer_factor = 2;
@@ -280,7 +278,7 @@ swrastFillInModes(__DRIscreen *psp,
     configs = driCreateConfigs(format,
 			       depth_bits_array, stencil_bits_array,
 			       depth_buffer_factor, back_buffer_modes,
-			       back_buffer_factor, msaa_samples_array, 4,
+			       back_buffer_factor, msaa_samples_array, 2,
 			       GL_TRUE, GL_FALSE, GL_FALSE);
     if (configs == NULL) {
 	fprintf(stderr, "[%s:%u] Error creating FBConfig!\n", __func__,

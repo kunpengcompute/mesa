@@ -570,6 +570,7 @@ dri2_add_config(_EGLDisplay *disp, const __DRIconfig *dri_config, int id,
       base.BindToTextureRGB = bind_to_texture_rgb;
       if (base.AlphaSize > 0)
          base.BindToTextureRGBA = bind_to_texture_rgba;
+         base.BindToTextureRGB = 0;
    }
 
    if (double_buffer) {
