@@ -71,7 +71,7 @@ output_if_debug(const char *prefixString, const char *outputString,
       debug = getenv("MESA_DEBUG") != NULL;
 #endif
    }
-   // ALOGE("mesa %s", outputString);
+   ALOGE("mesa %s", outputString);
    /* Now only print the string if we're required to do so. */
    if (debug) {
       if (prefixString)

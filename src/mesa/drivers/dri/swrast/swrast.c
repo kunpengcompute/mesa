@@ -206,11 +206,16 @@ static const __DRI2rendererQueryExtension swrast_query_renderer_extension = {
    .queryString         = swrast_query_renderer_string
 };
 
+static const __DRIrobustnessExtension dri2Robustness = {
+   .base = { __DRI2_ROBUSTNESS, 1 }
+};
+
 static const __DRIextension *dri_screen_extensions[] = {
     &swrastTexBufferExtension.base,
     &swrast_query_renderer_extension.base,
     &dri2ConfigQueryExtension.base,
     &dri2NoErrorExtension.base,
+    &dri2Robustness.base,
     NULL
 };
 

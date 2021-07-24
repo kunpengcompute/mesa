@@ -493,6 +493,9 @@ driContextSetFlags(struct gl_context *ctx, uint32_t flags)
     }
     if ((flags & __DRI_CTX_FLAG_NO_ERROR) != 0)
         ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_NO_ERROR_BIT_KHR;
+    if ((flags & __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS) != 0) {
+        ctx->Const.RobustAccess |= GL_CONTEXT_FLAG_ROBUST_ACCESS_BIT_ARB;
+    }
 }
 
 static __DRIcontext *
