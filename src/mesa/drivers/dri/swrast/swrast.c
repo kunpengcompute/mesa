@@ -258,10 +258,10 @@ swrastFillInModes(__DRIscreen *psp,
 	format = MESA_FORMAT_B5G6R5_UNORM;
 	break;
     case 24:
-        format = MESA_FORMAT_B8G8R8X8_UNORM;
+        format = MESA_FORMAT_R8G8B8X8_UNORM;
 	break;
     case 32:
-	format = MESA_FORMAT_B8G8R8A8_UNORM;
+	format = MESA_FORMAT_R8G8B8A8_UNORM;
 	break;
     default:
 	fprintf(stderr, "[%s:%u] bad depth %d\n", __func__, __LINE__,

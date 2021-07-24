@@ -556,11 +556,11 @@ loader_open_driver(const char *driver_name,
 
       len = next - p;
 #if USE_ELF_TLS
-      snprintf(path, sizeof(path), "%.*s/tls/%s_dri.so", len, p, driver_name);
+      snprintf(path, sizeof(path), "%.*s/tls/lib%s1_dri.so", len, p, driver_name);
       driver = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
 #endif
       if (driver == NULL) {
-         snprintf(path, sizeof(path), "%.*s/%s_dri.so", len, p, driver_name);
+         snprintf(path, sizeof(path), "%.*s/lib%s1_dri.so", len, p, driver_name);
          driver = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
          if (driver == NULL)
             log_(_LOADER_DEBUG, "MESA-LOADER: failed to open %s: %s\n",
