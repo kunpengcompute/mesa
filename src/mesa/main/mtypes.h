@@ -1017,11 +1017,11 @@ struct gl_texture_object
 
    GLuint dims;
    GLint CreateLevel;
-   GLenum format; 
+   GLenum format;
    GLenum type;
    GLboolean compressed;
    GLsizei imageSize;
-   
+
 };
 
 
@@ -4406,6 +4406,7 @@ struct gl_extensions
    GLboolean OES_texture_compression_astc;
    GLboolean extension_sentinel;
    GLboolean EXT_color_buffer_float;
+   GLboolean OES_vertex_array_object;
    /** The extension string */
    const GLubyte *String;
    /** Number of supported extensions */

@@ -212,7 +212,9 @@ _mesa_enable_sw_extensions(struct gl_context *ctx)
 
    ctx->Extensions.EXT_robustness = GL_TRUE;
    ctx->Extensions.KHR_robustness = GL_TRUE;
+   ctx->Extensions.OES_EGL_image = GL_TRUE;
    ctx->Extensions.OES_EGL_image_external = GL_TRUE;
+   ctx->Extensions.OES_vertex_array_object = GL_TRUE;
 }
 
 /**
