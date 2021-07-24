@@ -321,6 +321,84 @@ dri_fill_in_modes(struct dri_screen *screen)
    return (const __DRIconfig **)configs;
 }
 
+static __DRIconfig **
+swrastFillInModes(
+		  unsigned pixel_bits, unsigned depth_bits,
+		  unsigned stencil_bits, GLboolean have_back_buffer)
+{
+    __DRIconfig **configs;
+    unsigned depth_buffer_factor;
+    unsigned back_buffer_factor;
+    mesa_format format;
+
+    static const GLenum back_buffer_modes[] = {
+	__DRI_ATTRIB_SWAP_NONE, __DRI_ATTRIB_SWAP_UNDEFINED
+    };
+
+    uint8_t depth_bits_array[4];
+    uint8_t stencil_bits_array[4];
+    uint8_t msaa_samples_array[4];
+
+    (void) have_back_buffer;
+
+    depth_bits_array[0] = 0;
+    depth_bits_array[1] = depth_bits;
+
+    /* Just like with the accumulation buffer, always provide some modes
+     * with a stencil buffer.
+     */
+    stencil_bits_array[0] = 0;
+    stencil_bits_array[1] = stencil_bits;
+
+    msaa_samples_array[0] = 0;
+    msaa_samples_array[1] = 4;
+
+    depth_buffer_factor = 2;
+    back_buffer_factor = 2;
+
+    switch (pixel_bits) {
+    case 16:
+	format = MESA_FORMAT_B5G6R5_UNORM;
+	break;
+    case 24:
+        format = MESA_FORMAT_R8G8B8X8_UNORM;
+	break;
+    case 32:
+	format = MESA_FORMAT_R8G8B8A8_UNORM;
+	break;
+    default:
+	fprintf(stderr, "[%s:%u] bad depth %d\n", __func__, __LINE__,
+		pixel_bits);
+	return NULL;
+    }
+
+    configs = driCreateConfigs(format,
+			       depth_bits_array, stencil_bits_array,
+			       depth_buffer_factor, back_buffer_modes,
+			       back_buffer_factor, msaa_samples_array, 2,
+			       GL_TRUE, GL_FALSE, GL_FALSE);
+    if (configs == NULL) {
+	fprintf(stderr, "[%s:%u] Error creating FBConfig!\n", __func__,
+		__LINE__);
+	return NULL;
+    }
+
+    return configs;
+}
+
+static const __DRIconfig **
+dri_fill_in_modes2(struct dri_screen *screen)
+{
+   __DRIconfig **configs16, **configs24, **configs32;
+   configs16 = swrastFillInModes(16, 24, 8, 1);
+   configs24 = swrastFillInModes(24, 24, 8, 1);
+   configs32 = swrastFillInModes(32, 24, 8, 1);
+
+   configs24 = driConcatConfigs(configs16, configs24);
+   configs32 = driConcatConfigs(configs24, configs32);
+   return (const __DRIconfig **)configs32;
+}
+
 /**
  * Roughly the converse of dri_fill_in_modes.
  */
@@ -587,7 +665,7 @@ dri_init_screen_helper(struct dri_screen *screen,
                                   &screen->sPriv->max_gl_es1_version,
                                   &screen->sPriv->max_gl_es2_version);
 
-   return dri_fill_in_modes(screen);
+   return dri_fill_in_modes2(screen);
 }
 
 /* vim: set sw=3 ts=8 sts=3 expandtab: */

@@ -47,6 +47,7 @@
 #include <gralloc_drm_handle.h>
 #include "gralloc_drm.h"
 #endif /* HAVE_DRM_GRALLOC */
+#include <log/log.h>
 
 #define ALIGN(val, align)	(((val) + (align) - 1) & ~((align) - 1))
 
@@ -1594,6 +1595,8 @@ dri2_initialize_android(_EGLDriver *drv, _EGLDisplay *disp)
    disp->Extensions.KHR_wait_sync = EGL_TRUE;
    disp->Extensions.KHR_gl_renderbuffer_image = EGL_TRUE;
    disp->Extensions.KHR_reusable_sync = EGL_TRUE;
+   disp->Extensions.KHR_image_base = EGL_TRUE;
+   disp->Extensions.KHR_gl_texture_2D_image = EGL_TRUE;
 #if ANDROID_API_LEVEL >= 24
    if (dri2_dpy->mutable_render_buffer &&
        dri2_dpy->loader_extensions == droid_image_loader_extensions) {
