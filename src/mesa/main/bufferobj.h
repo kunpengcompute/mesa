@@ -449,5 +449,10 @@ _mesa_NamedBufferPageCommitmentARB(GLuint buffer, GLintptr offset,
 GLuint GLAPIENTRY
 _mesa_GetBuffer(GLenum target);
 
+void GLAPIENTRY
+_mesa_GetBufferNum(GLuint *buffer_num);
+
+void GLAPIENTRY
+_mesa_GetBufferArray(GLuint count, GLuint *buffer_num, GLuint *buffer_array);
 
 #endif

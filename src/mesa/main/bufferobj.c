@@ -4956,3 +4956,70 @@ _mesa_GetBuffer(GLenum target)
     ALOGI("bufobj name is :0x%x, target: 0x%x", bufObjPtr->Name, target);
     return bufObjPtr ? bufObjPtr->Name : 0;
 }
+
+/**
+ * 获取 buffer 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 buffer + 1
+ */
+void GLAPIENTRY
+_mesa_GetBufferNum(GLuint *buffer_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!buffer_num) {
+      _mesa_warning(NULL, "input NULL buffer_num");
+      return;
+   }
+   
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
+   *buffer_num = _mesa_HashNumEntries(ctx->Shared->BufferObjects);
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+}
+
+static GLuint g_buffer_array_index = 0;
+static void
+save_buffer_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+   
+   GLuint *buffer_array = (GLuint *)userData;
+
+   if (_mesa_IsBuffer(key)) {
+      buffer_array[g_buffer_array_index++] = key;
+   }
+}
+
+/**
+ * 获取 buffer 的数组
+ * count：buffer_array 的长度
+ * buffer_num：实际获取的长度
+ * buffer_array：输出的 buffer 的数组
+ */
+void GLAPIENTRY
+_mesa_GetBufferArray(GLuint count, GLuint *buffer_num, GLuint *buffer_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!buffer_num || !buffer_array) {
+      _mesa_warning(NULL, "input NULL buffer_num or buffer_array");
+      return;
+   }
+   
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
+
+   *buffer_num = _mesa_HashNumEntries(ctx->Shared->BufferObjects);
+   if (count < *buffer_num) {
+      *buffer_num = 0;
+      _mesa_warning(NULL, "Lack of space for all buffer array");
+      _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+      return; 
+   }
+
+   g_buffer_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->BufferObjects, save_buffer_array_entry, buffer_array);
+   *buffer_num = g_buffer_array_index;
+   
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+}
+
+
