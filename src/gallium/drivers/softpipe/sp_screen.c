@@ -277,6 +277,8 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return TGSI_EXEC_MAX_INPUT_ATTRIBS;
    case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
       return 1;
+   case PIPE_CAP_FBFETCH:
+   	  return 1;
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
    case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
@@ -309,7 +311,6 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
    case PIPE_CAP_NATIVE_FENCE_FD:
    case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-   case PIPE_CAP_FBFETCH:
    case PIPE_CAP_TGSI_MUL_ZERO_WINS:
    case PIPE_CAP_TGSI_CLOCK:
    case PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE:
