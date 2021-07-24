@@ -208,6 +208,7 @@ _mesa_enable_sw_extensions(struct gl_context *ctx)
    ctx->Extensions.ARB_instanced_arrays = GL_TRUE;
    ctx->Extensions.EXT_color_buffer_float = GL_TRUE;
    ctx->Extensions.NV_fbo_color_attachments = GL_TRUE;
+   ctx->Extensions.ARB_framebuffer_no_attachments = GL_TRUE;
 
    ctx->Extensions.EXT_robustness = GL_TRUE;
    ctx->Extensions.KHR_robustness = GL_TRUE;

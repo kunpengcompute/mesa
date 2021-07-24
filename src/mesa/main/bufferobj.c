@@ -4953,7 +4953,6 @@ _mesa_GetBuffer(GLenum target)
             break;
         }
     }
-    ALOGI("bufobj name is :0x%x, target: 0x%x", bufObjPtr->Name, target);
     return bufObjPtr ? bufObjPtr->Name : 0;
 }
 
