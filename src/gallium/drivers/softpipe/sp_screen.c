@@ -382,7 +382,7 @@ softpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
    case PIPE_CAPF_MAX_LINE_WIDTH:
       /* fall-through */
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
-      return 255.0; /* arbitrary */
+      return 1024.0; /* arbitrary */
    case PIPE_CAPF_MAX_POINT_WIDTH:
       /* fall-through */
    case PIPE_CAPF_MAX_POINT_WIDTH_AA:
@@ -444,9 +444,6 @@ softpipe_is_format_supported( struct pipe_screen *screen,
    }
 
    if (bind & PIPE_BIND_RENDER_TARGET) {
-      if (format_desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS)
-         return false;
-
       /*
        * Although possible, it is unnatural to render into compressed or YUV
        * surfaces. So disable these here to avoid going into weird paths

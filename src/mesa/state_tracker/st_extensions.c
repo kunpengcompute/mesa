@@ -1684,4 +1684,6 @@ void st_init_extensions(struct pipe_screen *screen,
    extensions->EXT_robustness = GL_TRUE;
    extensions->KHR_robustness = GL_TRUE;
    extensions->OES_texture_compression_astc = GL_TRUE;
+   extensions->EXT_color_buffer_float = GL_TRUE;
+   extensions->EXT_color_buffer_half_float = GL_TRUE;
 }
