@@ -2646,6 +2646,12 @@ _mesa_GetTexImageSize(GLuint texture, GLenum target, GLint level, GLuint* bufSiz
    } else {
       GLint imageSize = _mesa_image_image_stride(&ctx->Pack, texImage->Width, texImage->Height,
                                                  texObj->format, texObj->type);
+      if (imageSize == -1) {
+         _mesa_warning(NULL, "texture %u (target: %s, level: %d) wrong format: 0x%x, type: 0x%x",
+                        texture, _mesa_enum_to_string(target), level, texObj->format, texObj->type);
+         *bufSize = 0;
+         return;
+      } 
       *bufSize = (GLuint)imageSize;
    }
 }
@@ -2680,6 +2686,12 @@ _mesa_GetTexImageSizeByTarget(GLuint texture, GLenum target, GLint level, GLuint
    } else {
       GLint imageSize = _mesa_image_image_stride(&ctx->Pack, texImage->Width, texImage->Height,
                                                  texObj->format, texObj->type);
+      if (imageSize == -1) {
+         _mesa_warning(NULL, "texture %u (target: %s, level: %d) wrong format: 0x%x, type: 0x%x",
+                        texture, _mesa_enum_to_string(target), level, texObj->format, texObj->type);
+         *bufSize = 0;
+         return;
+      }
       *bufSize = (GLuint)imageSize;
    }
 }
