@@ -205,7 +205,8 @@ _mesa_enable_sw_extensions(struct gl_context *ctx)
    ctx->Extensions.OES_texture_compression_astc = GL_TRUE;
    ctx->Extensions.KHR_texture_compression_astc_ldr = GL_TRUE;
    ctx->Extensions.EXT_texture_compression_s3tc = GL_TRUE;
-
+   ctx->Extensions.ARB_instanced_arrays = GL_TRUE;
+   ctx->Extensions.EXT_color_buffer_float = GL_TRUE;
    ctx->Extensions.NV_fbo_color_attachments = GL_TRUE;
 }
 

@@ -648,7 +648,6 @@ _mesa_validate_framebuffer(struct gl_context *ctx, struct gl_framebuffer *fb)
          case GL_INTENSITY:
          case GL_RED:
          case GL_RG:
-            fb->_Status = GL_FRAMEBUFFER_UNSUPPORTED;
             return;
 
          default:

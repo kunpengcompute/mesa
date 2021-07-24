@@ -4404,6 +4404,7 @@ struct gl_extensions
    GLboolean OES_geometry_shader;
    GLboolean OES_texture_compression_astc;
    GLboolean extension_sentinel;
+   GLboolean EXT_color_buffer_float;
    /** The extension string */
    const GLubyte *String;
    /** Number of supported extensions */

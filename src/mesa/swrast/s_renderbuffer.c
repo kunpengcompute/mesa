@@ -111,9 +111,66 @@ soft_renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
    case GL_DEPTH24_STENCIL8_EXT:
       rb->Format = MESA_FORMAT_S8_UINT_Z24_UNORM;
       break;
+   case GL_RGBA32UI:
+      rb->Format = MESA_FORMAT_RGBA_UINT32;
+      break;
+   case GL_RG32UI:
+      rb->Format = MESA_FORMAT_RG_UINT32;
+      break;
+   case GL_RGBA32I:
+      rb->Format = MESA_FORMAT_RGBA_SINT32;
+      break;
+   case GL_R8:
+   case GL_R8I:
+      rb->Format = MESA_FORMAT_R_SINT8;
+      break;
+   case GL_R8UI:
+      rb->Format = MESA_FORMAT_R_UINT8;
+      break;
+   case GL_R16UI:
+      rb->Format = MESA_FORMAT_R_UINT16;
+      break;
+   case GL_R16I:
+      rb->Format = MESA_FORMAT_R_SINT16;
+      break;
+   case GL_R32UI:
+      rb->Format = MESA_FORMAT_R_UINT32;
+      break;
+   case GL_R32I:
+      rb->Format = MESA_FORMAT_R_SINT32;
+      break;
+   case GL_RG8UI:
+      rb->Format = MESA_FORMAT_RG_UINT8;
+      break;
+   case GL_RG8I:
+      rb->Format = MESA_FORMAT_RG_SINT8;
+      break;
+   case GL_RG16UI:
+      rb->Format = MESA_FORMAT_RG_UINT16;
+      break;
+   case GL_RG16I:
+      rb->Format = MESA_FORMAT_RG_SINT16;
+      break;
+   case GL_RG32I:
+      rb->Format = MESA_FORMAT_RG_SINT32;
+      break;
+   case GL_DEPTH_COMPONENT32F:
+      rb->Format = MESA_FORMAT_Z_FLOAT32;
+      break;
+   case GL_DEPTH32F_STENCIL8:
+      rb->Format = MESA_FORMAT_Z32_FLOAT_S8X24_UINT;
+      break;
+   case GL_RGBA16F:
+      rb->Format = MESA_FORMAT_RGBA_FLOAT16;
+      break;
+   case GL_RGBA32F:
+      rb->Format = MESA_FORMAT_RGBA_FLOAT32;
+      break;
    default:
       /* unsupported format */
-      return GL_FALSE;
+      _mesa_log("format[%d] not support", internalFormat);
+      rb->Format = MESA_FORMAT_RGBA_FLOAT32;
+      break;
    }
 
    bpp = _mesa_get_format_bytes(rb->Format);
