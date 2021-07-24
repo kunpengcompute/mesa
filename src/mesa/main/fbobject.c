@@ -5350,3 +5350,154 @@ _mesa_EvaluateDepthValuesARB(void)
    if (ctx->Driver.EvaluateDepthValues)
       ctx->Driver.EvaluateDepthValues(ctx);
 }
+
+/**
+ 
+ * 获取 RenderBuffer 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 buffer + 1
+*/
+
+void GLAPIENTRY
+_mesa_GetRenderBufferNum(GLuint *render_buffer_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!render_buffer_num) {
+      _mesa_warning(NULL, "input NULL render_buffer_num");
+      return;
+ 
+   }
+ 
+   
+   _mesa_HashLockMutex(ctx->Shared->RenderBuffers);
+   *render_buffer_num = _mesa_HashNumEntries(ctx->Shared->RenderBuffers);
+   _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
+}
+
+static GLuint g_render_buffer_array_index = 0;
+static void
+save_render_buffer_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+  
+    GLuint *render_buffer_array = (GLuint *)userData;
+    if (_mesa_IsRenderbuffer(key)) {
+      render_buffer_array[g_render_buffer_array_index++] = key;
+   }
+
+}
+
+
+/**
+ 
+ * 获取 RenderBuffer 的数组
+ * count：buffer_array 的长度
+ * render_buffer_num：实际获取的长度
+ * render_buffer_array：输出的 RenderBuffer 的数组
+*/
+
+void GLAPIENTRY
+_mesa_GetRenderBufferArray(GLuint count, GLuint *render_buffer_num, GLuint *render_buffer_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!render_buffer_num || !render_buffer_array) {
+      _mesa_warning(NULL, "input NULL render_buffer_num or render_buffer_array");
+      return;
+ 
+   }
+ 
+  
+    _mesa_HashLockMutex(ctx->Shared->RenderBuffers);
+    *render_buffer_num = _mesa_HashNumEntries(ctx->Shared->RenderBuffers);
+   if (count < *render_buffer_num) {
+      *render_buffer_num = 0;
+      _mesa_warning(NULL, "Lack of space for all Render Buffer array");
+      _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
+      return; 
+ 
+   }
+
+    g_render_buffer_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->RenderBuffers, save_render_buffer_array_entry, render_buffer_array);
+   *render_buffer_num = g_render_buffer_array_index;
+  
+    _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
+}
+
+/**
+ 
+ * 获取 FrameBuffer 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 buffer + 1
+*/
+
+void GLAPIENTRY
+_mesa_GetFrameBufferNum(GLuint *frame_buffer_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!frame_buffer_num) {
+      _mesa_warning(NULL, "input NULL frame_buffer_num");
+      return;
+   }
+ 
+   
+   _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
+   *frame_buffer_num = _mesa_HashNumEntries(ctx->Shared->FrameBuffers);
+   _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
+}
+
+static GLuint g_frame_buffer_array_index = 0;
+static void
+save_frame_buffer_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+  
+    GLuint *frame_buffer_array = (GLuint *)userData;
+    if (_mesa_IsFramebuffer(key)) {
+      frame_buffer_array[g_frame_buffer_array_index++] = key;
+   }
+
+}
+
+
+/**
+ 
+ * 获取 FrameBuffer 的数组
+ * count：buffer_array 的长度
+ * frame_buffer_num：实际获取的长度
+ * frame_buffer_array：输出的 FrameBuffer 的数组
+*/
+
+void GLAPIENTRY
+_mesa_GetFrameBufferArray(GLuint count, GLuint *frame_buffer_num, GLuint *frame_buffer_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+    if (!frame_buffer_num || !frame_buffer_array) {
+      _mesa_warning(NULL, "input NULL render_buffer_num or render_buffer_array");
+      return;
+ 
+   }
+ 
+  
+    _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
+    *frame_buffer_num = _mesa_HashNumEntries(ctx->Shared->FrameBuffers);
+   if (count < *frame_buffer_num) {
+      *frame_buffer_num = 0;
+      _mesa_warning(NULL, "Lack of space for all Frame Buffer array");
+      _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
+      return; 
+ 
+   }
+
+    g_frame_buffer_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->FrameBuffers, save_frame_buffer_array_entry, frame_buffer_array);
+   *frame_buffer_num = g_frame_buffer_array_index;
+  
+    _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
+}
+
+
+
+
