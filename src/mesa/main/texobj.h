@@ -303,14 +303,13 @@ _mesa_GetTexImageInfoByTarget(GLboolean* compressed, GLuint* dims,
          GLuint bufSize, GLsizei* imageSize, GLvoid *pixels);
 
 void GLAPIENTRY
-_mesa_GetTexImageSize(GLuint texture, GLint level, GLuint* bufSize);
+_mesa_GetTexImageSize(GLuint texture, GLenum target, GLint level, GLuint* bufSize);
 
 void GLAPIENTRY
-_mesa_GetTexImageSizeByTarget(GLenum target, GLint level, GLuint* bufSize);
+_mesa_GetTexImageSizeByTarget(GLuint texture, GLenum target, GLint level, GLuint* bufSize);
 
 void GLAPIENTRY      
 _mesa_GetSampleByTextureImageUnit(GLuint unit, GLuint *sample);
-
 
 
 

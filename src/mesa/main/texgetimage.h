@@ -106,4 +106,13 @@ extern void APIENTRY
 _mesa_packed_compressed_size(GLuint dimensions, mesa_format format,
                        GLsizei width, GLsizei height, GLsizei depth,
                        const struct gl_pixelstore_attrib *packing, GLsizei *size);
+
+// 获取handle为texture的cube_map的target面信息
+extern void APIENTRY
+_mesa_GetCubeMapFaceTexImage(GLuint texture, GLenum *target, GLboolean *compressed, GLuint* dims, GLint level, GLint* internalFormat,
+    GLint xoffset, GLint yoffset, GLint zoffset, GLsizei *width, GLsizei *height, GLsizei *depth,  GLint* border, GLenum *format,
+    GLenum *type, GLsizei bufSize, GLsizei *imageSize, GLvoid *pixels);
+
+extern void APIENTRY
+_mesa_GetCubeMapFaceTexImageSize(GLuint texture, GLenum target, GLint level, GLuint *bufSize);
 #endif /* TEXGETIMAGE_H */

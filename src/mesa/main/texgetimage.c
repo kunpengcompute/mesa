@@ -2005,3 +2005,73 @@ _mesa_packed_compressed_size(GLuint dimensions, mesa_format format,
 {
    *size = packed_compressed_size(dimensions, format, width, height, depth, packing);
 }
+
+void APIENTRY
+_mesa_GetCubeMapFaceTexImage(GLuint texture, GLenum *target, GLboolean *compressed, GLuint* dims, GLint level, GLint* internalFormat,
+    GLint xoffset, GLint yoffset, GLint zoffset, GLsizei *width, GLsizei *height, GLsizei *depth,  GLint* border, GLenum *format,
+    GLenum *type, GLsizei bufSize, GLsizei *imageSize, GLvoid *pixels)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_texture_object *texObj;
+   texObj = _mesa_lookup_texture(ctx, texture);
+   if (!texObj) {
+      _mesa_warning(NULL, "Get Texture object:%u fail.", texture);
+      return;
+   }
+   *target = (*target ? *target : GL_TEXTURE_CUBE_MAP);
+   *dims = texObj->dims;
+   *compressed = texObj->compressed;
+   *format = texObj->format;
+   *type = texObj->type;
+
+   struct gl_texture_image *texImage;
+   texImage = select_tex_image(texObj, *target, level, zoffset); // 默认取第一个面的img
+   *width = texImage->Width;
+   *height = texImage->Height;
+   *depth = texImage->Depth;
+   *internalFormat = texImage->InternalFormat;
+   if (*target == GL_TEXTURE_CUBE_MAP) {
+      pixels = NULL;
+      return;
+   }
+   if (*compressed) {
+      get_compressed_texture_image(ctx, texObj, *target, level, xoffset, 
+         yoffset, zoffset, *width, *height, *depth, pixels, "_mesa_GetCubeMapFaceTexImage");
+   } else {
+      get_texture_image(ctx, texObj, *target, level, xoffset, yoffset, zoffset, *width, *height, *depth, *format,
+         *type, pixels, "_mesa_GetCubeMapFaceTexImage");
+   }
+}
+
+void APIENTRY
+_mesa_GetCubeMapFaceTexImageSize(GLuint texture, GLenum target, GLint level, GLuint *bufSize)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_texture_object *texObj;
+   GLsizei width, height, depth;
+   texObj = _mesa_lookup_texture(ctx, texture);
+   const struct gl_texture_image *texImage = NULL;
+   target = target ? target : GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+   if (level >= 0 && level < MAX_TEXTURE_LEVELS) {
+      texImage = _mesa_select_tex_image(texObj, target, level);
+   } else {
+      return;
+   }
+
+   if (texImage) {
+      width = texImage->Width;
+      height = texImage->Height;
+      depth =  texImage->Depth;
+   } else {
+      *bufSize = 0;
+      return;
+   }
+    if (texObj->compressed) {
+        struct compressed_pixelstore store;
+        /* Compute image stride between cube faces */
+        _mesa_compute_compressed_pixelstore(2, texImage->TexFormat, width, height, depth, &ctx->Pack, &store);
+        *bufSize = store.TotalBytesPerRow * store.TotalRowsPerSlice;
+    } else {
+        *bufSize = (GLuint)_mesa_image_image_stride(&ctx->Pack, width, height, texObj->format, texObj->type);
+    }
+}

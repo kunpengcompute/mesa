@@ -2472,7 +2472,7 @@ _mesa_GetTextureArray(GLuint count, GLuint *texture_num, GLuint *texture_array)
 void GLAPIENTRY
 _mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dims,          
          GLenum* target, GLint level, GLint* internalFormat,
-         GLsizei* width, GLsizei* height, GLsizei* depth,GLint* border, GLenum* format, GLenum* type,
+         GLsizei* width, GLsizei* height, GLsizei* depth, GLint* border, GLenum* format, GLenum* type,
          GLuint bufSize, GLsizei* imageSize, GLvoid *pixels)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -2483,6 +2483,12 @@ _mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dim
    if (!texObj) {
       _mesa_warning(NULL, "Get Texture object:%u fail.", texture);
       *width = *height = 0;
+      return;
+   }
+   // cube map 类型的纹理需要特殊处理
+   if(texObj->Target >= GL_TEXTURE_CUBE_MAP && texObj->Target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+      _mesa_GetCubeMapFaceTexImage(texture, target, compressed, dims, level, internalFormat,
+         0, 0, 0, width, height, depth, border, format, type, bufSize, imageSize, pixels);
       return;
    }
    
@@ -2498,7 +2504,6 @@ _mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dim
       *format = texObj->format;
       *type = texObj->type;
    }
-   
    const struct gl_texture_image *texImage = NULL;
    if (level < 0 && level >= MAX_TEXTURE_LEVELS) {
       _mesa_warning(NULL, "Texture level:%d has wrong value.", level);
@@ -2529,6 +2534,7 @@ _mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dim
       }
    }
 }
+
 void GLAPIENTRY
 _mesa_GetTexImageInfoByTarget(GLboolean* compressed, GLuint* dims,          
          GLenum target, GLint level, GLint* internalFormat,
@@ -2588,14 +2594,19 @@ _mesa_GetTexImageInfoByTarget(GLboolean* compressed, GLuint* dims,
       }
    }
 }
+
 void GLAPIENTRY
-_mesa_GetTexImageSize(GLuint texture, GLint level, GLuint* bufSize) {
+_mesa_GetTexImageSize(GLuint texture, GLenum target, GLint level, GLuint* bufSize) {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_texture_object *texObj;
    texObj = _mesa_lookup_texture(ctx, texture);
    
    if (!texObj) {
       _mesa_warning(NULL, "Get Texture object:%u fail.", texture);
+      return;
+   }
+   if(texObj->Target >= GL_TEXTURE_CUBE_MAP && texObj->Target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+      _mesa_GetCubeMapFaceTexImageSize(texture, target, level, bufSize);
       return;
    }
    const struct gl_texture_image *texImage = NULL;
@@ -2621,11 +2632,15 @@ _mesa_GetTexImageSize(GLuint texture, GLint level, GLuint* bufSize) {
 }
 
 void GLAPIENTRY
-_mesa_GetTexImageSizeByTarget(GLenum target, GLint level, GLuint* bufSize) {
+_mesa_GetTexImageSizeByTarget(GLuint texture, GLenum target, GLint level, GLuint* bufSize) {
    GET_CURRENT_CONTEXT(ctx);
+   if(target >= GL_TEXTURE_CUBE_MAP && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+      _mesa_GetCubeMapFaceTexImageSize(texture, target, level, bufSize);
+      return;
+   }
    struct gl_texture_object *texObj;
    texObj = _mesa_get_current_tex_object(ctx, target);
-   
+
    if (!texObj) {
       _mesa_warning(NULL, "Get Texture object:%u fail.", target);
       return;

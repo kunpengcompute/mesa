@@ -7694,11 +7694,13 @@
 
     <function name="GetTexImageSize" es2="3.0">
         <param name="texture" type="GLuint"/>
+        <param name="target" type="GLenum"/>
         <param name="level" type="GLint"/>
         <param name="bufSize" type="GLuint *"/>
     </function>
 
     <function name="GetTexImageSizeByTarget" es2="3.0">
+        <param name="texture" type="GLuint"/>
         <param name="target" type="GLenum"/>
         <param name="level" type="GLint"/>
         <param name="bufSize" type="GLuint *"/>
