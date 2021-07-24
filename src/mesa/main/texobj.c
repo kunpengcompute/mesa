@@ -2507,7 +2507,6 @@ _mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dim
    }
    texImage = _mesa_select_tex_image(texObj, *target, level);
    if (texImage == NULL) {
-      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
       *width = *height = 0;
       return;
    }
@@ -2567,7 +2566,6 @@ _mesa_GetTexImageInfoByTarget(GLboolean* compressed, GLuint* dims,
    }
    texImage = _mesa_select_tex_image(texObj, target, level);
    if (texImage == NULL) {
-      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
       *width = *height = 0;
       return;
    }
@@ -2607,7 +2605,6 @@ _mesa_GetTexImageSize(GLuint texture, GLint level, GLuint* bufSize) {
    }
    texImage = _mesa_select_tex_image(texObj, texObj->Target, level);
    if (texImage == NULL) {
-      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
       return;
    }
    if (texObj->compressed) {
@@ -2640,7 +2637,6 @@ _mesa_GetTexImageSizeByTarget(GLenum target, GLint level, GLuint* bufSize) {
    }
    texImage = _mesa_select_tex_image(texObj, texObj->Target, level);
    if (texImage == NULL) {
-      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
       return;
    }
    if (texObj->compressed) {
