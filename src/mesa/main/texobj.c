@@ -40,6 +40,7 @@
 #include "shaderimage.h"
 #include "teximage.h"
 #include "texgetimage.h"
+#include "image.h"
 #include "texobj.h"
 #include "texstate.h"
 #include "mtypes.h"
@@ -2469,9 +2470,9 @@ _mesa_GetTextureArray(GLuint count, GLuint *texture_num, GLuint *texture_array)
  *  compressed 为假时，非压缩纹理，format/type 有效，imageSize 无效
  */
 void GLAPIENTRY
-_mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,          
-         GLenum* target, GLint* level, GLint* internalFormat,
-         GLsizei* width, GLsizei* height, GLint* border, GLenum* format, GLenum* type,
+_mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dims,          
+         GLenum* target, GLint level, GLint* internalFormat,
+         GLsizei* width, GLsizei* height, GLsizei* depth,GLint* border, GLenum* format, GLenum* type,
          GLuint bufSize, GLsizei* imageSize, GLvoid *pixels)
 {
    GET_CURRENT_CONTEXT(ctx);
@@ -2487,7 +2488,6 @@ _mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,
    
    *dims = texObj->dims;
    *target = texObj->Target;
-   *level = texObj->CreateLevel;
    *compressed = texObj->compressed;
    if (*compressed) {
       *imageSize = texObj->imageSize;
@@ -2500,18 +2500,22 @@ _mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,
    }
    
    const struct gl_texture_image *texImage = NULL;
-   if (*level < 0 && *level >= MAX_TEXTURE_LEVELS) {
-      _mesa_warning(NULL, "Texture level:%u has wrong value.", *level);
+   if (level < 0 && level >= MAX_TEXTURE_LEVELS) {
+      _mesa_warning(NULL, "Texture level:%d has wrong value.", level);
       *width = *height = 0;
       return;
    }
-   texImage = _mesa_select_tex_image(texObj, *target, *level);
-   if (texImage) {
-      *internalFormat = texImage->InternalFormat;
-      *width = texImage->Width;
-      *height = texImage->Height;
-      *border = texImage->Border;
+   texImage = _mesa_select_tex_image(texObj, *target, level);
+   if (texImage == NULL) {
+      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
+      *width = *height = 0;
+      return;
    }
+   *internalFormat = texImage->InternalFormat;
+   *width = texImage->Width;
+   *height = texImage->Height;
+   *depth = texImage->Depth;
+   *border = texImage->Border;
 
    if (_mesa_is_zero_size_texture(texImage)) {
       _mesa_warning(NULL, "Texture size:%u is zero, width:%d, heigh:%d.", texture, *width, *height);
@@ -2520,10 +2524,152 @@ _mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,
 
    if (pixels) {
       if (*compressed) {
-         _mesa_GetCompressedTextureImage(texture, *level, bufSize, pixels);
+         _mesa_GetCompressedTextureImage(texture, level, bufSize, pixels);
       } else {
-         _mesa_GetTextureImage(texture, *level, *format, *type, bufSize, pixels);
+         _mesa_GetTextureImage(texture, level, *format, *type, bufSize, pixels);
       }
+   }
+}
+void GLAPIENTRY
+_mesa_GetTexImageInfoByTarget(GLboolean* compressed, GLuint* dims,          
+         GLenum target, GLint level, GLint* internalFormat,
+         GLsizei* width, GLsizei* height, GLsizei* depth,GLint* border, GLenum* format, GLenum* type,
+         GLuint bufSize, GLsizei* imageSize, GLvoid *pixels)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   struct gl_texture_object *texObj;
+   texObj = _mesa_get_current_tex_object(ctx, target);
+   
+   if (!texObj) {
+      _mesa_warning(NULL, "Get Texture target:%d fail.", target);
+      *width = *height = 0;
+      return;
+   }
+   
+   *dims = texObj->dims;
+   *compressed = texObj->compressed;
+   if (*compressed) {
+      *imageSize = texObj->imageSize;
+      *format = 0;
+      *type = 0;
+   } else {
+      *imageSize = 0;
+      *format = texObj->format;
+      *type = texObj->type;
+   }
+   
+   const struct gl_texture_image *texImage = NULL;
+   if (level < 0 && level >= MAX_TEXTURE_LEVELS) {
+      _mesa_warning(NULL, "Texture level:%d has wrong value.", level);
+      *width = *height = 0;
+      return;
+   }
+   texImage = _mesa_select_tex_image(texObj, target, level);
+   if (texImage == NULL) {
+      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
+      *width = *height = 0;
+      return;
+   }
+   *internalFormat = texImage->InternalFormat;
+   *width = texImage->Width;
+   *height = texImage->Height;
+   *depth = texImage->Depth;
+   *border = texImage->Border;
+
+   if (_mesa_is_zero_size_texture(texImage)) {
+      _mesa_warning(NULL, "Texture target %d size is zero, width:%d, heigh:%d.", target, *width, *height);
+      return;
+   }
+
+   if (pixels) {
+      if (*compressed) {
+         _mesa_GetCompressedTexImage(target, level, pixels);
+      } else {
+         _mesa_GetTexImage(target, level, *format, *type, pixels);
+      }
+   }
+}
+void GLAPIENTRY
+_mesa_GetTexImageSize(GLuint texture, GLint level, GLuint* bufSize) {
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_texture_object *texObj;
+   texObj = _mesa_lookup_texture(ctx, texture);
+   
+   if (!texObj) {
+      _mesa_warning(NULL, "Get Texture object:%u fail.", texture);
+      return;
+   }
+   const struct gl_texture_image *texImage = NULL;
+   if (level < 0 && level >= MAX_TEXTURE_LEVELS) {
+      _mesa_warning(NULL, "Texture level:%d has wrong value.", level);
+      return;
+   }
+   texImage = _mesa_select_tex_image(texObj, texObj->Target, level);
+   if (texImage == NULL) {
+      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
+      return;
+   }
+   if (texObj->compressed) {
+      _mesa_packed_compressed_size(texObj->dims, texImage->TexFormat,
+                                       texImage->Width, texImage->Height, texImage->Depth,
+                                       &ctx->Pack, bufSize);
+   } else {
+      const uint32_t start = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
+                              texObj->format, texObj->type, 0, 0, 0);
+      const uint32_t end = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
+                             texObj->format, texObj->type, texImage->Depth-1, texImage->Height-1, texImage->Width);
+      *bufSize = end - start;
+   }
+}
+
+void GLAPIENTRY
+_mesa_GetTexImageSizeByTarget(GLenum target, GLint level, GLuint* bufSize) {
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_texture_object *texObj;
+   texObj = _mesa_get_current_tex_object(ctx, target);
+   
+   if (!texObj) {
+      _mesa_warning(NULL, "Get Texture object:%u fail.", target);
+      return;
+   }
+   const struct gl_texture_image *texImage = NULL;
+   if (level < 0 && level >= MAX_TEXTURE_LEVELS) {
+      _mesa_warning(NULL, "Texture level:%d has wrong value.", level);
+      return;
+   }
+   texImage = _mesa_select_tex_image(texObj, texObj->Target, level);
+   if (texImage == NULL) {
+      _mesa_warning(NULL, "Texture of level:%d does not exist.", level);
+      return;
+   }
+   if (texObj->compressed) {
+      _mesa_packed_compressed_size(texObj->dims, texImage->TexFormat,
+                                       texImage->Width, texImage->Height, texImage->Depth,
+                                       &ctx->Pack, bufSize);
+   } else {
+      const uint32_t start = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
+                              texObj->format, texObj->type, 0, 0, 0);
+      const uint32_t end = _mesa_image_offset(texObj->dims, &ctx->Pack, texImage->Width, texImage->Height,
+                             texObj->format, texObj->type, texImage->Depth-1, texImage->Height-1, texImage->Width);
+      *bufSize = end - start;
+   }
+}
+
+void GLAPIENTRY
+_mesa_GetSampleByTextureImageUnit(GLuint unit, GLuint *sample)
+{
+   GET_CURRENT_CONTEXT(ctx);
+   if (unit >= ctx->Const.MaxCombinedTextureImageUnits) {
+      _mesa_warning(NULL, "Out of bound unit:%u.", unit);
+      *sample = 0;
+      return;
+   }
+   struct gl_sampler_object* curSampleObj = ctx->Texture.Unit[unit].Sampler;
+   if (curSampleObj == NULL) {
+      *sample = 0;
+   } else {
+      *sample = curSampleObj->Name;
    }
 }
 

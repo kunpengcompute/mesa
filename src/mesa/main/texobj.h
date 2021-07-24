@@ -291,14 +291,30 @@ void GLAPIENTRY
 _mesa_GetTextureArray(GLuint count, GLuint *texture_num, GLuint *texture_array);
 
 void GLAPIENTRY
-_mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,          
-         GLenum* target, GLint* level, GLint* internalFormat,
-         GLsizei* width, GLsizei* height, GLint* border, GLenum* format, GLenum* type,
+_mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dims,
+         GLenum* target, GLint level, GLint* internalFormat,
+         GLsizei* width, GLsizei* height, GLsizei* depth, GLint* border, GLenum* format, GLenum* type,
          GLuint bufSize, GLsizei* imageSize, GLvoid *pixels);
+
+void GLAPIENTRY
+_mesa_GetTexImageInfoByTarget(GLboolean* compressed, GLuint* dims,
+         GLenum target, GLint level, GLint* internalFormat,
+         GLsizei* width, GLsizei* height, GLsizei* depth, GLint* border, GLenum* format, GLenum* type,
+         GLuint bufSize, GLsizei* imageSize, GLvoid *pixels);
+
+void GLAPIENTRY
+_mesa_GetTexImageSize(GLuint texture, GLint level, GLuint* bufSize);
+
+void GLAPIENTRY
+_mesa_GetTexImageSizeByTarget(GLenum target, GLint level, GLuint* bufSize);
+
+void GLAPIENTRY      
+_mesa_GetSampleByTextureImageUnit(GLuint unit, GLuint *sample);
+
+
 
 
 /*@}*/
-
 
 #ifdef __cplusplus
 }

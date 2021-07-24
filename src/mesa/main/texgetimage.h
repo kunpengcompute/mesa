@@ -102,5 +102,8 @@ _mesa_GetCompressedTextureSubImage(GLuint texture, GLint level,
                                    GLint zoffset, GLsizei width,
                                    GLsizei height, GLsizei depth,
                                    GLsizei bufSize, void *pixels);
-
+extern void APIENTRY
+_mesa_packed_compressed_size(GLuint dimensions, mesa_format format,
+                       GLsizei width, GLsizei height, GLsizei depth,
+                       const struct gl_pixelstore_attrib *packing, GLsizei *size);
 #endif /* TEXGETIMAGE_H */

@@ -1968,7 +1968,6 @@ _mesa_GetCompressedTextureImage(GLuint texture, GLint level,
                                 pixels, caller);
 }
 
-
 void APIENTRY
 _mesa_GetCompressedTextureSubImage(GLuint texture, GLint level,
                                    GLint xoffset, GLint yoffset,
@@ -1996,4 +1995,13 @@ _mesa_GetCompressedTextureSubImage(GLuint texture, GLint level,
                                 xoffset, yoffset, zoffset,
                                 width, height, depth,
                                 pixels, caller);
+}
+
+
+void APIENTRY
+_mesa_packed_compressed_size(GLuint dimensions, mesa_format format,
+                       GLsizei width, GLsizei height, GLsizei depth,
+                       const struct gl_pixelstore_attrib *packing, GLsizei *size)
+{
+   *size = packed_compressed_size(dimensions, format, width, height, depth, packing);
 }

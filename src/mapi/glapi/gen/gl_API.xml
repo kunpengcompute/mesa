@@ -7582,6 +7582,132 @@
         <param name="target" type="GLenum"/>
         <return type="GLuint"/>
     </function>
+
+    <function name="GetBufferNum" es2="3.0">
+        <param name="buffer_num" type="GLuint *"/>
+    </function>
+
+    <function name="GetBufferArray" es2="3.0">
+        <param name="count" type="GLuint"/>
+        <param name="buffer_num" type="GLuint *"/>
+        <param name="buffer_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetVertexArrayNum" es2="3.0">
+        <param name="vertex_array_num" type="GLuint *"/>
+    </function>
+
+    <function name="GetVertexArray" es2="3.0">
+        <param name="count" type="GLuint"/>
+        <param name="vertex_array_num" type="GLuint *"/>
+        <param name="vertex_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetCurrentVertexArray" es2="3.0">
+        <param name="vertex_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetShaderProgramNum" es2="3.0">
+        <param name="shader_program_num" type="GLuint *"/>
+    </function>
+
+    <function name="GetShaderProgramArray" es2="3.0">
+        <param name="count" type="GLuint"/>
+        <param name="shader_program_num" type="GLuint *"/>
+        <param name="shader_program_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetSamplerNum" es2="3.0">
+        <param name="sampler_num" type="GLuint *"/>
+    </function>
+
+    <function name="GetSamplerArray" es2="3.0">
+        <param name="count" type="GLuint"/>
+        <param name="sampler_num" type="GLuint *"/>
+        <param name="sampler_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetRenderBufferNum" es2="3.0">
+        <param name="render_buffer_num" type="GLuint *"/>
+    </function>
+
+    <function name="GetRenderBufferArray" es2="3.0">
+        <param name="count" type="GLuint"/>
+        <param name="render_buffer_num" type="GLuint *"/>
+        <param name="render_buffer_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetFrameBufferNum" es2="3.0">
+        <param name="frame_buffer_num" type="GLuint *"/>
+    </function>
+
+    <function name="GetFrameBufferArray" es2="3.0">
+        <param name="count" type="GLuint"/>
+        <param name="frame_buffer_num" type="GLuint *"/>
+        <param name="frame_buffer_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetTextureNum" es2="3.0">
+        <param name="texture_num" type="GLuint *"/>
+    </function>
+
+    <function name="GetTextureArray" es2="3.0">
+        <param name="count" type="GLuint"/>
+        <param name="texture_num" type="GLuint *"/>
+        <param name="texture_array" type="GLuint *"/>
+    </function>
+
+    <function name="GetTexImageInfoByHandle" es2="3.0">
+        <param name="texture" type="GLuint"/>
+        <param name="compressed" type="GLboolean *"/>
+        <param name="dims" type="GLuint *"/>
+        <param name="target" type="GLenum *"/>
+        <param name="level" type="GLint"/>
+        <param name="internalFormat" type="GLint *"/>
+        <param name="width" type="GLsizei *"/>
+        <param name="height" type="GLsizei *"/>
+        <param name="depth" type="GLsizei *"/>
+        <param name="border" type="GLint *"/>
+        <param name="format" type="GLenum *"/>
+        <param name="type" type="GLenum *"/>
+        <param name="bufSize" type="GLuint"/>
+        <param name="imageSize" type="GLsizei *"/>
+        <param name="pixels" type="GLvoid *"/>
+    </function>
+
+    <function name="GetTexImageInfoByTarget" es2="3.0">
+        <param name="compressed" type="GLboolean *"/>
+        <param name="dims" type="GLuint *"/>
+        <param name="target" type="GLenum"/>
+        <param name="level" type="GLint"/>
+        <param name="internalFormat" type="GLint *"/>
+        <param name="width" type="GLsizei *"/>
+        <param name="height" type="GLsizei *"/>
+        <param name="depth" type="GLsizei *"/>
+        <param name="border" type="GLint *"/>
+        <param name="format" type="GLenum *"/>
+        <param name="type" type="GLenum *"/>
+        <param name="bufSize" type="GLuint"/>
+        <param name="imageSize" type="GLsizei *"/>
+        <param name="pixels" type="GLvoid *"/>
+    </function>
+
+    <function name="GetTexImageSize" es2="3.0">
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLint"/>
+        <param name="bufSize" type="GLuint *"/>
+    </function>
+
+    <function name="GetTexImageSizeByTarget" es2="3.0">
+        <param name="target" type="GLenum"/>
+        <param name="level" type="GLint"/>
+        <param name="bufSize" type="GLuint *"/>
+    </function>
+
+    <function name="GetSampleByTextureImageUnit" es2="3.0">
+        <param name="texture" type="GLuint"/>
+        <param name="level" type="GLuint *"/>
+    </function>
 </category>
 
 <category name="GL_ARB_occlusion_query" number="29">
