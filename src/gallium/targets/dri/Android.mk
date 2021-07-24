@@ -55,10 +55,7 @@ LOCAL_SHARED_LIBRARIES += \
 endif
 
 LOCAL_STATIC_LIBRARIES += \
-	libfreedreno_drm \
-	libfreedreno_ir3 \
 	libmesa_gallium \
-	libpanfrost_shared
 
 ifeq ($(USE_LIBBACKTRACE),true)
 	LOCAL_SHARED_LIBRARIES += libbacktrace

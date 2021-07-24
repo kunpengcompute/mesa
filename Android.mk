@@ -47,42 +47,23 @@ MESA_PYTHON2 := python
 
 # Lists to convert driver names to boolean variables
 # in form of <driver name>.<boolean make variable>
-classic_drivers := i915.HAVE_I915_DRI i965.HAVE_I965_DRI
 gallium_drivers := \
-	swrast.HAVE_GALLIUM_SOFTPIPE \
-	freedreno.HAVE_GALLIUM_FREEDRENO \
-	i915g.HAVE_GALLIUM_I915 \
-	nouveau.HAVE_GALLIUM_NOUVEAU \
-	kmsro.HAVE_GALLIUM_KMSRO \
-	r300g.HAVE_GALLIUM_R300 \
-	r600g.HAVE_GALLIUM_R600 \
-	radeonsi.HAVE_GALLIUM_RADEONSI \
-	vmwgfx.HAVE_GALLIUM_VMWGFX \
-	vc4.HAVE_GALLIUM_VC4 \
-	virgl.HAVE_GALLIUM_VIRGL \
-	etnaviv.HAVE_GALLIUM_ETNAVIV \
-	iris.HAVE_GALLIUM_IRIS \
-	lima.HAVE_GALLIUM_LIMA
+	swrast.HAVE_GALLIUM_SOFTPIPE
 
 ifeq ($(BOARD_GPU_DRIVERS),all)
-MESA_BUILD_CLASSIC := $(filter HAVE_%, $(subst ., , $(classic_drivers)))
 MESA_BUILD_GALLIUM := $(filter HAVE_%, $(subst ., , $(gallium_drivers)))
 else
 # Warn if we have any invalid driver names
 $(foreach d, $(BOARD_GPU_DRIVERS), \
-	$(if $(findstring $(d).,$(classic_drivers) $(gallium_drivers)), \
+	$(if $(findstring $(d)., $(gallium_drivers)), \
 		, \
 		$(warning invalid GPU driver: $(d)) \
 	) \
 )
-MESA_BUILD_CLASSIC := $(strip $(foreach d, $(BOARD_GPU_DRIVERS), $(patsubst $(d).%,%, $(filter $(d).%, $(classic_drivers)))))
 MESA_BUILD_GALLIUM := $(strip $(foreach d, $(BOARD_GPU_DRIVERS), $(patsubst $(d).%,%, $(filter $(d).%, $(gallium_drivers)))))
 endif
-ifeq ($(filter x86%,$(TARGET_ARCH)),)
-	MESA_BUILD_CLASSIC :=
-endif
 
-$(foreach d, $(MESA_BUILD_CLASSIC) $(MESA_BUILD_GALLIUM), $(eval $(d) := true))
+$(foreach d, $(MESA_BUILD_GALLIUM), $(eval $(d) := true))
 
 # host and target must be the same arch to generate matypes.h
 ifeq ($(TARGET_ARCH),$(HOST_ARCH))
@@ -104,7 +85,6 @@ endef
 
 # add subdirectories
 SUBDIRS := \
-	src/freedreno \
 	src/gbm \
 	src/loader \
 	src/mapi \
@@ -112,11 +92,7 @@ SUBDIRS := \
 	src/mesa \
 	src/util \
 	src/egl \
-	src/amd \
-	src/broadcom \
 	src/mesa/drivers/dri \
-	src/vulkan \
-	src/panfrost \
 
 INC_DIRS := $(call all-named-subdir-makefiles,$(SUBDIRS))
 INC_DIRS += $(call all-named-subdir-makefiles,src/gallium)

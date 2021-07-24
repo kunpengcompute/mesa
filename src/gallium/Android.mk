@@ -34,13 +34,7 @@ SUBDIRS += auxiliary/pipe-loader
 # Gallium drivers and their respective winsys
 #
 
-SUBDIRS += winsys/sw/kms-dri winsys/sw/dri drivers/softpipe
-SUBDIRS += winsys/nouveau/drm drivers/nouveau
-SUBDIRS += winsys/radeon/drm drivers/r300
-SUBDIRS += winsys/radeon/drm drivers/r600
-SUBDIRS += winsys/amdgpu/drm drivers/radeonsi
-SUBDIRS += winsys/virgl/common winsys/virgl/drm winsys/virgl/vtest drivers/virgl
-SUBDIRS += winsys/svga/drm drivers/svga
+SUBDIRS += winsys/sw/dri drivers/softpipe
 SUBDIRS += state_trackers/dri
 
 # sort to eliminate any duplicates

@@ -77,12 +77,7 @@ LOCAL_SHARED_LIBRARIES += libnativewindow
 endif
 
 # This controls enabling building of driver libraries
-ifneq ($(HAVE_I915_DRI),)
-LOCAL_REQUIRED_MODULES += i915_dri
-endif
-ifneq ($(HAVE_I965_DRI),)
-LOCAL_REQUIRED_MODULES += i965_dri
-endif
+
 ifneq ($(MESA_BUILD_GALLIUM),)
 LOCAL_REQUIRED_MODULES += gallium_dri
 endif
