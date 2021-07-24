@@ -5351,9 +5351,8 @@ _mesa_EvaluateDepthValuesARB(void)
 }
 
 /**
- 
- * »ñÈ¡ RenderBuffer µÄÊýÁ¿
- * ×¢Òâ£ºmesa µÄ hash ±íÀïÓÐÒ»¸öÌØÊâ½Úµã£¬Òò´Ë·µ»ØµÄÖµ¿ÉÄÜµÈÓÚ buffer + 1
+ * èŽ·å– RenderBuffer çš„æ•°é‡
+ * æ³¨æ„ï¼šmesa çš„ hash è¡¨é‡Œæœ‰ä¸€ä¸ªç‰¹æ®ŠèŠ‚ç‚¹ï¼Œå› æ­¤è¿”å›žçš„å€¼å¯èƒ½ç­‰äºŽ buffer + 1
 */
 
 void GLAPIENTRY
@@ -5367,7 +5366,6 @@ _mesa_GetRenderBufferNum(GLuint *render_buffer_num)
  
    }
  
-   
    _mesa_HashLockMutex(ctx->Shared->RenderBuffers);
    *render_buffer_num = _mesa_HashNumEntries(ctx->Shared->RenderBuffers);
    _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
@@ -5383,16 +5381,13 @@ save_render_buffer_array_entry(GLuint key, void *data, void *userData)
     if (_mesa_IsRenderbuffer(key)) {
       render_buffer_array[g_render_buffer_array_index++] = key;
    }
-
 }
 
-
 /**
- 
- * »ñÈ¡ RenderBuffer µÄÊý×é
- * count£ºbuffer_array µÄ³¤¶È
- * render_buffer_num£ºÊµ¼Ê»ñÈ¡µÄ³¤¶È
- * render_buffer_array£ºÊä³öµÄ RenderBuffer µÄÊý×é
+ * èŽ·å– RenderBuffer çš„æ•°ç»„
+ * countï¼šbuffer_array çš„é•¿åº¦
+ * render_buffer_numï¼šå®žé™…èŽ·å–çš„é•¿åº¦
+ * render_buffer_arrayï¼šè¾“å‡ºçš„ RenderBuffer çš„æ•°ç»„
 */
 
 void GLAPIENTRY
@@ -5400,47 +5395,42 @@ _mesa_GetRenderBufferArray(GLuint count, GLuint *render_buffer_num, GLuint *rend
 {
    GET_CURRENT_CONTEXT(ctx);
 
-    if (!render_buffer_num || !render_buffer_array) {
+   if (!render_buffer_num || !render_buffer_array) {
       _mesa_warning(NULL, "input NULL render_buffer_num or render_buffer_array");
       return;
  
    }
  
-  
-    _mesa_HashLockMutex(ctx->Shared->RenderBuffers);
-    *render_buffer_num = _mesa_HashNumEntries(ctx->Shared->RenderBuffers);
+   _mesa_HashLockMutex(ctx->Shared->RenderBuffers);
+   *render_buffer_num = _mesa_HashNumEntries(ctx->Shared->RenderBuffers);
    if (count < *render_buffer_num) {
       *render_buffer_num = 0;
       _mesa_warning(NULL, "Lack of space for all Render Buffer array");
       _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
       return; 
- 
    }
 
-    g_render_buffer_array_index = 0;
+   g_render_buffer_array_index = 0;
    _mesa_HashWalkLocked(ctx->Shared->RenderBuffers, save_render_buffer_array_entry, render_buffer_array);
    *render_buffer_num = g_render_buffer_array_index;
   
-    _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
+   _mesa_HashUnlockMutex(ctx->Shared->RenderBuffers);
 }
 
 /**
- 
- * »ñÈ¡ FrameBuffer µÄÊýÁ¿
- * ×¢Òâ£ºmesa µÄ hash ±íÀïÓÐÒ»¸öÌØÊâ½Úµã£¬Òò´Ë·µ»ØµÄÖµ¿ÉÄÜµÈÓÚ buffer + 1
+ * èŽ·å– FrameBuffer çš„æ•°é‡
+ * æ³¨æ„ï¼šmesa çš„ hash è¡¨é‡Œæœ‰ä¸€ä¸ªç‰¹æ®ŠèŠ‚ç‚¹ï¼Œå› æ­¤è¿”å›žçš„å€¼å¯èƒ½ç­‰äºŽ buffer + 1
 */
-
 void GLAPIENTRY
 _mesa_GetFrameBufferNum(GLuint *frame_buffer_num)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-    if (!frame_buffer_num) {
+   if (!frame_buffer_num) {
       _mesa_warning(NULL, "input NULL frame_buffer_num");
       return;
    }
  
-   
    _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
    *frame_buffer_num = _mesa_HashNumEntries(ctx->Shared->FrameBuffers);
    _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
@@ -5452,51 +5442,105 @@ save_frame_buffer_array_entry(GLuint key, void *data, void *userData)
 {
    (void)data;
   
-    GLuint *frame_buffer_array = (GLuint *)userData;
-    if (_mesa_IsFramebuffer(key)) {
+   GLuint *frame_buffer_array = (GLuint *)userData;
+   if (_mesa_IsFramebuffer(key)) {
       frame_buffer_array[g_frame_buffer_array_index++] = key;
    }
-
 }
 
 
 /**
- 
- * »ñÈ¡ FrameBuffer µÄÊý×é
- * count£ºbuffer_array µÄ³¤¶È
- * frame_buffer_num£ºÊµ¼Ê»ñÈ¡µÄ³¤¶È
- * frame_buffer_array£ºÊä³öµÄ FrameBuffer µÄÊý×é
+ * èŽ·å– FrameBuffer çš„æ•°ç»„
+ * countï¼šbuffer_array çš„é•¿åº¦
+ * frame_buffer_numï¼šå®žé™…èŽ·å–çš„é•¿åº¦
+ * frame_buffer_arrayï¼šè¾“å‡ºçš„ FrameBuffer çš„æ•°ç»„
 */
-
 void GLAPIENTRY
 _mesa_GetFrameBufferArray(GLuint count, GLuint *frame_buffer_num, GLuint *frame_buffer_array)
 {
    GET_CURRENT_CONTEXT(ctx);
 
-    if (!frame_buffer_num || !frame_buffer_array) {
+   if (!frame_buffer_num || !frame_buffer_array) {
       _mesa_warning(NULL, "input NULL render_buffer_num or render_buffer_array");
       return;
  
    }
  
-  
-    _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
-    *frame_buffer_num = _mesa_HashNumEntries(ctx->Shared->FrameBuffers);
+   _mesa_HashLockMutex(ctx->Shared->FrameBuffers);
+   *frame_buffer_num = _mesa_HashNumEntries(ctx->Shared->FrameBuffers);
    if (count < *frame_buffer_num) {
       *frame_buffer_num = 0;
       _mesa_warning(NULL, "Lack of space for all Frame Buffer array");
       _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
       return; 
- 
    }
 
-    g_frame_buffer_array_index = 0;
+   g_frame_buffer_array_index = 0;
    _mesa_HashWalkLocked(ctx->Shared->FrameBuffers, save_frame_buffer_array_entry, frame_buffer_array);
    *frame_buffer_num = g_frame_buffer_array_index;
   
-    _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
+   _mesa_HashUnlockMutex(ctx->Shared->FrameBuffers);
 }
 
+void GLAPIENTRY
+_mesa_GetBindRenderbuffer(GLenum target, GLuint *render_buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
 
+   if (!render_buffer) {
+      _mesa_warning(NULL, "input NULL render_buffer");
+      return;
+   }
+   
+   if (target != GL_RENDERBUFFER_EXT) {
+      _mesa_warning(NULL, "_mesa_GetBindRenderbuffer: input wrong target");
+      *render_buffer = 0;
+      return;
+   }
 
+   if (!ctx->CurrentRenderbuffer) {
+      _mesa_warning(NULL, "_mesa_GetBindRenderbuffer: no renderbuffer bound)");
+      *render_buffer = 0;
+      return;
+   }
+
+   *render_buffer = ctx->CurrentRenderbuffer->Name;
+}
+
+void GLAPIENTRY
+_mesa_GetBindFramebuffer(GLenum target, GLuint *frame_buffer)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!frame_buffer) {
+      _mesa_warning(NULL, "input NULL frame_buffer");
+      return;
+   }
+
+   if ((target != GL_READ_FRAMEBUFFER_EXT) && (target != GL_DRAW_FRAMEBUFFER_EXT)) {
+      _mesa_warning(NULL, "_mesa_GetBindFramebuffer: input wrong target");
+      *frame_buffer = 0;
+      return;
+   }
+
+   if (target == GL_READ_FRAMEBUFFER_EXT) {
+      if (!ctx->ReadBuffer) {
+         _mesa_warning(NULL, "_mesa_GetBindFramebuffer: no rend frame buffer bound)");
+         *frame_buffer = 0;
+      } else {
+         *frame_buffer = ctx->ReadBuffer->Name;
+      }
+      return;
+   }
+
+   if (target == GL_DRAW_FRAMEBUFFER_EXT) {
+      if (!ctx->DrawBuffer) {
+         _mesa_warning(NULL, "_mesa_GetBindFramebuffer: no dram frame buffer bound)");
+         *frame_buffer = 0;
+      } else {
+         *frame_buffer = ctx->DrawBuffer->Name;
+      }
+      return;
+   }
+}
 

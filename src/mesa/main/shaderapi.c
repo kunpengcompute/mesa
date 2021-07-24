@@ -3219,9 +3219,9 @@ _mesa_program_init_subroutine_defaults(struct gl_context *ctx,
 }
 
 /**
- * »ñÈ¡ shader ºÍ pragrom µÄÊıÁ¿
- * ÒòÎªÔÚ mesa µÄÊµÏÖÀï£¬shader ºÍ pragrom ÔÚÍ¬Ò»¸ö hash ±íÀï±£´æ£¬ËùÒÔÒ»Æğ»ñÈ¡³öÈ¥
- * ×¢Òâ£ºmesa µÄ hash ±íÀïÓĞÒ»¸öÌØÊâ½Úµã£¬Òò´Ë·µ»ØµÄÖµµÈÓÚ shader + pragrom + 1
+ * è·å– shader å’Œ pragrom çš„æ•°é‡
+ * å› ä¸ºåœ¨ mesa çš„å®ç°é‡Œï¼Œshader å’Œ pragrom åœ¨åŒä¸€ä¸ª hash è¡¨é‡Œä¿å­˜ï¼Œæ‰€ä»¥ä¸€èµ·è·å–å‡ºå»
+ * æ³¨æ„ï¼šmesa çš„ hash è¡¨é‡Œæœ‰ä¸€ä¸ªç‰¹æ®ŠèŠ‚ç‚¹ï¼Œå› æ­¤è¿”å›çš„å€¼ç­‰äº shader + pragrom + 1
  */
 void GLAPIENTRY
 _mesa_GetShaderProgramNum(GLuint *shader_program_num)
@@ -3253,11 +3253,11 @@ save_shader_program_entry(GLuint key, void *data, void *userData)
 }
 
 /**
- * »ñÈ¡ shader ºÍ pragrom µÄÊı×é
- * ÒòÎªÔÚ mesa µÄÊµÏÖÀï£¬shader ºÍ pragrom ÔÚÍ¬Ò»¸ö hash ±íÀï±£´æ£¬ËùÒÔÒ»Æğ»ñÈ¡³öÈ¥
- * count£ºshader_program_array µÄ³¤¶È
- * shader_program_num£ºÊµ¼Ê»ñÈ¡µÄ³¤¶È
- * shader_program_array£ºÊä³öµÄ shader ºÍ pragrom µÄÊı×é
+ * è·å– shader å’Œ pragrom çš„æ•°ç»„
+ * å› ä¸ºåœ¨ mesa çš„å®ç°é‡Œï¼Œshader å’Œ pragrom åœ¨åŒä¸€ä¸ª hash è¡¨é‡Œä¿å­˜ï¼Œæ‰€ä»¥ä¸€èµ·è·å–å‡ºå»
+ * countï¼šshader_program_array çš„é•¿åº¦
+ * shader_program_numï¼šå®é™…è·å–çš„é•¿åº¦
+ * shader_program_arrayï¼šè¾“å‡ºçš„ shader å’Œ pragrom çš„æ•°ç»„
  */
 void GLAPIENTRY
 _mesa_GetShaderProgramArray(GLuint count, GLuint *shader_program_num, GLuint *shader_program_array)

@@ -1697,13 +1697,10 @@ _mesa_init_sampler_object_functions(struct dd_function_table *driver)
 }
 
 
-
 /**
- 
- * »ñÈ¡ sampler µÄÊýÁ¿
- * ×¢Òâ£ºmesa µÄ hash ±íÀïÓÐÒ»¸öÌØÊâ½Úµã£¬Òò´Ë·µ»ØµÄÖµ¿ÉÄÜµÈÓÚ sampler + 1
+ * èŽ·å– sampler çš„æ•°é‡
+ * æ³¨æ„ï¼šmesa çš„ hash è¡¨é‡Œæœ‰ä¸€ä¸ªç‰¹æ®ŠèŠ‚ç‚¹ï¼Œå› æ­¤è¿”å›žçš„å€¼å¯èƒ½ç­‰äºŽ sampler + 1
 */
-
 void GLAPIENTRY
 _mesa_GetSamplerNum(GLuint *sampler_num)
 {
@@ -1715,7 +1712,6 @@ _mesa_GetSamplerNum(GLuint *sampler_num)
  
    }
  
-   
    _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
    *sampler_num = _mesa_HashNumEntries(ctx->Shared->SamplerObjects);
    _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
@@ -1731,18 +1727,14 @@ save_sampler_array_entry(GLuint key, void *data, void *userData)
     if (_mesa_IsSampler(key)) {
       sampler_array[g_sampler_array_index++] = key;
    }
-
 }
 
-
 /**
- 
- * »ñÈ¡ buffer µÄÊý×é
- * count£ºbuffer_array µÄ³¤¶È
- * buffer_num£ºÊµ¼Ê»ñÈ¡µÄ³¤¶È
- * buffer_array£ºÊä³öµÄ buffer µÄÊý×é
+ * èŽ·å– buffer çš„æ•°ç»„
+ * countï¼šbuffer_array çš„é•¿åº¦
+ * buffer_numï¼šå®žé™…èŽ·å–çš„é•¿åº¦
+ * buffer_arrayï¼šè¾“å‡ºçš„ buffer çš„æ•°ç»„
 */
-
 void GLAPIENTRY
 _mesa_GetSamplerArray(GLuint count, GLuint *sampler_num, GLuint *sampler_array)
 {
@@ -1753,10 +1745,9 @@ _mesa_GetSamplerArray(GLuint count, GLuint *sampler_num, GLuint *sampler_array)
       return;
  
    }
- 
   
-    _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
-    *sampler_num = _mesa_HashNumEntries(ctx->Shared->SamplerObjects);
+   _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
+   *sampler_num = _mesa_HashNumEntries(ctx->Shared->SamplerObjects);
    if (count < *sampler_num) {
       *sampler_num = 0;
       _mesa_warning(NULL, "Lack of space for all sampler array");
@@ -1771,5 +1762,4 @@ _mesa_GetSamplerArray(GLuint count, GLuint *sampler_num, GLuint *sampler_array)
   
     _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
 }
-
 

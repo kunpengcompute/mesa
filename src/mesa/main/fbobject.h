@@ -458,4 +458,11 @@ _mesa_GetFrameBufferNum(GLuint *frame_buffer_num);
 extern void GLAPIENTRY
 _mesa_GetFrameBufferArray(GLuint count, GLuint *frame_buffer_num, GLuint *frame_buffer_array);
 
+extern void GLAPIENTRY
+_mesa_GetBindRenderbuffer(GLenum target, GLuint *render_buffer);
+
+extern void GLAPIENTRY
+_mesa_GetBindFramebuffer(GLenum target, GLuint *frame_buffer);
+
+
 #endif /* FBOBJECT_H */

@@ -2394,11 +2394,9 @@ _mesa_InvalidateTexImage(GLuint texture, GLint level)
 }
 
 /**
- 
- * »ñÈ¡ Texture µÄÊıÁ¿
- * ×¢Òâ£ºmesa µÄ hash ±íÀïÓĞÒ»¸öÌØÊâ½Úµã£¬Òò´Ë·µ»ØµÄÖµ¿ÉÄÜµÈÓÚ buffer + 1
+ * è·å– Texture çš„æ•°é‡
+ * æ³¨æ„ï¼šmesa çš„ hash è¡¨é‡Œæœ‰ä¸€ä¸ªç‰¹æ®ŠèŠ‚ç‚¹ï¼Œå› æ­¤è¿”å›çš„å€¼å¯èƒ½ç­‰äº buffer + 1
 */
-
 void GLAPIENTRY
 _mesa_GetTextureNum(GLuint *texture_num)
 {
@@ -2431,13 +2429,11 @@ save_texture_array_entry(GLuint key, void *data, void *userData)
 
 
 /**
- 
- * »ñÈ¡ buffer µÄÊı×é
- * count£ºbuffer_array µÄ³¤¶È
- * buffer_num£ºÊµ¼Ê»ñÈ¡µÄ³¤¶È
- * buffer_array£ºÊä³öµÄ buffer µÄÊı×é
+ * è·å– buffer çš„æ•°ç»„
+ * countï¼šbuffer_array çš„é•¿åº¦
+ * buffer_numï¼šå®é™…è·å–çš„é•¿åº¦
+ * buffer_arrayï¼šè¾“å‡ºçš„ buffer çš„æ•°ç»„
 */
-
 void GLAPIENTRY
 _mesa_GetTextureArray(GLuint count, GLuint *texture_num, GLuint *texture_array)
 {
@@ -2468,9 +2464,9 @@ _mesa_GetTextureArray(GLuint count, GLuint *texture_num, GLuint *texture_array)
 }
 
 /*
- *  texture µÄ bufSize ĞèÒª½èÖú VmiPixelDataAlignment À´¼ÆËã
- *  compressed ÎªÕæÊ±£¬ÊÇÑ¹ËõÎÆÀí£¬imageSize ÓĞĞ§£¬format/type ÎŞĞ§
- *  compressed Îª¼ÙÊ±£¬·ÇÑ¹ËõÎÆÀí£¬format/type ÓĞĞ§£¬imageSize ÎŞĞ§
+ *  texture çš„ bufSize éœ€è¦å€ŸåŠ© VmiPixelDataAlignment æ¥è®¡ç®—
+ *  compressed ä¸ºçœŸæ—¶ï¼Œæ˜¯å‹ç¼©çº¹ç†ï¼ŒimageSize æœ‰æ•ˆï¼Œformat/type æ— æ•ˆ
+ *  compressed ä¸ºå‡æ—¶ï¼Œéå‹ç¼©çº¹ç†ï¼Œformat/type æœ‰æ•ˆï¼ŒimageSize æ— æ•ˆ
  */
 void GLAPIENTRY
 _mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,          
@@ -2532,7 +2528,4 @@ _mesa_GetTexImageInfo(GLuint texture, GLboolean* compressed, GLuint* dims,
 }
 
 /*@}*/
-
-
-
 
