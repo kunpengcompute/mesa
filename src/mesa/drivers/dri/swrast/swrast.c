@@ -241,22 +241,18 @@ swrastFillInModes(__DRIscreen *psp,
     (void) have_back_buffer;
 
     depth_bits_array[0] = 0;
-    depth_bits_array[1] = 0;
-    depth_bits_array[2] = depth_bits;
-    depth_bits_array[3] = depth_bits;
+    depth_bits_array[1] = depth_bits;
 
     /* Just like with the accumulation buffer, always provide some modes
      * with a stencil buffer.
      */
     stencil_bits_array[0] = 0;
-    stencil_bits_array[1] = (stencil_bits == 0) ? 8 : stencil_bits;
-    stencil_bits_array[2] = 0;
-    stencil_bits_array[3] = (stencil_bits == 0) ? 8 : stencil_bits;
+    stencil_bits_array[1] = stencil_bits;
 
     msaa_samples_array[0] = 0;
     msaa_samples_array[1] = 4;
 
-    depth_buffer_factor = 4;
+    depth_buffer_factor = 2;
     back_buffer_factor = 2;
 
     switch (pixel_bits) {
@@ -302,7 +298,7 @@ dri_init_screen(__DRIscreen * psp)
 
     psp->extensions = dri_screen_extensions;
 
-    configs16 = swrastFillInModes(psp, 16, 16, 0, 1);
+    configs16 = swrastFillInModes(psp, 16, 24, 8, 1);
     configs24 = swrastFillInModes(psp, 24, 24, 8, 1);
     configs32 = swrastFillInModes(psp, 32, 24, 8, 1);
 
