@@ -335,22 +335,32 @@ choose_pixel_format(const struct gl_config *v)
 	&& v->redMask   == 0xff0000
 	&& v->greenMask == 0x00ff00
 	&& v->blueMask  == 0x0000ff)
-	return PF_A8R8G8B8;
+	    return PF_A8R8G8B8;
+    else if(depth == 32
+        && v->redMask == 0xff
+        && v->greenMask == 0x00ff00
+        && v->blueMask == 0xff0000)
+        return PF_A8B8G8R8;
     else if (depth == 24
 	     && v->redMask   == 0xff0000
 	     && v->greenMask == 0x00ff00
 	     && v->blueMask  == 0x0000ff)
-	return PF_X8R8G8B8;
+	    return PF_X8R8G8B8;
+    else if (depth == 24
+         && v->redMask   == 0xff
+	     && v->greenMask == 0x00ff00
+	     && v->blueMask  == 0xff0000)
+	    return PF_X8B8G8R8;
     else if (depth == 16
 	     && v->redMask   == 0xf800
 	     && v->greenMask == 0x07e0
 	     && v->blueMask  == 0x001f)
-	return PF_R5G6B5;
+	    return PF_R5G6B5;
     else if (depth == 8
 	     && v->redMask   == 0x07
 	     && v->greenMask == 0x38
 	     && v->blueMask  == 0xc0)
-	return PF_R3G3B2;
+	    return PF_R3G3B2;
 
     _mesa_problem( NULL, "unexpected format in %s", __func__ );
     return 0;
@@ -447,8 +457,20 @@ swrast_new_renderbuffer(const struct gl_config *visual, __DRIdrawable *dPriv,
 	rb->_BaseFormat = GL_RGBA;
 	xrb->bpp = 32;
 	break;
+    case PF_A8B8G8R8:
+	rb->Format = MESA_FORMAT_R8G8B8A8_UNORM;
+	rb->InternalFormat = GL_RGBA;
+	rb->_BaseFormat = GL_RGBA;
+	xrb->bpp = 32;
+	break;
     case PF_X8R8G8B8:
 	rb->Format = MESA_FORMAT_B8G8R8A8_UNORM; /* XXX */
+	rb->InternalFormat = GL_RGB;
+	rb->_BaseFormat = GL_RGB;
+	xrb->bpp = 32;
+	break;
+    case PF_X8B8G8R8:
+	rb->Format = MESA_FORMAT_R8G8B8X8_UNORM; /* XXX */
 	rb->InternalFormat = GL_RGB;
 	rb->_BaseFormat = GL_RGB;
 	xrb->bpp = 32;
