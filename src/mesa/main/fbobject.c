@@ -2222,7 +2222,7 @@ _mesa_base_fbo_format(const struct gl_context *ctx, GLenum internalFormat)
          ? GL_RG : 0;
    case GL_RGB16F:
    case GL_RGB32F:
-      return (_mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_float)
+      return ctx->Extensions.ARB_texture_float
          ? GL_RGB : 0;
    case GL_RGBA16F:
    case GL_RGBA32F:

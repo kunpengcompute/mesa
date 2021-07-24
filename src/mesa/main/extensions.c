@@ -215,6 +215,7 @@ _mesa_enable_sw_extensions(struct gl_context *ctx)
    ctx->Extensions.OES_EGL_image = GL_TRUE;
    ctx->Extensions.OES_EGL_image_external = GL_TRUE;
    ctx->Extensions.OES_vertex_array_object = GL_TRUE;
+   ctx->Extensions.EXT_color_buffer_half_float = GL_TRUE;
 }
 
 /**

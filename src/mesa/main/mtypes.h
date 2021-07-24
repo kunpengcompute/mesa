@@ -4407,6 +4407,7 @@ struct gl_extensions
    GLboolean extension_sentinel;
    GLboolean EXT_color_buffer_float;
    GLboolean OES_vertex_array_object;
+   GLboolean EXT_color_buffer_half_float;
    /** The extension string */
    const GLubyte *String;
    /** Number of supported extensions */
