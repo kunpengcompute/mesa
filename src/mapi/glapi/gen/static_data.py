@@ -1597,6 +1597,7 @@ offsets = {
     "GenerateMultiTexMipmapEXT": 1561,
     "NamedRenderbufferStorageMultisampleEXT": 1562,
     "NamedCopyBufferSubDataEXT": 1563,
+    "nativeTexImage2D": 1564,
 }
 
 functions = [
@@ -2595,6 +2596,7 @@ functions = [
     "TexGeniv",
     "TexImage1D",
     "TexImage2D",
+    "nativeTexImage2D",
     "TexImage2DMultisample",
     "TexImage3D",
     "TexImage3DEXT",

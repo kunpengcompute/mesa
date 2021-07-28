@@ -34,6 +34,7 @@
 #include "vl/vl_deint_filter.h"
 
 #include "va_private.h"
+//#include <cutils/log.h>
 
 static const VARectangle *
 vlVaRegionDefault(const VARectangle *region, vlVaSurface *surf,
@@ -300,7 +301,7 @@ vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContext *contex
       return VA_STATUS_ERROR_INVALID_SURFACE;
 
    param = buf->data;
-
+ 
    src_surface = handle_table_get(drv->htab, param->surface);
    dst_surface = handle_table_get(drv->htab, context->target_id);
 

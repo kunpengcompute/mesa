@@ -37,6 +37,7 @@
 #include "util/u_memory.h"
 
 #include "vl_video_buffer.h"
+#include <cutils/log.h>
 
 const unsigned const_resource_plane_order_YUV[3] = {
    0,
@@ -56,7 +57,7 @@ vl_get_video_buffer_formats(struct pipe_screen *screen, enum pipe_format format,
 {
    unsigned num_planes = util_format_get_num_planes(format);
    unsigned i;
-
+   
    for (i = 0; i < num_planes; i++)
       out_format[i] = util_format_get_plane_format(format, i);
    for (; i < VL_NUM_COMPONENTS; i++)
@@ -92,7 +93,7 @@ static enum pipe_format
 vl_video_buffer_surface_format(enum pipe_format format)
 {
    const struct util_format_description *desc = util_format_description(format);
-
+   
    /* a subsampled formats can't work as surface use RGBA instead */
    if (desc->layout == UTIL_FORMAT_LAYOUT_SUBSAMPLED)
       return PIPE_FORMAT_R8G8B8A8_UNORM;
@@ -202,7 +203,12 @@ vl_video_buffer_destroy(struct pipe_video_buffer *buffer)
    for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
       pipe_sampler_view_reference(&buf->sampler_view_planes[i], NULL);
       pipe_sampler_view_reference(&buf->sampler_view_components[i], NULL);
-      pipe_resource_reference(&buf->resources[i], NULL);
+
+      if(buf->resourceflag==0) {
+         pipe_resource_reference(&buf->resources[i], NULL);
+      } else {
+         buf->resources[i]=NULL;
+      }
    }
 
    for (i = 0; i < VL_MAX_SURFACES; ++i)
@@ -297,7 +303,7 @@ error:
 }
 
 static struct pipe_surface **
-vl_video_buffer_surfaces(struct pipe_video_buffer *buffer)
+vl_video_buffer_surfaces(struct pipe_video_buffer *buffer)   // (vl_video_buffer *)((vlVaDriver*)ctx->pDriverData)->htab->objects[ctx->pDriverData->htab->objects[buffers[0] - 1]->data->surface - 1]->buffer
 {
    struct vl_video_buffer *buf = (struct vl_video_buffer *)buffer;
    struct pipe_surface surf_templ;
@@ -320,7 +326,7 @@ vl_video_buffer_surfaces(struct pipe_video_buffer *buffer)
 
          if (!buf->surfaces[surf]) {
             memset(&surf_templ, 0, sizeof(surf_templ));
-            surf_templ.format = vl_video_buffer_surface_format(buf->resources[i]->format);
+            surf_templ.format = vl_video_buffer_surface_format(buf->resources[i]->format);  // (vl_video_buffer *)((vlVaDriver*)ctx->pDriverData)->htab->objects[ctx->pDriverData->htab->objects[buffers[0] - 1]->data->surface - 1]->buffer->resources[0]->format = 65418
             surf_templ.u.tex.first_layer = surf_templ.u.tex.last_layer = j;
             buf->surfaces[surf] = pipe->create_surface(pipe, buf->resources[i], &surf_templ);
             if (!buf->surfaces[surf])
@@ -453,6 +459,7 @@ vl_video_buffer_create_ex2(struct pipe_context *pipe,
          buffer->num_planes++;
    }
 
+   buffer->resourceflag=0;
    return &buffer->base;
 }
 
@@ -494,4 +501,12 @@ vl_video_buffer_create_as_resource(struct pipe_context *pipe,
    vidtemplate.width = templ.width0;
    vidtemplate.height = templ.height0 * array_size;
    return vl_video_buffer_create_ex2(pipe, &vidtemplate, resources);
+}
+
+void
+vl_video_setresourceflag(struct pipe_video_buffer *buffer)
+{
+   struct vl_video_buffer *newbuffer = (struct vl_video_buffer *)buffer;
+   newbuffer->resourceflag=1;
+   return;
 }

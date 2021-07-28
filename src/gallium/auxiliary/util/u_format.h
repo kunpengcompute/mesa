@@ -33,7 +33,6 @@
 #include "pipe/p_format.h"
 #include "pipe/p_defines.h"
 #include "util/u_debug.h"
-
 union pipe_color_union;
 struct pipe_screen;
 

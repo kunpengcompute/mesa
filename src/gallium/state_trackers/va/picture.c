@@ -30,11 +30,11 @@
 
 #include "util/u_handle_table.h"
 #include "util/u_video.h"
-
+#include "va_private.h"
 #include "vl/vl_vlc.h"
 #include "vl/vl_winsys.h"
 
-#include "va_private.h"
+// #include <cutils/log.h>
 
 VAStatus
 vlVaBeginPicture(VADriverContextP ctx, VAContextID context_id, VASurfaceID render_target)
@@ -462,6 +462,8 @@ handleVAEncSliceParameterBufferType(vlVaDriver *drv, vlVaContext *context, vlVaB
 VAStatus
 vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buffers, int num_buffers)
 {
+    //  ALOGE("vlVaRenderPicture %d %d ", context_id, num_buffers);
+
    vlVaDriver *drv;
    vlVaContext *context;
    VAStatus vaStatus = VA_STATUS_SUCCESS;
@@ -491,7 +493,7 @@ vlVaRenderPicture(VADriverContextP ctx, VAContextID context_id, VABufferID *buff
 
       switch (buf->type) {
       case VAPictureParameterBufferType:
-         vaStatus = handlePictureParameterBuffer(drv, context, buf);
+         vaStatus = handlePictureParameterBuffer(drv, context, buf); 
          break;
 
       case VAIQMatrixBufferType:

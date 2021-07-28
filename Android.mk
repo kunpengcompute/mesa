@@ -36,6 +36,9 @@ ifneq ($(filter 2 4, $(MESA_ANDROID_MAJOR_VERSION)),)
 $(error "Android 4.4 and earlier not supported")
 endif
 
+#BOARD_GPU_DRIVERS ?= i915 i965 nouveau r300g r600g radeonsi virgl vmwgfx
+BOARD_GPU_DRIVERS :=  radeonsi 
+
 MESA_DRI_MODULE_REL_PATH := dri
 MESA_DRI_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/$(MESA_DRI_MODULE_REL_PATH)
 MESA_DRI_MODULE_UNSTRIPPED_PATH := $(TARGET_OUT_SHARED_LIBRARIES_UNSTRIPPED)/$(MESA_DRI_MODULE_REL_PATH)
@@ -81,6 +84,8 @@ ifeq ($(filter x86%,$(TARGET_ARCH)),)
 	MESA_BUILD_CLASSIC :=
 endif
 
+$(warning "target_arch!!!!!!!!!!!!!!!!! $(TARGET_ARCH)")
+
 $(foreach d, $(MESA_BUILD_CLASSIC) $(MESA_BUILD_GALLIUM), $(eval $(d) := true))
 
 # host and target must be the same arch to generate matypes.h
@@ -98,7 +103,7 @@ define mesa-build-with-llvm
   $(if $(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7), \
     $(warning Unsupported LLVM version in Android $(MESA_ANDROID_MAJOR_VERSION)),) \
   $(eval LOCAL_CFLAGS += -DLLVM_AVAILABLE -DMESA_LLVM_VERSION_STRING=\"3.9\") \
-  $(eval LOCAL_SHARED_LIBRARIES += libLLVM)
+  $(eval LOCAL_SHARED_LIBRARIES += libLLVM70)
 endef
 
 # add subdirectories
@@ -113,7 +118,6 @@ SUBDIRS := \
 	src/egl \
 	src/amd \
 	src/broadcom \
-	src/intel \
 	src/mesa/drivers/dri \
 	src/vulkan \
 	src/panfrost \

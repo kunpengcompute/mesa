@@ -34,7 +34,7 @@ LOCAL_C_INCLUDES := \
 
 LOCAL_STATIC_LIBRARIES := \
 	libmesa_util \
-	libmesa_loader
+	libmesa_loader 
 
 LOCAL_MODULE := libgbm
 
