@@ -77,7 +77,8 @@ LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/gallium/include \
 	$(MESA_TOP)/src/gallium/auxiliary \
 	$(MESA_TOP)/src/mesa \
-	$(intermediates)/common
+	$(intermediates)/common \
+	$(MESA_TOP)/../unpack_open_source/llvmAndroid9/lib/Target/AMDGPU/Disassembler
 
 LOCAL_EXPORT_C_INCLUDE_DIRS := \
 	$(LOCAL_PATH)/common \

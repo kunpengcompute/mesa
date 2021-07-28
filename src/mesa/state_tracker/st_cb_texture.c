@@ -1726,6 +1726,19 @@ st_TexImage(struct gl_context * ctx, GLuint dims,
                   format, type, pixels, unpack);
 }
 
+static unsigned long*
+st_nativeTexImage(struct gl_context * ctx, GLuint dims,
+            struct gl_texture_image *texImage,
+            GLenum format, GLenum type, const void *pixels,
+            const struct gl_pixelstore_attrib *unpack)
+{
+   struct st_context *st = st_context(ctx);
+   struct pipe_screen *screen = st->pipe->screen;
+   struct gl_texture_object *texObj = texImage->TexObject;
+   struct st_texture_object *stObj = st_texture_object(texObj);
+   struct pipe_resource *src = stObj->pt;
+   return (unsigned long *)src;
+}
 
 static void
 st_CompressedTexSubImage(struct gl_context *ctx, GLuint dims,
@@ -3307,6 +3320,7 @@ st_init_texture_functions(struct dd_function_table *functions)
    functions->ChooseTextureFormat = st_ChooseTextureFormat;
    functions->QueryInternalFormat = st_QueryInternalFormat;
    functions->TexImage = st_TexImage;
+   functions->nativeTexImage = st_nativeTexImage;
    functions->TexSubImage = st_TexSubImage;
    functions->CompressedTexSubImage = st_CompressedTexSubImage;
    functions->CopyTexSubImage = st_CopyTexSubImage;

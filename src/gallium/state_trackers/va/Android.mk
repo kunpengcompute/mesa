@@ -1,5 +1,7 @@
-# Copyright © 2016 Red Hat.
-# Copyright © 2016 Mauro Rossi <issor.oruam@gmail.com>
+# Mesa 3-D graphics library
+#
+# Copyright (C) 2015 Chih-Wei Huang <cwhuang@linux.org.tw>
+# Copyright (C) 2015 Android-x86 Open Source Project
 #
 # Permission is hereby granted, free of charge, to any person obtaining a
 # copy of this software and associated documentation files (the "Software"),
@@ -8,26 +10,40 @@
 # and/or sell copies of the Software, and to permit persons to whom the
 # Software is furnished to do so, subject to the following conditions:
 #
-# The above copyright notice and this permission notice (including the next
-# paragraph) shall be included in all copies or substantial portions of the
-# Software.
+# The above copyright notice and this permission notice shall be included
+# in all copies or substantial portions of the Software.
 #
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
 # THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
-# IN THE SOFTWARE.
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+# DEALINGS IN THE SOFTWARE.
 
 LOCAL_PATH := $(call my-dir)
 
-# Import variables
 include $(LOCAL_PATH)/Makefile.sources
 
-include $(LOCAL_PATH)/Android.addrlib.mk
-include $(LOCAL_PATH)/Android.common.mk
-ifneq ($(filter radeonsi,$(BOARD_GPU_DRIVERS)),)
-# include $(LOCAL_PATH)/Android.compiler.mk
-#include $(LOCAL_PATH)/vulkan/Android.mk
-endif
+include $(CLEAR_VARS)
+
+LOCAL_SRC_FILES := \
+        $(C_SOURCES)
+
+LOCAL_EXPORT_C_INCLUDE_DIRS := \
+        $(LOCAL_PATH)
+
+LOCAL_WHOLE_STATIC_LIBRARIES := \
+        libmesa_gallium
+
+LOCAL_SHARED_LIBRARIES := \
+            libva libva-android libcutils liblog libutils
+
+LOCAL_CFLAGS += -DVA_DRIVER_INIT_FUNC="__vaDriverInit_1_0"
+
+LOCAL_MODULE := libva_st_dri
+
+LOCAL_GENERATED_SOURCES := $(MESA_DRI_OPTIONS_H)
+
+include $(GALLIUM_COMMON_MK)
+include $(BUILD_STATIC_LIBRARY)
