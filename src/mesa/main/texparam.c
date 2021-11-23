@@ -419,7 +419,8 @@ set_tex_parameteri(struct gl_context *ctx,
       return GL_TRUE;
 
    case GL_GENERATE_MIPMAP_SGIS:
-      if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES)
+      if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES &&
+         ctx->API != API_OPENGLES2)
          goto invalid_pname;
 
       if (params[0] && texObj->Target == GL_TEXTURE_EXTERNAL_OES)
@@ -2210,7 +2211,8 @@ get_tex_parameterfv(struct gl_context *ctx,
          *params = obj->Sampler.MaxAnisotropy;
          break;
       case GL_GENERATE_MIPMAP_SGIS:
-         if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES)
+         if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES &&
+            ctx->API != API_OPENGLES2)
             goto invalid_pname;
 
 	 *params = (GLfloat) obj->GenerateMipmap;
@@ -2454,7 +2456,8 @@ get_tex_parameteriv(struct gl_context *ctx,
          *params = IROUND(obj->Sampler.MaxAnisotropy);
          break;
       case GL_GENERATE_MIPMAP_SGIS:
-         if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES)
+         if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES &&
+            ctx->API != API_OPENGLES2)
             goto invalid_pname;
 
 	 *params = (GLint) obj->GenerateMipmap;
@@ -2886,9 +2889,22 @@ _mesa_GetTextureParameterByName(GLuint texture, GLenum pname, GLint *params)
    struct gl_texture_object *obj;
    GET_CURRENT_CONTEXT(ctx);
 
-   obj = get_texobj_by_name(ctx, texture, "VmiGetTextureParameterByName");
+   obj = get_texobj_by_name(ctx, texture, "glGetTextureParameteriv");
    if (!obj)
       return;
 
    get_tex_parameteriv(ctx, obj, pname, params, true);
+}
+
+void GLAPIENTRY
+_mesa_GetTextureParameterfvByName(GLuint texture, GLenum pname, GLfloat *params)
+{
+   struct gl_texture_object *obj;
+   GET_CURRENT_CONTEXT(ctx);
+
+   obj = get_texobj_by_name(ctx, texture, "glGetTextureParameterfv");
+   if (!obj)
+      return;
+
+   get_tex_parameterfv(ctx, obj, pname, params, true);
 }
