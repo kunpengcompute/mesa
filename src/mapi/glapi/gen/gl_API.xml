@@ -7775,6 +7775,12 @@
       <param name="skipImages" type="GLint *" />
    </function>
 
+    <function name="GetTextureParameterfvByName" es2="3.0">
+      <param name="texture" type="GLuint " />
+      <param name="pname" type="GLenum" />
+      <param name="params" type="GLfloat *" />      
+   </function>
+
 </category>
 
 <category name="GL_ARB_occlusion_query" number="29">

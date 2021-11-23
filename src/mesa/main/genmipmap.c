@@ -37,6 +37,7 @@
 #include "teximage.h"
 #include "texobj.h"
 #include "hash.h"
+#include "texparam.h"
 
 bool
 _mesa_is_valid_generate_texture_mipmap_target(struct gl_context *ctx,
@@ -197,7 +198,9 @@ _mesa_GenerateMipmap(GLenum target)
    texObj = _mesa_get_current_tex_object(ctx, target);
    if (!texObj)
       return;
-
+   // 把genMipmap指令信息存入texObject
+   const GLint genMipmap = GL_TRUE;
+   _mesa_texture_parameteriv(ctx, texObj, GL_GENERATE_MIPMAP, &genMipmap, true);
    generate_texture_mipmap(ctx, texObj, target, "glGenerateMipmap");
 }
 

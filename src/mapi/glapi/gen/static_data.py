@@ -1628,6 +1628,7 @@ offsets = {
     "GetRenderbufferParameterByName": 1592,
     "GetTextureParameterByName": 1593,
     "GetPixelStoreByTexHandle": 1594,
+    "GetTextureParameterfvByName": 1595,
 }
 
 functions = [
@@ -2959,6 +2960,7 @@ functions = [
     "GetRenderbufferParameterByName",
     "GetTextureParameterByName",
     "GetPixelStoreByTexHandle",
+    "GetTextureParameterfvByName",
 ]
 
 """Functions that need dispatch slots but are not used
