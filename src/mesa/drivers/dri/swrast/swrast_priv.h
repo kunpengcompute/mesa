@@ -129,6 +129,8 @@ dri_swrast_renderbuffer(struct gl_renderbuffer *rb)
 #define PF_R5G6B5     2		/**< 16bpp TrueColor:  5-R, 6-G, 5-B bits */
 #define PF_R3G3B2     3		/**<  8bpp TrueColor:  3-R, 3-G, 2-B bits */
 #define PF_X8R8G8B8   4		/**< 32bpp TrueColor:  8-R, 8-G, 8-B bits */
+#define PF_A8B8G8R8   5
+#define PF_X8B8G8R8   6
 
 
 #endif /* _SWRAST_PRIV_H_ */

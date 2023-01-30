@@ -3662,6 +3662,9 @@ sp_tgsi_get_dims(struct tgsi_sampler *tgsi_sampler,
       sp_tgsi_sampler_cast_c(tgsi_sampler);
 
    assert(sview_index < PIPE_MAX_SHADER_SAMPLER_VIEWS);
+   if (sview_index >= PIPE_MAX_SHADER_SAMPLER_VIEWS) {
+      return;
+   }
    /* always have a view here but texture is NULL if no sampler view was set. */
    if (!sp_samp->sp_sview[sview_index].base.texture) {
       dims[0] = dims[1] = dims[2] = dims[3] = 0;
@@ -3722,6 +3725,9 @@ sp_tgsi_get_samples(struct tgsi_sampler *tgsi_sampler,
    assert(sview_index < PIPE_MAX_SHADER_SAMPLER_VIEWS);
    assert(sampler_index < PIPE_MAX_SAMPLERS);
    assert(sp_tgsi_samp->sp_sampler[sampler_index]);
+   if (sview_index >= PIPE_MAX_SHADER_SAMPLER_VIEWS) {
+      return;
+   }
 
    memcpy(&sp_sview, &sp_tgsi_samp->sp_sview[sview_index],
           sizeof(struct sp_sampler_view));
@@ -3803,6 +3809,9 @@ sp_tgsi_query_lod(const struct tgsi_sampler *tgsi_sampler,
    assert(sview_index < PIPE_MAX_SHADER_SAMPLER_VIEWS);
    assert(sampler_index < PIPE_MAX_SAMPLERS);
    assert(sp_tgsi_samp->sp_sampler[sampler_index]);
+   if (sview_index >= PIPE_MAX_SHADER_SAMPLER_VIEWS) {
+      return;
+   }
 
    sp_sview = &sp_tgsi_samp->sp_sview[sview_index];
    sp_samp = sp_tgsi_samp->sp_sampler[sampler_index];
@@ -3834,6 +3843,9 @@ sp_tgsi_get_texel(struct tgsi_sampler *tgsi_sampler,
       sp_tgsi_sampler_cast_c(tgsi_sampler);
 
    assert(sview_index < PIPE_MAX_SHADER_SAMPLER_VIEWS);
+   if (sview_index >= PIPE_MAX_SHADER_SAMPLER_VIEWS) {
+      return;
+   }
    /* always have a view here but texture is NULL if no sampler view was set. */
    if (!sp_samp->sp_sview[sview_index].base.texture) {
       int i, j;

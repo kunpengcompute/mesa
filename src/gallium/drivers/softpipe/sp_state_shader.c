@@ -452,6 +452,20 @@ softpipe_delete_compute_state(struct pipe_context *pipe,
    FREE(state);
 }
 
+static void
+softpipe_tcs_state(struct pipe_context *pipe,
+                   void *cs)
+{
+   return;
+}
+
+static void
+softpipe_tes_state(struct pipe_context *pipe,
+                   void *cs)
+{
+   return;
+}
+
 void
 softpipe_init_shader_funcs(struct pipe_context *pipe)
 {
@@ -472,4 +486,6 @@ softpipe_init_shader_funcs(struct pipe_context *pipe)
    pipe->create_compute_state = softpipe_create_compute_state;
    pipe->bind_compute_state = softpipe_bind_compute_state;
    pipe->delete_compute_state = softpipe_delete_compute_state;
+   pipe->bind_tcs_state = softpipe_tcs_state;
+   pipe->bind_tes_state = softpipe_tes_state;
 }

@@ -101,7 +101,7 @@ LOCAL_EXPORT_C_INCLUDE_DIRS := \
 	$(intermediates)/common
 
 LOCAL_SHARED_LIBRARIES := \
-	libdrm_amdgpu
+	libInsDrm_amdgpu
 
 LOCAL_STATIC_LIBRARIES := \
 	libmesa_nir

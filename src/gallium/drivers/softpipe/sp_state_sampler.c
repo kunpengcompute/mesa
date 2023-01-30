@@ -108,6 +108,10 @@ softpipe_set_sampler_views(struct pipe_context *pipe,
    assert(shader < PIPE_SHADER_TYPES);
    assert(start + num <= ARRAY_SIZE(softpipe->sampler_views[shader]));
 
+   if (start + num > ARRAY_SIZE(softpipe->sampler_views[shader])) {
+       return;
+   }
+
    draw_flush(softpipe->draw);
 
    /* set the new sampler views */

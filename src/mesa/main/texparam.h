@@ -237,4 +237,10 @@ _mesa_GetMultiTexParameterfvEXT(GLenum texunit, GLenum target, GLenum pname, GLf
 extern void GLAPIENTRY
 _mesa_GetMultiTexParameterivEXT(GLenum texunit, GLenum target, GLenum pname, GLint *params);
 
+extern void GLAPIENTRY
+_mesa_GetTextureParameterByName(GLuint texture, GLenum pname, GLint *params);
+
+extern void GLAPIENTRY
+_mesa_GetTextureParameterfvByName(GLuint texture, GLenum pname, GLfloat *params);
+
 #endif /* TEXPARAM_H */

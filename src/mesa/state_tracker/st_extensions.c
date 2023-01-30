@@ -456,6 +456,7 @@ void st_init_limits(struct pipe_screen *screen,
          c->Program[MESA_SHADER_GEOMETRY].MaxUniformBlocks +
          c->Program[MESA_SHADER_FRAGMENT].MaxUniformBlocks +
          c->Program[MESA_SHADER_COMPUTE].MaxUniformBlocks;
+      c->MaxCombinedUniformBlocks = c->MaxUniformBufferBindings = 72;
       assert(c->MaxCombinedUniformBlocks <= MAX_COMBINED_UNIFORM_BUFFERS);
    }
 
@@ -1245,6 +1246,7 @@ void st_init_extensions(struct pipe_screen *screen,
    /* Needs PIPE_CAP_SAMPLE_SHADING + all the sample-related bits of
     * ARB_gpu_shader5. This enables all the per-sample shading ES extensions.
     */
+   extensions->ARB_sample_shading = GL_TRUE;
    extensions->OES_sample_variables = extensions->ARB_sample_shading &&
       extensions->ARB_gpu_shader5;
 
@@ -1374,6 +1376,7 @@ void st_init_extensions(struct pipe_screen *screen,
       /* Real MSAA support */
       extensions->EXT_framebuffer_multisample = GL_TRUE;
       extensions->EXT_framebuffer_multisample_blit_scaled = GL_TRUE;
+      extensions->ARB_texture_multisample = GL_TRUE;
    }
    else if (consts->MaxSamples > 0 &&
             screen->get_param(screen, PIPE_CAP_FAKE_SW_MSAA)) {
@@ -1500,6 +1503,7 @@ void st_init_extensions(struct pipe_screen *screen,
       if (extensions->AMD_vertex_shader_layer)
          extensions->AMD_vertex_shader_viewport_index = GL_TRUE;
    }
+   extensions->ARB_viewport_array = GL_FALSE;
 
    if (extensions->AMD_vertex_shader_layer &&
        extensions->AMD_vertex_shader_viewport_index &&
@@ -1762,4 +1766,9 @@ void st_init_extensions(struct pipe_screen *screen,
    }
 
    consts->AllowDrawOutOfOrder = options->allow_draw_out_of_order;
+   extensions->EXT_robustness = GL_TRUE;
+   extensions->KHR_robustness = GL_TRUE;
+   extensions->OES_texture_compression_astc = GL_TRUE;
+   extensions->EXT_color_buffer_float = GL_TRUE;
+   extensions->EXT_color_buffer_half_float = GL_TRUE;
 }

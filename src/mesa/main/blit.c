@@ -118,7 +118,7 @@ compatible_color_datatypes(mesa_format srcFormat, mesa_format dstFormat)
       /* Boil any of those types down to GL_FLOAT */
       dstType = GL_FLOAT;
    }
-
+   return true;
    return srcType == dstType;
 }
 

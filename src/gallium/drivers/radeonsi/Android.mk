@@ -46,7 +46,7 @@ LOCAL_STATIC_LIBRARIES := \
 	libmesa_amd_common \
 	libmesa_galliumvl
 
-LOCAL_SHARED_LIBRARIES := libdrm_radeon
+LOCAL_SHARED_LIBRARIES := libInsDrm_radeon
 LOCAL_MODULE := libmesa_pipe_radeonsi
 
 intermediates := $(call local-generated-sources-dir)

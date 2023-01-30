@@ -951,6 +951,15 @@ struct gl_sampler_object
    struct util_dynarray Handles;
 };
 
+struct gl_restore_pixelstore_attrib
+{
+   GLint Alignment;
+   GLint RowLength;
+   GLint SkipPixels;
+   GLint SkipRows;
+   GLint ImageHeight;
+   GLint SkipImages;
+};
 
 /**
  * Texture object state.  Contains the array of mipmap images, border color,
@@ -1021,6 +1030,15 @@ struct gl_texture_object
    /** GL_ARB_bindless_texture */
    struct util_dynarray SamplerHandles;
    struct util_dynarray ImageHandles;
+
+   GLuint dims;
+   GLint CreateLevel;
+   GLenum format;
+   GLenum type;
+   GLboolean compressed;
+   GLsizei imageSize;
+
+   struct gl_restore_pixelstore_attrib unpackPixelStoreAttrib;
 };
 
 
@@ -4376,6 +4394,7 @@ struct gl_extensions
    GLboolean EXT_point_parameters;
    GLboolean EXT_provoking_vertex;
    GLboolean EXT_render_snorm;
+   GLboolean EXT_robustness;
    GLboolean EXT_semaphore;
    GLboolean EXT_semaphore_fd;
    GLboolean EXT_shader_image_load_formatted;
@@ -4469,6 +4488,7 @@ struct gl_extensions
    GLboolean NV_viewport_array2;
    GLboolean NV_viewport_swizzle;
    GLboolean NVX_gpu_memory_info;
+   GLboolean NV_fbo_color_attachments;
    GLboolean TDFX_texture_compression_FXT1;
    GLboolean OES_EGL_image;
    GLboolean OES_draw_texture;
@@ -4482,6 +4502,9 @@ struct gl_extensions
    GLboolean OES_geometry_shader;
    GLboolean OES_texture_compression_astc;
    GLboolean extension_sentinel;
+   GLboolean EXT_color_buffer_float;
+   GLboolean OES_vertex_array_object;
+   GLboolean EXT_color_buffer_half_float;
    /** The extension string */
    const GLubyte *String;
    /** Number of supported extensions */

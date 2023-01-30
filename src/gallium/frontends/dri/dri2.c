@@ -2137,6 +2137,7 @@ release_pipe:
  *
  * Returns the struct gl_config supported by this driver.
  */
+#ifdef HAVE_PIPE_LOADER_KMS
 static const __DRIconfig **
 dri_kms_init_screen(__DRIscreen * sPriv)
 {
@@ -2200,6 +2201,7 @@ release_pipe:
 #endif // GALLIUM_SOFTPIPE
    return NULL;
 }
+#endif
 
 static boolean
 dri2_create_buffer(__DRIscreen * sPriv,
@@ -2247,6 +2249,7 @@ const struct __DriverAPIRec galliumdrm_driver_api = {
  * hook. The latter is used to explicitly initialise the kms_swrast driver
  * rather than selecting the approapriate driver as suggested by the loader.
  */
+ #ifdef HAVE_PIPE_LOADER_KMS
 const struct __DriverAPIRec dri_kms_driver_api = {
    .InitScreen = dri_kms_init_screen,
    .DestroyScreen = dri_destroy_screen,
@@ -2260,6 +2263,7 @@ const struct __DriverAPIRec dri_kms_driver_api = {
    .AllocateBuffer = dri2_allocate_buffer,
    .ReleaseBuffer  = dri2_release_buffer,
 };
+#endif
 
 /* This is the table of extensions that the loader will dlsym() for. */
 const __DRIextension *galliumdrm_driver_extensions[] = {

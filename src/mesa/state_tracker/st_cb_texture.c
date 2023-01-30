@@ -2961,7 +2961,7 @@ st_texture_storage(struct gl_context *ctx,
 
       if (ctx->Const.MaxSamples > 1 && num_samples == 1) {
          /* don't try num_samples = 1 with drivers that support real msaa */
-         num_samples = 2;
+         num_samples = 1;
       }
 
       for (; num_samples <= ctx->Const.MaxSamples; num_samples++) {

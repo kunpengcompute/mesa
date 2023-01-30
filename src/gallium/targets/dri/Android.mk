@@ -25,7 +25,7 @@ LOCAL_PATH := $(call my-dir)
 
 include $(CLEAR_VARS)
 
-LOCAL_MODULE := gallium_dri
+LOCAL_MODULE := galliuminstr_dri
 
 LOCAL_MODULE_RELATIVE_PATH := $(MESA_DRI_MODULE_REL_PATH)
 LOCAL_SRC_FILES := target.c
@@ -41,7 +41,7 @@ LOCAL_LDFLAGS := \
 
 LOCAL_SHARED_LIBRARIES := \
 	libdl \
-	libglapi \
+	libinstrglapi \
 	libz \
 	liblog
 
@@ -55,18 +55,7 @@ LOCAL_SHARED_LIBRARIES += \
 endif
 
 LOCAL_STATIC_LIBRARIES += \
-	libetnaviv_drm \
-	libfreedreno_drm \
-	libfreedreno_ir2 \
-	libfreedreno_ir3 \
-	libfreedreno_perfcntrs \
 	libmesa_gallium \
-	libpanfrost_bifrost \
-	libpanfrost_decode \
-	libpanfrost_encoder \
-	libpanfrost_midgard \
-	libpanfrost_shared \
-	libpanfrost_util \
 
 ifeq ($(USE_LIBBACKTRACE),true)
 	LOCAL_SHARED_LIBRARIES += libbacktrace
@@ -91,12 +80,12 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 # sort GALLIUM_SHARED_LIBS to remove any duplicates
 LOCAL_SHARED_LIBRARIES += $(sort $(GALLIUM_SHARED_LIBS))
 
-ifneq ($(filter 5 6 7, $(MESA_ANDROID_MAJOR_VERSION)),)
+ifneq ($(filter 5 6 7 9, $(MESA_ANDROID_MAJOR_VERSION)),)
 LOCAL_POST_INSTALL_CMD := \
 	$(foreach l, lib $(if $(filter true,$(TARGET_IS_64_BIT)),lib64), \
 	  $(eval MESA_DRI_MODULE_PATH := $(TARGET_OUT_VENDOR)/$(l)/$(MESA_DRI_MODULE_REL_PATH)) \
 	  mkdir -p $(MESA_DRI_MODULE_PATH); \
-	  $(foreach d, $(GALLIUM_TARGET_DRIVERS), ln -sf gallium_dri.so $(MESA_DRI_MODULE_PATH)/$(d)_dri.so;) \
+	  $(foreach d, $(GALLIUM_TARGET_DRIVERS), ln -sf galliuminstr_dri.so $(MESA_DRI_MODULE_PATH)/$(d)_dri.so;) \
 	)
 else
 LOCAL_MODULE_SYMLINKS := $(foreach d, $(GALLIUM_TARGET_DRIVERS), $(d)_dri.so)

@@ -55,9 +55,7 @@ dri_st_framebuffer_validate(struct st_context_iface *stctx,
    bool new_stamp;
    int i;
    unsigned int lastStamp;
-   struct pipe_resource **textures =
-      drawable->stvis.samples > 1 ? drawable->msaa_textures
-                                  : drawable->textures;
+   struct pipe_resource **textures = drawable->textures;
 
    statt_mask = 0x0;
    for (i = 0; i < count; i++)

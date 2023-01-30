@@ -21,14 +21,14 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 
-# Android.mk for libGLES_mesa
+# Android.mk for libInstrGLES_mesa
 
 LOCAL_PATH := $(call my-dir)
 
 include $(LOCAL_PATH)/Makefile.sources
 
 # ---------------------------------------
-# Build libGLES_mesa
+# Build libInstrGLES_mesa
 # ---------------------------------------
 
 include $(CLEAR_VARS)
@@ -55,7 +55,7 @@ LOCAL_STATIC_LIBRARIES := \
 
 LOCAL_SHARED_LIBRARIES := \
 	libdl \
-	libglapi \
+	libinstrglapi \
 	libhardware \
 	liblog \
 	libcutils \
@@ -73,22 +73,17 @@ ifeq ($(BOARD_USES_DRM_GRALLOC),true)
 	LOCAL_SHARED_LIBRARIES += libgralloc_drm
 endif
 
-ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7),)
+ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7 9),)
 LOCAL_SHARED_LIBRARIES += libnativewindow
 endif
 
 # This controls enabling building of driver libraries
-ifneq ($(HAVE_I915_DRI),)
-LOCAL_REQUIRED_MODULES += i915_dri
-endif
-ifneq ($(HAVE_I965_DRI),)
-LOCAL_REQUIRED_MODULES += i965_dri
-endif
+
 ifneq ($(MESA_BUILD_GALLIUM),)
-LOCAL_REQUIRED_MODULES += gallium_dri
+LOCAL_REQUIRED_MODULES += galliuminstr_dri
 endif
 
-LOCAL_MODULE := libGLES_mesa
+LOCAL_MODULE := libInstrGLES_mesa
 LOCAL_MODULE_RELATIVE_PATH := egl
 
 include $(MESA_COMMON_MK)

@@ -164,8 +164,8 @@ driCreateNewScreen2(int scrn, int fd,
 
     api = API_OPENGLES2;
     if (_mesa_override_gl_version_contextless(&consts, &api, &version))
-       psp->max_gl_es2_version = version;
-
+       psp->max_gl_es2_version = 30;
+    psp->max_gl_es2_version = 30;
     api = API_OPENGL_COMPAT;
     if (_mesa_override_gl_version_contextless(&consts, &api, &version)) {
        psp->max_gl_core_version = version;
@@ -493,6 +493,9 @@ driContextSetFlags(struct gl_context *ctx, uint32_t flags)
     }
     if ((flags & __DRI_CTX_FLAG_NO_ERROR) != 0)
         ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_NO_ERROR_BIT_KHR;
+    if ((flags & __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS) != 0) {
+        ctx->Const.RobustAccess |= GL_CONTEXT_FLAG_ROBUST_ACCESS_BIT_ARB;
+    }
 }
 
 static __DRIcontext *

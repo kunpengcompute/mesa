@@ -318,7 +318,9 @@ driCreateConfigs(mesa_format format,
 			    (red_bits + green_bits + blue_bits + alpha_bits == 16))
 			    continue;
 		    }
-
+          if (depth_bits[k] == 0 && stencil_bits[k] == 0 && msaa_samples[h] != 0) {
+             continue;
+          }
 		    *c = malloc (sizeof **c);
 		    modes = &(*c)->modes;
 		    c++;

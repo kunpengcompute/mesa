@@ -28,7 +28,7 @@ LOCAL_PATH := $(call my-dir)
 mapi_abi_headers :=
 
 # ---------------------------------------
-# Build libglapi
+# Build libinstrglapi
 # ---------------------------------------
 
 include $(CLEAR_VARS)
@@ -47,13 +47,16 @@ LOCAL_CFLAGS := \
 	-DMAPI_MODE_GLAPI \
 	-DMAPI_ABI_HEADER=\"$(abi_header)\"
 
+LOCAL_CFLAGS   += -fstack-protector-strong --param ssp-buffer-size=4 -fPIE -pie -D_FORTIFY_SOURCE=2 -O2 -fPIC -Wformat
+LOCAL_CPPFLAGS := -fstack-protector-strong --param ssp-buffer-size=4 -fPIE -pie -D_FORTIFY_SOURCE=2 -O2 -fPIC -Wformat
+
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/mapi
 
 LOCAL_EXPORT_C_INCLUDE_DIRS := \
 	$(MESA_TOP)/src/mapi
 
-LOCAL_MODULE := libglapi
+LOCAL_MODULE := libinstrglapi
 
 LOCAL_MODULE_CLASS := SHARED_LIBRARIES
 intermediates := $(call local-generated-sources-dir)
@@ -66,7 +69,6 @@ mapi_abi_headers += $(abi_header)
 
 include $(MESA_COMMON_MK)
 include $(BUILD_SHARED_LIBRARY)
-
 
 mapi_abi_deps := \
 	$(wildcard $(LOCAL_PATH)/glapi/gen/*.py) \

@@ -67,7 +67,7 @@ $(lastword $(LOCAL_GENERATED_SOURCES)): $(firstword $(LOCAL_GENERATED_SOURCES))
 
 LOCAL_EXPORT_C_INCLUDE_DIRS := $(intermediates)/util
 
-ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7),)
+ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7 9),)
 LOCAL_SHARED_LIBRARIES += libnativewindow
 endif
 

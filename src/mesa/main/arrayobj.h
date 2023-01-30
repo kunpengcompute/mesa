@@ -390,4 +390,13 @@ void GLAPIENTRY _mesa_VertexArrayElementBuffer(GLuint vaobj, GLuint buffer);
 
 void GLAPIENTRY _mesa_GetVertexArrayiv(GLuint vaobj, GLenum pname, GLint *param);
 
+void GLAPIENTRY
+_mesa_GetVertexArrayNum(GLuint *vertex_array_num);
+
+void GLAPIENTRY
+_mesa_GetVertexArray(GLuint count, GLuint *vertex_array_num, GLuint *vertex_array);
+
+void GLAPIENTRY
+_mesa_GetCurrentVertexArray(GLuint *vertex_array);
+
 #endif /* ARRAYOBJ_H */

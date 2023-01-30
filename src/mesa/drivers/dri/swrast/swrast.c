@@ -67,7 +67,7 @@
 # include <sys/sysctl.h>
 #endif
 
-const __DRIextension **__driDriverGetExtensions_swrast(void);
+const __DRIextension **__driDriverGetExtensions_libswrast1(void);
 
 const char * const swrast_vendor_string = "Mesa Project";
 const char * const swrast_renderer_string = "Software Rasterizer";
@@ -206,11 +206,16 @@ static const __DRI2rendererQueryExtension swrast_query_renderer_extension = {
    .queryString         = swrast_query_renderer_string
 };
 
+static const __DRIrobustnessExtension dri2Robustness = {
+   .base = { __DRI2_ROBUSTNESS, 1 }
+};
+
 static const __DRIextension *dri_screen_extensions[] = {
     &swrastTexBufferExtension.base,
     &swrast_query_renderer_extension.base,
     &dri2ConfigQueryExtension.base,
     &dri2NoErrorExtension.base,
+    &dri2Robustness.base,
     NULL
 };
 
@@ -230,27 +235,24 @@ swrastFillInModes(__DRIscreen *psp,
 
     uint8_t depth_bits_array[4];
     uint8_t stencil_bits_array[4];
-    uint8_t msaa_samples_array[1];
+    uint8_t msaa_samples_array[4];
 
     (void) psp;
     (void) have_back_buffer;
 
     depth_bits_array[0] = 0;
-    depth_bits_array[1] = 0;
-    depth_bits_array[2] = depth_bits;
-    depth_bits_array[3] = depth_bits;
+    depth_bits_array[1] = depth_bits;
 
     /* Just like with the accumulation buffer, always provide some modes
      * with a stencil buffer.
      */
     stencil_bits_array[0] = 0;
-    stencil_bits_array[1] = (stencil_bits == 0) ? 8 : stencil_bits;
-    stencil_bits_array[2] = 0;
-    stencil_bits_array[3] = (stencil_bits == 0) ? 8 : stencil_bits;
+    stencil_bits_array[1] = stencil_bits;
 
     msaa_samples_array[0] = 0;
+    msaa_samples_array[1] = 4;
 
-    depth_buffer_factor = 4;
+    depth_buffer_factor = 2;
     back_buffer_factor = 2;
 
     switch (pixel_bits) {
@@ -258,10 +260,10 @@ swrastFillInModes(__DRIscreen *psp,
 	format = MESA_FORMAT_B5G6R5_UNORM;
 	break;
     case 24:
-        format = MESA_FORMAT_B8G8R8X8_UNORM;
+        format = MESA_FORMAT_R8G8B8X8_UNORM;
 	break;
     case 32:
-	format = MESA_FORMAT_B8G8R8A8_UNORM;
+	format = MESA_FORMAT_R8G8B8A8_UNORM;
 	break;
     default:
 	fprintf(stderr, "[%s:%u] bad depth %d\n", __func__, __LINE__,
@@ -272,7 +274,7 @@ swrastFillInModes(__DRIscreen *psp,
     configs = driCreateConfigs(format,
 			       depth_bits_array, stencil_bits_array,
 			       depth_buffer_factor, back_buffer_modes,
-			       back_buffer_factor, msaa_samples_array, 1,
+			       back_buffer_factor, msaa_samples_array, 2,
 			       GL_TRUE, GL_FALSE, GL_FALSE);
     if (configs == NULL) {
 	fprintf(stderr, "[%s:%u] Error creating FBConfig!\n", __func__,
@@ -296,7 +298,7 @@ dri_init_screen(__DRIscreen * psp)
 
     psp->extensions = dri_screen_extensions;
 
-    configs16 = swrastFillInModes(psp, 16, 16, 0, 1);
+    configs16 = swrastFillInModes(psp, 16, 24, 8, 1);
     configs24 = swrastFillInModes(psp, 24, 24, 8, 1);
     configs32 = swrastFillInModes(psp, 32, 24, 8, 1);
 
@@ -327,22 +329,32 @@ choose_pixel_format(const struct gl_config *v)
 	&& v->redMask   == 0xff0000
 	&& v->greenMask == 0x00ff00
 	&& v->blueMask  == 0x0000ff)
-	return PF_A8R8G8B8;
+	    return PF_A8R8G8B8;
+    else if(depth == 32
+        && v->redMask == 0xff
+        && v->greenMask == 0x00ff00
+        && v->blueMask == 0xff0000)
+        return PF_A8B8G8R8;
     else if (depth == 24
 	     && v->redMask   == 0xff0000
 	     && v->greenMask == 0x00ff00
 	     && v->blueMask  == 0x0000ff)
-	return PF_X8R8G8B8;
+	    return PF_X8R8G8B8;
+    else if (depth == 24
+         && v->redMask   == 0xff
+	     && v->greenMask == 0x00ff00
+	     && v->blueMask  == 0xff0000)
+	    return PF_X8B8G8R8;
     else if (depth == 16
 	     && v->redMask   == 0xf800
 	     && v->greenMask == 0x07e0
 	     && v->blueMask  == 0x001f)
-	return PF_R5G6B5;
+	    return PF_R5G6B5;
     else if (depth == 8
 	     && v->redMask   == 0x07
 	     && v->greenMask == 0x38
 	     && v->blueMask  == 0xc0)
-	return PF_R3G3B2;
+	    return PF_R3G3B2;
 
     _mesa_problem( NULL, "unexpected format in %s", __func__ );
     return 0;
@@ -439,8 +451,20 @@ swrast_new_renderbuffer(const struct gl_config *visual, __DRIdrawable *dPriv,
 	rb->_BaseFormat = GL_RGBA;
 	xrb->bpp = 32;
 	break;
+    case PF_A8B8G8R8:
+	rb->Format = MESA_FORMAT_R8G8B8A8_UNORM;
+	rb->InternalFormat = GL_RGBA;
+	rb->_BaseFormat = GL_RGBA;
+	xrb->bpp = 32;
+	break;
     case PF_X8R8G8B8:
 	rb->Format = MESA_FORMAT_B8G8R8A8_UNORM; /* XXX */
+	rb->InternalFormat = GL_RGB;
+	rb->_BaseFormat = GL_RGB;
+	xrb->bpp = 32;
+	break;
+    case PF_X8B8G8R8:
+	rb->Format = MESA_FORMAT_R8G8B8X8_UNORM; /* XXX */
 	rb->InternalFormat = GL_RGB;
 	rb->_BaseFormat = GL_RGB;
 	xrb->bpp = 32;
@@ -980,7 +1004,7 @@ static const __DRIextension *swrast_driver_extensions[] = {
     NULL
 };
 
-PUBLIC const __DRIextension **__driDriverGetExtensions_swrast(void)
+PUBLIC const __DRIextension **__driDriverGetExtensions_libswrast1(void)
 {
    globalDriverAPI = &swrast_driver_api;
 

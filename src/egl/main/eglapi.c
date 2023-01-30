@@ -493,6 +493,7 @@ _eglCreateExtensionsString(_EGLDisplay *disp)
    _EGL_CHECK_EXTENSION(CHROMIUM_sync_control);
 
    _EGL_CHECK_EXTENSION(EXT_buffer_age);
+   disp->Extensions.EXT_create_context_robustness = EGL_TRUE;
    _EGL_CHECK_EXTENSION(EXT_create_context_robustness);
    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import);
    _EGL_CHECK_EXTENSION(EXT_image_dma_buf_import_modifiers);

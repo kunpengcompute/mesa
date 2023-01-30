@@ -40,6 +40,8 @@
 #include <stdio.h>
 #include <string.h>
 
+extern void LLVMInitializeAMDGPUDisassembler();
+
 static void ac_init_llvm_target()
 {
    LLVMInitializeAMDGPUTargetInfo();

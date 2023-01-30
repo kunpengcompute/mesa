@@ -41,9 +41,9 @@ RADV_COMMON_INCLUDES := \
 	$(MESA_TOP)/src/gallium/include \
 	frameworks/native/vulkan/include
 
-RADV_SHARED_LIBRARIES := libdrm_amdgpu
+RADV_SHARED_LIBRARIES := libInsDrm_amdgpu
 
-ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7),)
+ifeq ($(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7 9),)
 RADV_SHARED_LIBRARIES += libnativewindow
 endif
 

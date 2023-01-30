@@ -148,7 +148,9 @@ dri_destroy_screen_helper(struct dri_screen * screen);
 void
 dri_destroy_screen(__DRIscreen * sPriv);
 
+#ifdef HAVE_PIPE_LOADER_KMS
 extern const struct __DriverAPIRec dri_kms_driver_api;
+#endif
 
 extern const struct __DriverAPIRec galliumdrm_driver_api;
 extern const __DRIextension *galliumdrm_driver_extensions[];

@@ -47,6 +47,7 @@
 #include "varray.h"
 #include "util/u_atomic.h"
 #include "util/u_memory.h"
+#include "log/log.h"
 
 
 /* Debug flags */
@@ -632,7 +633,7 @@ buffer_data_fallback(struct gl_context *ctx, GLenum target, GLsizeiptrARB size,
       bufObj->StorageFlags = storageFlags;
 
       if (data) {
-	 memcpy( bufObj->Data, data, size );
+	     memcpy( bufObj->Data, data, size );
       }
 
       return GL_TRUE;
@@ -3437,12 +3438,15 @@ _mesa_MapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length,
    }
 
    bufObj = get_buffer(ctx, "glMapBufferRange", target, GL_INVALID_OPERATION);
-   if (!bufObj)
+   if (!bufObj) {
       return NULL;
+   }
 
    if (!validate_map_buffer_range(ctx, bufObj, offset, length, access,
-                                  "glMapBufferRange"))
+                                  "glMapBufferRange")) {
       return NULL;
+   }
+      
 
    return map_buffer_range(ctx, bufObj, offset, length, access,
                            "glMapBufferRange");
@@ -5007,3 +5011,157 @@ _mesa_NamedBufferPageCommitmentEXT(GLuint buffer, GLintptr offset,
    buffer_page_commitment(ctx, bufferObj, offset, size, commit,
                           "glNamedBufferPageCommitmentEXT");
 }
+
+GLuint GLAPIENTRY
+_mesa_GetBuffer(GLenum target)
+{
+    GET_CURRENT_CONTEXT(ctx);
+    if (!ctx) {
+        return 0;
+    }
+    struct gl_buffer_object *bufObjPtr;
+    switch (target) {
+        case GL_PIXEL_UNPACK_BUFFER: {
+            bufObjPtr = ctx->Unpack.BufferObj;
+            break;
+        }
+        case GL_ELEMENT_ARRAY_BUFFER: {
+            bufObjPtr = ctx->Array.VAO->IndexBufferObj;
+            break;
+        }
+        case GL_ARRAY_BUFFER: {
+            bufObjPtr = ctx->Array.ArrayBufferObj;
+            break;
+        }
+        
+        default: {
+            return 0;
+            break;
+        }
+    }
+    return bufObjPtr ? bufObjPtr->Name : 0;
+}
+
+/**
+ * 获取 buffer 的数量
+ * 注意：mesa 的 hash 表里有一个特殊节点，因此返回的值可能等于 buffer + 1
+ */
+void GLAPIENTRY
+_mesa_GetBufferNum(GLuint *buffer_num)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!buffer_num) {
+      _mesa_warning(NULL, "input NULL buffer_num");
+      return;
+   }
+   
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
+   *buffer_num = _mesa_HashNumEntries(ctx->Shared->BufferObjects);
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+}
+
+static GLuint g_buffer_array_index = 0;
+static void
+save_buffer_array_entry(GLuint key, void *data, void *userData)
+{
+   (void)data;
+   
+   GLuint *buffer_array = (GLuint *)userData;
+
+   if (_mesa_IsBuffer(key)) {
+      buffer_array[g_buffer_array_index++] = key;
+   }
+}
+
+/**
+ * 获取 buffer 的数组
+ * count：buffer_array 的长度
+ * buffer_num：实际获取的长度
+ * buffer_array：输出的 buffer 的数组
+ */
+void GLAPIENTRY
+_mesa_GetBufferArray(GLuint count, GLuint *buffer_num, GLuint *buffer_array)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   if (!buffer_num || !buffer_array) {
+      _mesa_warning(NULL, "input NULL buffer_num or buffer_array");
+      return;
+   }
+   
+   _mesa_HashLockMutex(ctx->Shared->BufferObjects);
+
+   *buffer_num = _mesa_HashNumEntries(ctx->Shared->BufferObjects);
+   if (count < *buffer_num) {
+      *buffer_num = 0;
+      _mesa_warning(NULL, "Lack of space for all buffer array");
+      _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+      return; 
+   }
+
+   g_buffer_array_index = 0;
+   _mesa_HashWalkLocked(ctx->Shared->BufferObjects, save_buffer_array_entry, buffer_array);
+   *buffer_num = g_buffer_array_index;
+   
+   _mesa_HashUnlockMutex(ctx->Shared->BufferObjects);
+}
+
+/**
+ * 获取 buffer 的size 和 usage
+ * buffer: buffer name
+ * size: buffer size
+ * usage: buffer usage
+ */
+void GLAPIENTRY
+_mesa_GetBufferInfo(GLuint buffer, GLsizeiptr *size, GLenum *usage)
+{
+   if (!size || !usage){
+      _mesa_warning(NULL, "input NULL size or usage");
+      return;
+   }
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufObj;
+   bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+   if (!bufObj || bufObj == &DummyBufferObject) {
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "glInvalidateBufferData(name = %u) invalid object",
+                  buffer);
+      return;
+   }
+   *size = bufObj->Size;
+   *usage = bufObj->Usage;
+}
+
+/**
+ * 获取 buffer 的 数据
+ * buffer: buffer name
+ * size: buffer size
+ * usage: buffer usage
+ */
+void GLAPIENTRY
+_mesa_GetBufferData(GLuint buffer,  GLsizeiptr *size, GLvoid *data)
+{
+   if (!size || !data){
+      _mesa_warning(NULL, "input NULL size or data");
+      return;
+   }
+   GET_CURRENT_CONTEXT(ctx);
+   struct gl_buffer_object *bufObj;
+   bufObj = _mesa_lookup_bufferobj(ctx, buffer);
+   if (!bufObj || bufObj == &DummyBufferObject) {
+      _mesa_error(ctx, GL_INVALID_VALUE,
+                  "glInvalidateBufferData(name = %u) invalid object",
+                  buffer);
+      return;
+   }
+   GLubyte *dest = data;
+   if (*size < bufObj->Size) {
+       _mesa_error(ctx, GL_INVALID_VALUE, "buffer %u not long enought, expected less than %ld but bufData has size of %ld.",
+                   buffer, *size, bufObj->Size);
+       return;
+   }
+   *size = bufObj->Size;
+   memcpy(data, bufObj->Data, bufObj->Size);
+}
+

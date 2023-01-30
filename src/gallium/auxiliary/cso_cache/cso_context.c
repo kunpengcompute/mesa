@@ -431,7 +431,9 @@ void cso_destroy_context( struct cso_context *ctx )
       }
       if (ctx->has_tessellation) {
          ctx->pipe->bind_tcs_state(ctx->pipe, NULL);
+         ctx->pipe->set_constant_buffer(ctx->pipe, PIPE_SHADER_TESS_CTRL, 0, NULL);
          ctx->pipe->bind_tes_state(ctx->pipe, NULL);
+         ctx->pipe->set_constant_buffer(ctx->pipe, PIPE_SHADER_TESS_EVAL, 0, NULL);
       }
       if (ctx->has_compute_shader) {
          ctx->pipe->bind_compute_state(ctx->pipe, NULL);

@@ -49,7 +49,7 @@ MESA_DRI_WHOLE_STATIC_LIBRARIES := \
 MESA_DRI_SHARED_LIBRARIES := \
 	libcutils \
 	libdl \
-	libglapi \
+	libinstrglapi \
 	liblog \
 	libz
 
@@ -65,5 +65,5 @@ endif
 #-----------------------------------------------
 # Build drivers and libmesa_dri_common
 
-SUBDIRS := common i915 i965
+SUBDIRS := common swrast
 include $(foreach d, $(SUBDIRS), $(LOCAL_PATH)/$(d)/Android.mk)
