@@ -2521,7 +2521,7 @@ _mesa_GetTexImageInfoByHandle(GLuint texture, GLboolean* compressed, GLuint* dim
       *width = *height = 0;
       return;
    }
-   if (!texObj->compressed || texObj->type == GL_BITMAP) {
+   if ((!texObj->compressed || texObj->type == GL_BITMAP) && texObj->format != 0) {
       const GLint bytes_per_pixel = _mesa_bytes_per_pixel(texObj->format, texObj->type);
       if (bytes_per_pixel <= 0) {
          _mesa_warning(NULL, "Texture has wrong format %d type %d.", texObj->format, texObj->type);

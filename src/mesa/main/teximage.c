@@ -3607,6 +3607,7 @@ texture_sub_image(struct gl_context *ctx, GLuint dims,
           */
       }
    }
+   texObj->unpackPixelStoreAttrib.Alignment = ctx->Unpack.Alignment;
    _mesa_unlock_texture(ctx, texObj);
 }
 

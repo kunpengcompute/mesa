@@ -325,6 +325,7 @@ tex_storage_error_check(struct gl_context *ctx,
    }
 
    if (_mesa_is_compressed_format(ctx, internalformat)) {
+      texObj->compressed = true;
       GLenum err;
       if (!_mesa_target_can_be_compressed(ctx, target, internalformat, &err)) {
          _mesa_error(ctx, err,
