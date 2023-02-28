@@ -2187,6 +2187,19 @@
         <glx rop="110" large="true"/>
     </function>
 
+    <function name="nativeTexImage2D" es1="1.0" es2="2.0" no_error="true">
+        <param name="target" type="GLenum"/>
+        <param name="level" type="GLint"/>
+        <param name="internalformat" type="GLint"/>
+        <param name="width" type="GLsizei"/>
+        <param name="height" type="GLsizei"/>
+        <param name="border" type="GLint"/>
+        <param name="format" type="GLenum"/>
+        <param name="type" type="GLenum"/>
+        <param name="handle" type="unsigned long *"/>
+        <param name="pixels" type="const GLvoid *" img_width="width" img_height="height" img_format="format" img_type="type" img_target="target" img_send_null="true" img_pad_dimensions="true"/>
+     </function>
+
     <function name="TexEnvf" es1="1.0" deprecated="3.1">
         <param name="target" type="GLenum"/>
         <param name="pname" type="GLenum"/>

@@ -37,6 +37,7 @@
 #include "util/u_memory.h"
 
 #include "vl_video_buffer.h"
+#include <cutils/log.h>
 
 const unsigned const_resource_plane_order_YUV[3] = {
    0,
@@ -204,7 +205,12 @@ vl_video_buffer_destroy(struct pipe_video_buffer *buffer)
    for (i = 0; i < VL_NUM_COMPONENTS; ++i) {
       pipe_sampler_view_reference(&buf->sampler_view_planes[i], NULL);
       pipe_sampler_view_reference(&buf->sampler_view_components[i], NULL);
-      pipe_resource_reference(&buf->resources[i], NULL);
+      // pipe_resource_reference(&buf->resources[i], NULL);
+      if (buf->resourceflag == 0) {
+         pipe_resource_reference(&buf->resources[i], NULL);
+      } else {
+         buf->resources[i] = NULL;
+      }
    }
 
    for (i = 0; i < VL_MAX_SURFACES; ++i)
@@ -460,6 +466,7 @@ vl_video_buffer_create_ex2(struct pipe_context *pipe,
          buffer->num_planes++;
    }
 
+   buffer->resourceflag = 0;
    return &buffer->base;
 }
 
@@ -501,4 +508,12 @@ vl_video_buffer_create_as_resource(struct pipe_context *pipe,
    vidtemplate.width = templ.width0;
    vidtemplate.height = templ.height0 * array_size;
    return vl_video_buffer_create_ex2(pipe, &vidtemplate, resources);
+}
+
+void
+vl_video_setresourceflag(struct pipe_video_buffer *buffer)
+{
+   struct vl_video_buffer *newbuffer = (struct vl_video_buffer *)buffer;
+   newbuffer->resourceflag = 1;
+   return;
 }

@@ -46,6 +46,7 @@ struct vl_video_buffer
    struct pipe_sampler_view *sampler_view_planes[VL_NUM_COMPONENTS];
    struct pipe_sampler_view *sampler_view_components[VL_NUM_COMPONENTS];
    struct pipe_surface      *surfaces[VL_MAX_SURFACES];
+   unsigned int             resourceflag;
 };
 
 static inline void
@@ -65,6 +66,9 @@ vl_video_buffer_adjust_size(unsigned *width, unsigned *height, unsigned plane,
       }
    }
 }
+
+void
+vl_video_setresourceflag(struct pipe_video_buffer *buffer);
 
 /**
  * get subformats for each plane

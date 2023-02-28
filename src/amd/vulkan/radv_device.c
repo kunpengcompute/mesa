@@ -6385,6 +6385,9 @@ VkResult radv_CreateBuffer(
 	buffer->shareable = vk_find_struct_const(pCreateInfo->pNext,
 						 EXTERNAL_MEMORY_BUFFER_CREATE_INFO) != NULL;
 
+	buffer->unpack_buffer_for_ct = NULL; 
+	buffer->unpack_mem_for_ct = NULL;
+
 	if (pCreateInfo->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT) {
 		buffer->bo = device->ws->buffer_create(device->ws,
 		                                       align64(buffer->size, 4096),
@@ -6411,7 +6414,17 @@ void radv_DestroyBuffer(
 
 	if (!buffer)
 		return;
-
+   
+	if (buffer->unpack_mem_for_ct) {
+		radv_free_memory(device, NULL, buffer->unpack_mem_for_ct);
+    buffer->unpack_mem_for_ct = NULL;	
+	}
+  
+	if (buffer->unpack_buffer_for_ct) {
+		radv_destroy_buffer(device, NULL, buffer->unpack_buffer_for_ct);
+    buffer->unpack_buffer_for_ct = NULL;
+	}
+ 
 	radv_destroy_buffer(device, pAllocator, buffer);
 }
 

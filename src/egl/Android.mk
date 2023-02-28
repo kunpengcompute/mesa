@@ -59,7 +59,8 @@ LOCAL_SHARED_LIBRARIES := \
 	libhardware \
 	liblog \
 	libcutils \
-	libsync
+	libsync \
+    libgbm
 
 ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 27; echo $$?), 0)
 LOCAL_C_INCLUDES += \

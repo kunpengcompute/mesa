@@ -625,7 +625,8 @@ radv_device_supports_etc(struct radv_physical_device *physical_device)
 	return physical_device->rad_info.family == CHIP_VEGA10 ||
 	       physical_device->rad_info.family == CHIP_RAVEN ||
 	       physical_device->rad_info.family == CHIP_RAVEN2 ||
-	       physical_device->rad_info.family == CHIP_STONEY;
+	       physical_device->rad_info.family == CHIP_STONEY ||
+		   physical_device->rad_info.family == CHIP_POLARIS10;
 }
 
 static void

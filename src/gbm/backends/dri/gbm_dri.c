@@ -1197,6 +1197,104 @@ failed:
    return NULL;
 }
 
+static struct gbm_bo *
+gbm_dri_bo_create_native(struct gbm_device *gbm,
+                  uint32_t width, uint32_t height,
+                  uint32_t format, uint32_t usage,
+                  const uint64_t *modifiers,
+                  const unsigned int count,unsigned long **texture)
+{
+   struct gbm_dri_device *dri = gbm_dri_device(gbm);
+   struct gbm_dri_bo *bo;
+   int dri_format;
+   unsigned dri_use = 0;
+
+   /* Callers of this may specify a modifier, or a dri usage, but not both. The
+    * newer modifier interface deprecates the older usage flags.
+    */
+   assert(!(usage && count));
+
+   format = gbm_format_canonicalize(format);
+
+   if (usage & GBM_BO_USE_WRITE || dri->image == NULL)
+      return create_dumb(gbm, width, height, format, usage);
+
+   bo = calloc(1, sizeof *bo);
+   if (bo == NULL)
+      return NULL;
+
+   bo->base.gbm = gbm;
+   bo->base.width = width;
+   bo->base.height = height;
+   bo->base.format = format;
+
+   dri_format = gbm_format_to_dri_format(format);
+   if (dri_format == 0) {
+      errno = EINVAL;
+      goto failed;
+   }
+
+   if (usage & GBM_BO_USE_SCANOUT)
+      dri_use |= __DRI_IMAGE_USE_SCANOUT;
+   if (usage & GBM_BO_USE_CURSOR)
+      dri_use |= __DRI_IMAGE_USE_CURSOR;
+   if (usage & GBM_BO_USE_LINEAR)
+      dri_use |= __DRI_IMAGE_USE_LINEAR;
+
+   /* Gallium drivers requires shared in order to get the handle/stride */
+   dri_use |= __DRI_IMAGE_USE_SHARE;
+
+   if (modifiers) {
+      if (!dri->image || dri->image->base.version < 14 ||
+          !dri->image->createImageWithModifiers) {
+          fprintf(stderr, "Modifiers specified, but DRI is too old\n");
+         errno = ENOSYS;
+         goto failed;
+      }
+
+      /* It's acceptable to create an image with INVALID modifier in the list,
+       * but it cannot be on the only modifier (since it will certainly fail
+       * later). While we could easily catch this after modifier creation, doing
+       * the check here is a convenient debug check likely pointing at whatever
+       * interface the client is using to build its modifier list.
+       */
+      if (count == 1 && modifiers[0] == DRM_FORMAT_MOD_INVALID) {
+         fprintf(stderr, "Only invalid modifier specified\n");
+         errno = EINVAL;
+         goto failed;
+      }
+
+      bo->image =
+         dri->image->createImageWithModifiers(dri->screen,
+                                              width, height,
+                                              dri_format,
+                                              modifiers, count,
+                                              bo);
+
+      if (bo->image) {
+         /* The client passed in a list of invalid modifiers */
+         assert(gbm_dri_bo_get_modifier(&bo->base) != DRM_FORMAT_MOD_INVALID);
+      }
+   } else {
+      bo->image = dri->image->createImagenative(dri->screen, width, height,
+                                                dri_format, dri_use, bo,texture);
+   }
+
+   if (bo->image == NULL)
+      goto failed;
+
+   dri->image->queryImage(bo->image, __DRI_IMAGE_ATTRIB_HANDLE,
+                          &bo->base.handle.s32);
+   dri->image->queryImage(bo->image, __DRI_IMAGE_ATTRIB_STRIDE,
+                          (int *) &bo->base.stride);
+
+   return &bo->base;
+
+failed:
+   free(bo);
+   return NULL;
+}
+
 static void *
 gbm_dri_bo_map(struct gbm_bo *_bo,
               uint32_t x, uint32_t y,
@@ -1229,6 +1327,40 @@ gbm_dri_bo_map(struct gbm_bo *_bo,
    return dri->image->mapImage(dri->context, bo->image, x, y,
                                width, height, flags, (int *)stride,
                                map_data);
+}
+
+static void *
+gbm_dri_bo_map_native(struct gbm_bo *_bo,
+               uint32_t x, uint32_t y,
+              uint32_t width, uint32_t height,
+               uint32_t flags, uint32_t *stride, void **map_data)
+{
+   struct gbm_dri_device *dri = gbm_dri_device(_bo->gbm);
+   struct gbm_dri_bo *bo = gbm_dri_bo(_bo);
+
+   /* If it's a dumb buffer, we already have a mapping */
+   if (bo->map) {
+      *map_data = (char *)bo->map + (bo->base.stride * y) + (x * 4);
+      *stride = bo->base.stride;
+      return *map_data;
+   }
+
+   if (!dri->image || dri->image->base.version < 12 || !dri->image->mapImage) {
+      errno = ENOSYS;
+      return NULL;
+   }
+
+   mtx_lock(&dri->mutex);
+   if (!dri->context)
+      dri->context = dri->dri2->createNewContext(dri->screen, NULL,
+                                                 NULL, NULL);
+   assert(dri->context);
+   mtx_unlock(&dri->mutex);
+
+   /* GBM flags and DRI flags are the same, so just pass them on */
+   return dri->image->mapImage_native(dri->context, bo->image, x, y,
+                                      width, height, flags, (int *)stride,
+                                      map_data);
 }
 
 static void
@@ -1364,8 +1496,10 @@ dri_device_create(int fd)
 
    dri->base.fd = fd;
    dri->base.bo_create = gbm_dri_bo_create;
+   dri->base.bo_create_native = gbm_dri_bo_create_native;
    dri->base.bo_import = gbm_dri_bo_import;
    dri->base.bo_map = gbm_dri_bo_map;
+   dri->base.bo_map_native = gbm_dri_bo_map_native;
    dri->base.bo_unmap = gbm_dri_bo_unmap;
    dri->base.is_format_supported = gbm_dri_is_format_supported;
    dri->base.get_format_modifier_plane_count =

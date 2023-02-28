@@ -155,7 +155,8 @@ LOCAL_WHOLE_STATIC_LIBRARIES := \
 	libmesa_amd_common \
 	libmesa_radv_common \
 	libmesa_vulkan_util \
-	libmesa_aco
+	libmesa_aco \
+	libmesa_dricore
 
 LOCAL_SHARED_LIBRARIES += $(RADV_SHARED_LIBRARIES) libz libsync liblog
 

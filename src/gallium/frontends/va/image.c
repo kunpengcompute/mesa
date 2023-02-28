@@ -346,6 +346,45 @@ vlVaSetImagePalette(VADriverContextP ctx, VAImageID image, unsigned char *palett
    return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
+static inline void u_copy_nv12_to_yv12_simd(void *const *destination_data,
+                                            uint32_t const *destination_pitches,
+                                            int src_plane, int src_field,
+                                            int src_stride, int num_fields,
+                                            uint8_t const *src,
+                                            int width, int height)
+{
+   int x, y;
+   unsigned u_stride = destination_pitches[2] * num_fields;
+   unsigned v_stride = destination_pitches[1] * num_fields;
+   uint8_t *u_dst = (uint8_t *)destination_data[2] + destination_pitches[2] * src_field;
+   uint8_t *v_dst = (uint8_t *)destination_data[1] + destination_pitches[1] * src_field;
+#if defined(__aarch64__)
+   int clc_width = width / 16 * 16;
+   nv12_to_yv12_arm64(src, src_stride, u_dst, u_stride, v_dst, v_stride, clc_width, height);
+   if (clc_width < width) {
+      for (y = 0; y < height; y++) {
+         for (x = clc_width; x < width; x++) {
+            u_dst[x] = src[2 * x];
+            v_dst[x] = src[2 * x + 1];
+         }
+         u_dst += u_stride;
+         v_dst += v_stride;
+         src += src_stride;
+      }
+   }
+#else
+   for (y = 0; y < height; y++) {
+      for (x = 0; x < width; x++) {
+         u_dst[x] = src[2 * x];
+         v_dst[x] = src[2 * x + 1];
+      }
+      u_dst += u_stride;
+      v_dst += v_stride;
+      src += src_stride;
+   }
+#endif
+}
+
 VAStatus
 vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
              unsigned int width, unsigned int height, VAImageID image)
@@ -472,7 +511,7 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
          }
 
          if (i == 1 && convert) {
-            u_copy_nv12_to_yv12(data, pitches, i, j,
+            u_copy_nv12_to_yv12_simd(data, pitches, i, j,
                transfer->stride, views[i]->texture->array_size,
                map, box.width, box.height);
          } else {

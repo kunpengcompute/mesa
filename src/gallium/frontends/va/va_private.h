@@ -458,5 +458,6 @@ VAStatus vlVaHandleVAEncSliceParameterBufferTypeHEVC(vlVaDriver *drv, vlVaContex
 VAStatus vlVaHandleVAEncSequenceParameterBufferTypeHEVC(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
 VAStatus vlVaHandleVAEncMiscParameterTypeRateControlHEVC(vlVaContext *context, VAEncMiscParameterBuffer *buf);
 VAStatus vlVaHandleVAEncMiscParameterTypeFrameRateHEVC(vlVaContext *context, VAEncMiscParameterBuffer *buf);
-
+void nv12_to_yv12_arm64(uint8_t const *src, int src_stride, uint8_t *u_dst, int u_stride, uint8_t *v_dst, int v_stride,
+    int clc_width, int height);
 #endif //VA_PRIVATE_H

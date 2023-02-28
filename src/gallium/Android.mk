@@ -35,25 +35,28 @@ SUBDIRS += auxiliary/pipe-loader
 #
 
 SUBDIRS += winsys/sw/kms-dri winsys/sw/dri drivers/softpipe
-SUBDIRS += winsys/freedreno/drm drivers/freedreno
-SUBDIRS += winsys/i915/drm drivers/i915
+# SUBDIRS += winsys/freedreno/drm drivers/freedreno
+# SUBDIRS += winsys/i915/drm drivers/i915
 SUBDIRS += winsys/nouveau/drm drivers/nouveau
-SUBDIRS += winsys/kmsro/drm drivers/kmsro
+# SUBDIRS += winsys/kmsro/drm drivers/kmsro
 SUBDIRS += winsys/radeon/drm drivers/r300
 SUBDIRS += winsys/radeon/drm drivers/r600
 SUBDIRS += winsys/radeon/drm winsys/amdgpu/drm drivers/radeonsi
-SUBDIRS += winsys/vc4/drm drivers/vc4
+# SUBDIRS += winsys/vc4/drm drivers/vc4
+SUBDIRS += winsys/amdgpu/drm drivers/radeonsi
 SUBDIRS += winsys/virgl/common winsys/virgl/drm winsys/virgl/vtest drivers/virgl
 SUBDIRS += winsys/svga/drm drivers/svga
-SUBDIRS += winsys/etnaviv/drm drivers/etnaviv drivers/renderonly
+# SUBDIRS += winsys/etnaviv/drm drivers/etnaviv drivers/renderonly
 SUBDIRS += frontends/dri
-SUBDIRS += winsys/iris/drm drivers/iris
-SUBDIRS += winsys/lima/drm drivers/lima
-SUBDIRS += winsys/panfrost/drm drivers/panfrost
+SUBDIRS += frontends/va
+# SUBDIRS += winsys/iris/drm drivers/iris
+# SUBDIRS += winsys/lima/drm drivers/lima
+# SUBDIRS += winsys/panfrost/drm drivers/panfrost
 
 # sort to eliminate any duplicates
 INC_DIRS := $(call all-named-subdir-makefiles,$(sort $(SUBDIRS)))
 # targets/dri must be included last
 INC_DIRS += $(call all-named-subdir-makefiles,targets/dri)
+INC_DIRS += $(call all-named-subdir-makefiles,targets/va)
 
 include $(INC_DIRS)

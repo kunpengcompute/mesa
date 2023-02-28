@@ -123,6 +123,9 @@ static void append_logical_end(Block *b)
 
 Temp get_ssa_temp(struct isel_context *ctx, nir_ssa_def *def)
 {
+   if (ctx == NULL || def == NULL) {
+      return Temp();
+   }
    assert(ctx->allocated[def->index].id());
    return ctx->allocated[def->index];
 }

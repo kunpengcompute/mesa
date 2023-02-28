@@ -277,6 +277,11 @@ _mesa_TexImage2D( GLenum target, GLint level, GLint internalformat,
                   GLenum format, GLenum type, const GLvoid *pixels );
 
 extern void GLAPIENTRY
+_mesa_nativeTexImage2D( GLenum target, GLint level, GLint internalformat,
+                        GLsizei width, GLsizei height, GLint border,
+                        GLenum format, GLenum type, unsigned long *handle, const GLvoid *pixels);
+
+extern void GLAPIENTRY
 _mesa_TextureImage2DEXT( GLuint texture, GLenum target, GLint level,
                          GLint internalformat, GLsizei width, GLsizei height,
                          GLint border, GLenum format, GLenum type,
@@ -320,6 +325,11 @@ extern void GLAPIENTRY
 _mesa_TexImage2D_no_error(GLenum target, GLint level, GLint internalformat,
                           GLsizei width, GLsizei height, GLint border,
                           GLenum format, GLenum type, const GLvoid *pixels);
+
+extern void GLAPIENTRY
+_mesa_nativeTexImage2D_no_error(GLenum target, GLint level, GLint internalformat,
+                                GLsizei width, GLsizei height, GLint border,
+                                GLenum format, GLenum type, unsigned long *handle, const GLvoid *pixels);
 
 extern void GLAPIENTRY
 _mesa_TexImage3D_no_error(GLenum target, GLint level, GLint internalformat,

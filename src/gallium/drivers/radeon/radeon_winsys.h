@@ -38,7 +38,7 @@
 #include "amd/common/ac_gpu_info.h"
 #include "amd/common/ac_surface.h"
 #include "pipebuffer/pb_buffer.h"
-
+#include <log/log.h>
 /* Tiling flags. */
 enum radeon_bo_layout
 {
@@ -701,12 +701,23 @@ static inline bool radeon_emitted(struct radeon_cmdbuf *cs, unsigned num_dw)
 
 static inline void radeon_emit(struct radeon_cmdbuf *cs, uint32_t value)
 {
+   if (cs == NULL ||
+       cs->current.buf == NULL ||
+       cs->current.cdw >= cs->current.max_dw) {
+      ALOGE("radeon_emit Out-of-bounds access!! cs->current.cdw = %ld, \
+      and cs->current.max_dw = %ld", cs->current.cdw, cs->current.max_dw); 
+   }
+
    cs->current.buf[cs->current.cdw++] = value;
 }
 
 static inline void radeon_emit_array(struct radeon_cmdbuf *cs, const uint32_t *values,
                                      unsigned count)
 {
+   if (cs == NULL || values == NULL || count < 0) {
+       ALOGE("radeon_emit_array Out-of-bounds access!!");
+       return;
+   }
    memcpy(cs->current.buf + cs->current.cdw, values, count * 4);
    cs->current.cdw += count;
 }

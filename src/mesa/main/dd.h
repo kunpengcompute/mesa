@@ -226,6 +226,11 @@ struct dd_function_table {
                     GLenum format, GLenum type, const GLvoid *pixels,
                     const struct gl_pixelstore_attrib *packing);
 
+   unsigned long * (*nativeTexImage)(struct gl_context *ctx, GLuint dims,
+                    struct gl_texture_image *texImage,
+                    GLenum format, GLenum type, const GLvoid *pixels,
+                    const struct gl_pixelstore_attrib *packing);
+
    /**
     * Called by glTexSubImage[123]D().
     * Replace a subset of the target texture with new texel data.

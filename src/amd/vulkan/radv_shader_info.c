@@ -29,6 +29,9 @@
 static void mark_sampler_desc(const nir_variable *var,
 			      struct radv_shader_info *info)
 {
+	if (var == NULL || info == NULL) {
+		return;
+	}
 	info->desc_set_used_mask |= (1u << var->data.descriptor_set);
 }
 

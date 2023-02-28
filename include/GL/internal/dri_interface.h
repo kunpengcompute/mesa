@@ -1515,6 +1515,12 @@ struct __DRIimageExtensionRec {
 			       unsigned int use,
 			       void *loaderPrivate);
 
+    __DRIimage *(*createImagenative)(__DRIscreen *screen,
+			       int width, int height, int format,
+			       unsigned int use,
+			       void *loaderPrivate,
+			       unsigned long **texture);
+
    GLboolean (*queryImage)(__DRIimage *image, int attrib, int *value);
 
    /**
@@ -1642,6 +1648,10 @@ struct __DRIimageExtensionRec {
    void *(*mapImage)(__DRIcontext *context, __DRIimage *image,
                      int x0, int y0, int width, int height,
                      unsigned int flags, int *stride, void **data);
+
+   void *(*mapImage_native)(__DRIcontext *context, __DRIimage *image,
+                            int x0, int y0, int width, int height,
+                            unsigned int flags, int *stride, void **data);
 
    /**
     * Unmap a previously mapped __DRIimage

@@ -36,6 +36,8 @@ ifneq ($(filter 2 4, $(MESA_ANDROID_MAJOR_VERSION)),)
 $(error "Android 4.4 and earlier not supported")
 endif
 
+BOARD_GPU_DRIVERS := radeonsi 
+
 MESA_DRI_MODULE_REL_PATH := dri
 MESA_DRI_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/$(MESA_DRI_MODULE_REL_PATH)
 MESA_DRI_MODULE_UNSTRIPPED_PATH := $(TARGET_OUT_SHARED_LIBRARIES_UNSTRIPPED)/$(MESA_DRI_MODULE_REL_PATH)
@@ -98,7 +100,7 @@ define mesa-build-with-llvm
   $(if $(filter $(MESA_ANDROID_MAJOR_VERSION), 4 5 6 7), \
     $(warning Unsupported LLVM version in Android $(MESA_ANDROID_MAJOR_VERSION)),) \
   $(eval LOCAL_CFLAGS += -DLLVM_AVAILABLE -DLLVM_IS_SHARED=1 -DMESA_LLVM_VERSION_STRING=\"3.9\") \
-  $(eval LOCAL_SHARED_LIBRARIES += libLLVM)
+  $(eval LOCAL_SHARED_LIBRARIES += libLLVM70)
 endef
 
 # add subdirectories
@@ -114,7 +116,6 @@ SUBDIRS := \
 	src/egl \
 	src/amd \
 	src/broadcom \
-	src/intel \
 	src/mesa/drivers/dri \
 	src/vulkan \
 	src/panfrost \

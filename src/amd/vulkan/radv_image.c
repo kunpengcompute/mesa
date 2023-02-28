@@ -1382,6 +1382,63 @@ radv_destroy_image(struct radv_device *device,
 	vk_free2(&device->vk.alloc, pAllocator, image);
 }
 
+static bool
+radv_device_hw_support_etc(struct radv_physical_device* physical_device)
+{
+	return physical_device->rad_info.family == CHIP_VEGA10 ||
+		physical_device->rad_info.family == CHIP_RAVEN ||
+		physical_device->rad_info.family == CHIP_RAVEN2 ||
+		physical_device->rad_info.family == CHIP_STONEY;
+}
+
+static bool
+radv_need_translate_etc2(VkFormat format) {
+	switch (format) {
+	case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:	
+	case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:	
+	case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:	
+	case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:	
+	case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:	
+	case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:	
+	case VK_FORMAT_EAC_R11_UNORM_BLOCK:	
+	case VK_FORMAT_EAC_R11_SNORM_BLOCK:	
+	case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:	
+	case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+		return true;
+	default:
+		return false;
+	}
+}
+
+VkFormat
+radv_translate_etc(VkFormat format)
+{
+	switch (format) {
+	case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+		return VK_FORMAT_R8G8B8A8_UNORM;
+	case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+		return VK_FORMAT_R8G8B8A8_SRGB;
+	case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+		return VK_FORMAT_R8G8B8A8_UNORM;
+	case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+		return VK_FORMAT_R8G8B8A8_SRGB;
+	case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+		return VK_FORMAT_R8G8B8A8_UNORM;
+	case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+		return  VK_FORMAT_R8G8B8A8_SRGB;
+	case VK_FORMAT_EAC_R11_UNORM_BLOCK:
+		return  VK_FORMAT_R8_UNORM;
+	case VK_FORMAT_EAC_R11_SNORM_BLOCK:
+		return VK_FORMAT_R8_SRGB;
+	case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
+		return VK_FORMAT_R8G8_UNORM;
+	case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+		return VK_FORMAT_R8G8_SRGB;
+	default:
+		return format;
+	}
+}
+
 VkResult
 radv_image_create(VkDevice _device,
 		  const struct radv_image_create_info *create_info,
@@ -1422,11 +1479,17 @@ radv_image_create(VkDevice _device,
 	image->info.levels = pCreateInfo->mipLevels;
 	image->info.num_channels = vk_format_get_nr_components(format);
 
+	image->istranslate = false;
 	image->vk_format = format;
+	image->vk_srcFormat = format;
 	image->tiling = pCreateInfo->tiling;
 	image->usage = pCreateInfo->usage;
 	image->flags = pCreateInfo->flags;
 	image->plane_count = plane_count;
+	if (!radv_device_hw_support_etc(device->physical_device) && radv_need_translate_etc2(format)) {
+	  image->istranslate = true;
+    image->vk_format = radv_translate_etc(format);
+	}
 
 	image->exclusive = pCreateInfo->sharingMode == VK_SHARING_MODE_EXCLUSIVE;
 	if (pCreateInfo->sharingMode == VK_SHARING_MODE_CONCURRENT) {
@@ -1607,6 +1670,9 @@ radv_image_view_init(struct radv_image_view *iview,
 	iview->level_count = radv_get_levelCount(image, range);
 
 	iview->vk_format = pCreateInfo->format;
+	if (!radv_device_hw_support_etc(device->physical_device) && radv_need_translate_etc2(pCreateInfo->format)) {
+		iview->vk_format = radv_translate_etc(pCreateInfo->format);
+	}
 
 	/* If the image has an Android external format, pCreateInfo->format will be
 	 * VK_FORMAT_UNDEFINED. */

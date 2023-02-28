@@ -54,7 +54,7 @@ SID_TABLES_INPUTS := \
 $(intermediates)/common/sid_tables.h: $(SID_TABLES) $(SID_TABLES_INPUTS)
 	@mkdir -p $(dir $@)
 	@echo "Gen Header: $(PRIVATE_MODULE) <= $(notdir $(@))"
-	$(hide) $(MESA_PYTHON2) $(SID_TABLES) $(SID_TABLES_INPUTS) > $@ || ($(RM) $@; false)
+	$(hide) $(MESA_PYTHON3) $(SID_TABLES) $(SID_TABLES_INPUTS) > $@ || ($(RM) $@; false)
 
 AMDGFXREGS := $(LOCAL_PATH)/registers/makeregheader.py
 
@@ -67,7 +67,7 @@ AMDGFXREGS_INPUTS := \
 $(intermediates)/common/amdgfxregs.h: $(AMDGFXREGS) $(AMDGFXREGS_INPUTS)
 	@mkdir -p $(dir $@)
 	@echo "Gen Header: $(PRIVATE_MODULE) <= $(notdir $(@))"
-	$(hide) $(MESA_PYTHON2) $(AMDGFXREGS) $(AMDGFXREGS_INPUTS) --sort address --guard AMDGFXREGS_H > $@ || ($(RM) $@; false)
+	$(hide) $(MESA_PYTHON3) $(AMDGFXREGS) $(AMDGFXREGS_INPUTS) --sort address --guard AMDGFXREGS_H > $@ || ($(RM) $@; false)
 
 GEN10_FORMAT_TABLE_INPUTS := \
 	$(MESA_TOP)/src/util/format/u_format.csv \
@@ -81,7 +81,7 @@ GEN10_FORMAT_TABLE := $(LOCAL_PATH)/common/gfx10_format_table.py
 $(intermediates)/common/gfx10_format_table.c: $(GEN10_FORMAT_TABLE) $(GEN10_FORMAT_TABLE_INPUTS) $(GEN10_FORMAT_TABLE_DEP)
 	@mkdir -p $(dir $@)
 	@echo "Gen Header: $(PRIVATE_MODULE) <= $(notdir $(@))"
-	$(hide) $(MESA_PYTHON2) $(GEN10_FORMAT_TABLE) $(GEN10_FORMAT_TABLE_INPUTS) > $@ || ($(RM) $@; false)
+	$(hide) $(MESA_PYTHON3) $(GEN10_FORMAT_TABLE) $(GEN10_FORMAT_TABLE_INPUTS) > $@ || ($(RM) $@; false)
 
 LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/include \
@@ -93,7 +93,8 @@ LOCAL_C_INCLUDES := \
 	$(MESA_TOP)/src/gallium/include \
 	$(MESA_TOP)/src/gallium/auxiliary \
 	$(MESA_TOP)/src/mesa \
-	$(intermediates)/common
+	$(intermediates)/common \
+	$(MESA_TOP)/../unpack_open_source/llvmAndroid9/lib/Target/AMDGPU/Disassembler
 
 LOCAL_EXPORT_C_INCLUDE_DIRS := \
 	$(LOCAL_PATH)/common \

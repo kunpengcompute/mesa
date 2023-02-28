@@ -33,7 +33,7 @@ LOCAL_SRC_FILES := \
 	$(filter-out tessellator/tessellator.hpp, $(C_SOURCES)) \
 	$(NIR_SOURCES) \
 	$(RENDERONLY_SOURCES) \
-	$(VL_STUB_SOURCES)
+	$(VL_WINSYS_DRM_SOURCES)
 
 ifeq ($(USE_LIBBACKTRACE),true)
 	LOCAL_CFLAGS += -DHAVE_ANDROID_PLATFORM
@@ -43,7 +43,8 @@ endif
 
 LOCAL_C_INCLUDES := \
 	$(GALLIUM_TOP)/auxiliary/util \
-	$(MESA_TOP)/src/util
+	$(MESA_TOP)/src/util \
+	$(GALLIUM_TOP)/auxiliary/vl
 
 ifeq ($(MESA_ENABLE_LLVM),true)
 LOCAL_SRC_FILES += \

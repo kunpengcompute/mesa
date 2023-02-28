@@ -231,8 +231,13 @@ try_lower_tex_ycbcr(const struct radv_pipeline_layout *layout,
 	int deref_src_idx = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
 	assert(deref_src_idx >= 0);
 	nir_deref_instr *deref = nir_src_as_deref(tex->src[deref_src_idx].src);
-
+	if (deref == NULL) {
+      return false;
+    }
 	nir_variable *var = nir_deref_instr_get_variable(deref);
+	if (var == NULL) {
+      return false;
+    }
 	const struct radv_descriptor_set_layout *set_layout =
 		layout->set[var->data.descriptor_set].layout;
 	const struct radv_descriptor_set_binding_layout *binding =

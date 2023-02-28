@@ -1644,6 +1644,7 @@ offsets = {
     "ViewportSwizzleNV": 1608,
     "AlphaToCoverageDitherControlNV": 1609,
     "InternalBufferSubDataCopyMESA": 1610,
+    "nativeTexImage2D": 1611,
 }
 
 functions = [
@@ -2642,6 +2643,7 @@ functions = [
     "TexGeniv",
     "TexImage1D",
     "TexImage2D",
+    "nativeTexImage2D",
     "TexImage2DMultisample",
     "TexImage3D",
     "TexImage3DEXT",

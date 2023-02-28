@@ -23,6 +23,8 @@
 
 #include "radv_meta.h"
 #include "vk_format.h"
+#include "main/formats.h"
+#include "main/texcompress_etc.h"
 
 static VkExtent3D
 meta_image_block_size(const struct radv_image *image)
@@ -104,6 +106,31 @@ blit_surf_for_image_level_layer(struct radv_image *image,
 	};
 }
 
+static size_t
+radv_get_texel_count(const VkBufferImageCopy* pRegions, uint32_t regionCount, struct radv_image* image)
+{
+	if (image == NULL) {
+		return 0;
+	}
+	size_t w = 0;
+	size_t h = 0;
+
+	for (int i = 0; i < regionCount; i++) {
+		const VkExtent3D bufferExtent = {
+			.width  = pRegions[i].bufferRowLength ?
+			pRegions[i].bufferRowLength : pRegions[i].imageExtent.width,
+			.height = pRegions[i].bufferImageHeight ?
+			pRegions[i].bufferImageHeight : pRegions[i].imageExtent.height,
+		};
+		const VkExtent3D buf_extent_el =
+			meta_region_extent_el(image, image->type, &bufferExtent);
+		w += buf_extent_el.width;
+		h += buf_extent_el.height;	
+	}
+	int bs = vk_format_get_blocksize(image->vk_format);
+	return w * h * bs;
+}
+
 static bool
 image_is_renderable(struct radv_device *device, struct radv_image *image)
 {
@@ -120,6 +147,58 @@ image_is_renderable(struct radv_device *device, struct radv_image *image)
 	return true;
 }
 
+static mesa_format
+radv_translate_etc_to_mesa_format(VkFormat format)
+{
+	switch (format) {
+	case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_RGB8;
+	case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+		return MESA_FORMAT_ETC2_SRGB8;
+	case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_RGB8_PUNCHTHROUGH_ALPHA1;
+	case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+		return MESA_FORMAT_ETC2_SRGB8_PUNCHTHROUGH_ALPHA1;
+	case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_RGBA8_EAC;
+	case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+		return MESA_FORMAT_ETC2_SRGB8_ALPHA8_EAC;
+	case VK_FORMAT_EAC_R11_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_R11_EAC;
+	case VK_FORMAT_EAC_R11_SNORM_BLOCK:
+		return MESA_FORMAT_ETC2_SIGNED_R11_EAC;
+	case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_RG11_EAC;
+	case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+		return MESA_FORMAT_ETC2_SIGNED_RG11_EAC;
+	default:
+		return MESA_FORMAT_ETC2_RGB8;
+	}
+}
+static mesa_format 
+radv_translate_vkformat_to_mesa_format(VkFormat format)
+{
+	switch (format) {
+    case VK_FORMAT_R8G8B8_UNORM:
+		return MESA_FORMAT_RGB_UNORM8;
+	case VK_FORMAT_R8G8B8A8_UNORM:
+		return MESA_FORMAT_R8G8B8A8_UNORM;
+	case VK_FORMAT_R8G8B8_SRGB:
+		return MESA_FORMAT_BGR_SRGB8;
+	case VK_FORMAT_R8G8B8A8_SRGB:
+		return MESA_FORMAT_R8G8B8A8_SRGB;
+	case VK_FORMAT_R8_UNORM:
+		return MESA_FORMAT_R_UNORM8;
+	case VK_FORMAT_R8_SRGB:
+		return MESA_FORMAT_R_SRGB8;
+	case VK_FORMAT_R8G8_UNORM:
+		return MESA_FORMAT_RG_UNORM8;
+	case VK_FORMAT_R8G8_SRGB:
+		return MESA_FORMAT_RG_SNORM8;
+	default:
+		return MESA_FORMAT_RGB_UNORM8;
+	}
+}
 static void
 meta_copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer,
                           struct radv_buffer* buffer,
@@ -128,9 +207,16 @@ meta_copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer,
                           uint32_t regionCount,
                           const VkBufferImageCopy* pRegions)
 {
+	struct radv_device* device = cmd_buffer->device;
+	VkBuffer dstBuffer;
+	struct radv_buffer* radvDstBuffer = buffer;
+	VkDeviceMemory memory_h;
+	void* pDstData = NULL;
+	void* pSrcData = NULL;
 	bool cs = cmd_buffer->queue_family_index == RADV_QUEUE_COMPUTE;
 	struct radv_meta_saved_state saved_state;
 	bool old_predicating;
+
 
 	/* The Vulkan 1.0 spec says "dstImage must have a sample count equal to
 	 * VK_SAMPLE_COUNT_1_BIT."
@@ -148,7 +234,62 @@ meta_copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer,
 	 */
 	old_predicating = cmd_buffer->state.predicating;
 	cmd_buffer->state.predicating = false;
-
+	if (image->istranslate) {
+		//Create translate dstBuffer
+		pSrcData = device->ws->buffer_map(buffer->bo) + buffer->offset;
+		int dstBufferSize = radv_get_texel_count(pRegions, regionCount, image);
+		if(VK_SUCCESS != radv_CreateBuffer(radv_device_to_handle(device),
+			&(VkBufferCreateInfo) {
+			  .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+				.flags = buffer->flags,
+				.size = dstBufferSize,
+				.usage = buffer->usage,
+				.sharingMode = VK_SHARING_MODE_EXCLUSIVE 
+      }, 
+      NULL, 
+      &dstBuffer)) {
+			return;
+		}
+   
+    RADV_FROM_HANDLE(radv_buffer, _dstbuffer, dstBuffer);
+		buffer->unpack_buffer_for_ct = _dstbuffer;
+	
+  	//get tranlated dstBuffer memory size
+		VkMemoryRequirements memoryRequirements;
+		radv_GetBufferMemoryRequirements(radv_device_to_handle(device), dstBuffer, &memoryRequirements);
+		int memory_type_index = -1;
+		for (int i = 0; i < device->physical_device->memory_properties.memoryTypeCount; ++i) {
+			bool is_local = !!(device->physical_device->memory_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
+			if (is_local) {
+				memory_type_index = i;
+				break;
+			}
+		}
+		if(VK_SUCCESS != radv_AllocateMemory(radv_device_to_handle(device),
+			&(VkMemoryAllocateInfo) {
+			  .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+				.pNext = NULL,
+				.allocationSize = memoryRequirements.size,
+				.memoryTypeIndex = memory_type_index,
+		  },
+			NULL,
+			& memory_h)) {
+			return;
+		}
+   
+    RADV_FROM_HANDLE(radv_device_memory, _mem, memory_h);
+		buffer->unpack_mem_for_ct = _mem;
+   
+		if(VK_SUCCESS != radv_BindBufferMemory(
+			radv_device_to_handle(device),
+			dstBuffer,
+			memory_h,
+			0)) {
+			return;
+		}
+		radv_MapMemory(radv_device_to_handle(device), memory_h, 0, dstBufferSize, 0, &pDstData);	
+	}
+	void* realDstData = pDstData;
 	for (unsigned r = 0; r < regionCount; r++) {
 
 		/**
@@ -205,11 +346,26 @@ meta_copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer,
 			img_bsurf.current_layout = VK_IMAGE_LAYOUT_GENERAL;
 		}
 
+		uint32_t offset = pRegions[r].bufferOffset;
+		if (image->istranslate) {
+			// translate vkFormat to MESA format
+			mesa_format dstFormat = radv_translate_vkformat_to_mesa_format(image->vk_format);
+			mesa_format srcFormat = radv_translate_etc_to_mesa_format(image->vk_srcFormat);
+			bool bgra = false;
+			void * realSrcData = pSrcData;
+			realSrcData += pRegions[r].bufferOffset;
+			unsigned dst_stride = _mesa_format_row_stride(dstFormat, pRegions[r].imageExtent.width);
+			unsigned src_stride =_mesa_format_row_stride(srcFormat, bufferExtent.width);
+      _mesa_unpack_etc2_format(realDstData, dst_stride, realSrcData , src_stride, bufferExtent.width, bufferExtent.height, srcFormat, bgra);
+			RADV_FROM_HANDLE(radv_buffer, tmp, dstBuffer);
+      radvDstBuffer = tmp;
+			offset = realDstData - pDstData;
+		}
 		struct radv_meta_blit2d_buffer buf_bsurf = {
 			.bs = img_bsurf.bs,
 			.format = img_bsurf.format,
-			.buffer = buffer,
-			.offset = pRegions[r].bufferOffset,
+			.buffer = radvDstBuffer,
+			.offset = offset,
 			.pitch = buf_extent_el.width,
 		};
 
@@ -241,12 +397,20 @@ meta_copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer,
 			 */
 			buf_bsurf.offset += buf_extent_el.width *
 			                    buf_extent_el.height * buf_bsurf.bs;
+			realDstData += buf_extent_el.width *
+			                    buf_extent_el.height * buf_bsurf.bs;
 			img_bsurf.layer++;
 			if (image->type == VK_IMAGE_TYPE_3D)
 				slice_3d++;
 			else
 				slice_array++;
 		}
+	}
+	
+	if (image->istranslate){
+		device->ws->buffer_unmap(buffer->bo);
+    pSrcData = NULL;
+		radv_UnmapMemory(radv_device_to_handle(device), memory_h);
 	}
 
 	/* Restore conditional rendering. */

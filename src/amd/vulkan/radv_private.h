@@ -949,6 +949,9 @@ struct radv_buffer {
 	VkDeviceSize                                 offset;
 
 	bool shareable;
+ 
+  struct radv_buffer* unpack_buffer_for_ct;
+  struct radv_device_memory* unpack_mem_for_ct;
 };
 
 enum radv_dynamic_state_bits {
@@ -1799,6 +1802,7 @@ struct radv_image {
 	 * of the actual surface formats.
 	 */
 	VkFormat vk_format;
+	VkFormat vk_srcFormat;
 	VkImageAspectFlags aspects;
 	VkImageUsageFlags usage; /**< Superset of VkImageCreateInfo::usage. */
 	struct ac_surf_info info;
@@ -1811,6 +1815,7 @@ struct radv_image {
 	unsigned queue_family_mask;
 	bool exclusive;
 	bool shareable;
+	bool istranslate;
 
 	/* Set when bound */
 	struct radeon_winsys_bo *bo;

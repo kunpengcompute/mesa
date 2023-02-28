@@ -267,6 +267,12 @@ gbm_bo_create(struct gbm_device *gbm,
               uint32_t format, uint32_t flags);
 
 struct gbm_bo *
+gbm_bo_create_native(struct gbm_device *gbm,
+                     uint32_t width, uint32_t height,
+                     uint32_t format, uint32_t flags,
+                     unsigned long **texture);
+
+struct gbm_bo *
 gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                              uint32_t width, uint32_t height,
                              uint32_t format,
@@ -333,6 +339,11 @@ void *
 gbm_bo_map(struct gbm_bo *bo,
            uint32_t x, uint32_t y, uint32_t width, uint32_t height,
            uint32_t flags, uint32_t *stride, void **map_data);
+
+void *
+gbm_bo_map_native(struct gbm_bo *bo,
+                  uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                  uint32_t flags, uint32_t *stride, void **map_data);
 
 void
 gbm_bo_unmap(struct gbm_bo *bo, void *map_data);
