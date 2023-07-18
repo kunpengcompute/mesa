@@ -62,6 +62,9 @@ android11_copy()
     for link_dir in ${link_dirs[*]}
     do
         if [ "${link_dir}" == "libdrm" ];then
+            cd libdrm
+            [ -f gen_table_fourcc.py ] && python3 gen_table_fourcc.py include/drm/drm_fourcc.h generated_static_table_fourcc.h
+            cd -
             rsync -azr --delete --exclude=".git" --exclude="Android.mk" ${repo_path}/${link_dir} ${AN_AOSPDIR}/VMIEngine/unpack_open_source
         elif [ "${link_dir}" == "llvm/llvm" ];then
             [ ! -d ${AN_AOSPDIR}/VMIEngine/unpack_open_source/llvm ] && mkdir -p ${AN_AOSPDIR}/VMIEngine/unpack_open_source/llvm
