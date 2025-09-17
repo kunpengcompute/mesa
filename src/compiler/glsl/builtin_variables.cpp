@@ -743,13 +743,11 @@ builtin_variable_generator::generate_constants()
    if (!state->es_shader) {
       add_const("gl_MaxFragmentUniformComponents",
                 state->Const.MaxFragmentUniformComponents);
-      add_const("gl_MaxVertexUniformComponents",
-                state->Const.MaxVertexUniformComponents);
+      add_const("gl_MaxVertexUniformComponents", 1024); // 修复原神角色加载异常问题，修改内建变量值
    }
 
    if (state->is_version(410, 100)) {
-      add_const("gl_MaxVertexUniformVectors",
-                state->Const.MaxVertexUniformComponents / 4);
+      add_const("gl_MaxVertexUniformVectors", 256); // 修复原神角色加载异常问题，修改内建变量值
       add_const("gl_MaxFragmentUniformVectors",
                 state->Const.MaxFragmentUniformComponents / 4);
 

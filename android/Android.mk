@@ -27,6 +27,7 @@ LOCAL_PATH := $(call my-dir)
 MESA3D_TOP := $(dir $(LOCAL_PATH))
 
 LIBDRM_VERSION = $(shell cat external/libdrm/meson.build | grep -o "\<version\>\s*:\s*'\w*\.\w*\.\w*'" | grep -o "\w*\.\w*\.\w*" | head -1)
+LIBVA_VERSION = $(shell cat external/libva/meson.build | grep -o "\<version\>\s*:\s*'\w*\.\w*\.\w*'" | grep -o "\w*\.\w*\.\w*" | head -1)
 
 MESA_VK_LIB_SUFFIX_amd := radeon
 MESA_VK_LIB_SUFFIX_intel := intel
@@ -38,10 +39,10 @@ MESA_VK_LIB_SUFFIX_swrast := lvp
 
 include $(CLEAR_VARS)
 
-LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ libnativewindow libsync libhardware
+LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ libnativewindow libsync libhardware libva
 LOCAL_STATIC_LIBRARIES := libexpat libarect libelf
 LOCAL_HEADER_LIBRARIES := libnativebase_headers hwvulkan_headers libbacktrace_headers
-MESON_GEN_PKGCONFIGS := backtrace cutils expat hardware libdrm:$(LIBDRM_VERSION) nativewindow sync zlib:1.2.11 libelf
+MESON_GEN_PKGCONFIGS := backtrace cutils expat hardware libdrm:$(LIBDRM_VERSION) nativewindow sync zlib:1.2.11 libelf libva:$(LIBVA_VERSION)
 LOCAL_CFLAGS += $(BOARD_MESA3D_CFLAGS)
 
 ifneq ($(filter swrast,$(BOARD_MESA3D_GALLIUM_DRIVERS) $(BOARD_MESA3D_VULKAN_DRIVERS)),)
@@ -84,8 +85,8 @@ MESON_GEN_PKGCONFIGS += DirectX-Headers
 endif
 
 ifneq ($(MESON_GEN_LLVM_STUB),)
-MESON_LLVM_VERSION := 12.0.0
-LOCAL_SHARED_LIBRARIES += libLLVM12
+MESON_LLVM_VERSION := 13.0.1
+LOCAL_SHARED_LIBRARIES += libLLVM70
 endif
 
 ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 30; echo $$?), 0)
@@ -138,6 +139,7 @@ LOCAL_SHARED_LIBRARIES := $(__MY_SHARED_LIBRARIES)
 # Module 'libgallium_dri', produces '/vendor/lib{64}/dri/libgallium_dri.so'
 # This module also trigger DRI symlinks creation process
 $(eval $(call mesa3d-lib,libgallium_dri,.so.0,dri,MESA3D_GALLIUM_DRI_BIN))
+$(eval $(call mesa3d-lib,radeonsi_drv_video,.so.0,dri,MESA3D_RADEONSI_DRI_VIDEO_BIN))
 # Module 'libglapi', produces '/vendor/lib{64}/libglapi.so'
 $(eval $(call mesa3d-lib,libglapi,.so.0,,MESA3D_LIBGLAPI_BIN))
 

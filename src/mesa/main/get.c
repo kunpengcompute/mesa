@@ -1136,7 +1136,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
          v->value_float = ctx->Color.AlphaRefUnclamped;
       break;
    case GL_MAX_VERTEX_UNIFORM_VECTORS:
-      v->value_int = ctx->Const.Program[MESA_SHADER_VERTEX].MaxUniformComponents / 4;
+      v->value_int = 256; // 修复原神角色加载异常问题
       break;
 
    case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
@@ -1984,7 +1984,10 @@ _mesa_GetIntegerv(GLenum pname, GLint *params)
    GLmatrix *m;
    int shift, i;
    void *p;
-
+   if (pname == GL_MAX_VERTEX_UNIFORM_COMPONENTS) {
+      *params = 1024; // 修复原神角色渲染异常问题
+      return;
+   }
    d = find_value("glGetIntegerv", pname, &p, &v);
    switch (d->type) {
    case TYPE_INVALID:

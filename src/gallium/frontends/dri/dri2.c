@@ -1196,6 +1196,20 @@ dri2_create_image(__DRIscreen *_screen,
 }
 
 static __DRIimage *
+dri2_create_image_native(__DRIscreen *_screen,
+                         int width, int height, int format,
+                         unsigned int use, void *loaderPrivate, unsigned long **texture)
+{
+   __DRIimage * img = dri2_create_image_common(_screen, width, height, format, use,
+                                               NULL /* modifiers */, 0 /* count */,
+                                               loaderPrivate);
+   if (img != NULL) {
+      *texture = (unsigned long *)img->texture;
+   }
+   return img;
+}
+
+static __DRIimage *
 dri2_create_image_with_modifiers(__DRIscreen *dri_screen,
                                  int width, int height, int format,
                                  const uint64_t *modifiers,
@@ -1821,6 +1835,17 @@ dri2_map_image(__DRIcontext *context, __DRIimage *image,
    return map;
 }
 
+static void *
+dri2_map_image_native(__DRIcontext *context, __DRIimage *image,
+                      int x0, int y0, int width, int height,
+                      unsigned int flags, int *stride, void **data)
+{
+   handle_in_fence(context, image);
+   struct pipe_resource *resource = image->texture;
+   pipe_reference_described(NULL, &resource->reference, (debug_reference_descriptor)debug_describe_resource);
+   return resource;
+}
+
 static void
 dri2_unmap_image(__DRIcontext *context, __DRIimage *image, void *data)
 {
@@ -1846,6 +1871,7 @@ static const __DRIimageExtension dri2ImageExtensionTempl = {
     .createImageFromRenderbuffer  = dri2_create_image_from_renderbuffer,
     .destroyImage                 = dri2_destroy_image,
     .createImage                  = dri2_create_image,
+    .createImagenative            = dri2_create_image_native,
     .queryImage                   = dri2_query_image,
     .dupImage                     = dri2_dup_image,
     .validateUsage                = dri2_validate_usage,
@@ -1858,6 +1884,7 @@ static const __DRIimageExtension dri2ImageExtensionTempl = {
     .blitImage                    = dri2_blit_image,
     .getCapabilities              = dri2_get_capabilities,
     .mapImage                     = dri2_map_image,
+    .mapImage_native              = dri2_map_image_native,
     .unmapImage                   = dri2_unmap_image,
     .createImageWithModifiers     = NULL,
     .createImageFromDmaBufs2      = NULL,

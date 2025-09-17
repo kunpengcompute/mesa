@@ -68,6 +68,7 @@ MESON_GEN_FILES_TARGET                   := $(MESON_GEN_DIR)/.timestamp
 
 MESA3D_GALLIUM_DRI_DIR                   := $(MESON_OUT_DIR)/install/usr/local/lib/dri
 $(M_TARGET_PREFIX)MESA3D_GALLIUM_DRI_BIN := $(MESON_OUT_DIR)/install/usr/local/lib/libgallium_dri.so
+$(M_TARGET_PREFIX)MESA3D_RADEONSI_DRI_VIDEO_BIN := $(MESON_OUT_DIR)/install/usr/local/lib/dri/radeonsi_drv_video.so
 $(M_TARGET_PREFIX)MESA3D_LIBEGL_BIN      := $(MESON_OUT_DIR)/install/usr/local/lib/libEGL.so.1.0.0
 $(M_TARGET_PREFIX)MESA3D_LIBGLESV1_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv1_CM.so.1.1.0
 $(M_TARGET_PREFIX)MESA3D_LIBGLESV2_BIN   := $(MESON_OUT_DIR)/install/usr/local/lib/libGLESv2.so.2.0.0
@@ -82,7 +83,7 @@ MESA3D_GLES_BINS := \
     $($(M_TARGET_PREFIX)MESA3D_LIBGLAPI_BIN)  \
 
 MESON_GEN_NINJA := \
-	cd $(MESON_OUT_DIR) && PATH=/usr/bin:/usr/local/bin:$$PATH meson ./build     \
+	cd $(MESON_OUT_DIR) && PATH=/usr/bin:/usr/local/bin:$$PATH meson.py ./build     \
 	--cross-file $(AOSP_ABSOLUTE_PATH)/$(MESON_GEN_DIR)/aosp_cross               \
 	--buildtype=release                                                          \
 	-Ddri-search-path=/vendor/$(MESA3D_LIB_DIR)/dri                              \
@@ -94,6 +95,10 @@ MESON_GEN_NINJA := \
 	-Dgbm=enabled                                                                \
 	-Degl=enabled                                                                \
 	-Dcpp_rtti=false                                                             \
+	-Dgallium-va=enabled                                                         \
+	-Dandroid-stub=true                                                          \
+	-Degl-native-platform=android
+
 
 MESON_BUILD := PATH=/usr/bin:/bin:/sbin:$$PATH ninja -C $(MESON_OUT_DIR)/build
 
@@ -292,9 +297,13 @@ $($(M_TARGET_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES)/dri/.symlinks.timestamp:
 $($(M_TARGET_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES)/dri/.symlinks.timestamp: $(MESON_OUT_DIR)/install/.install.timestamp
 	# Create Symlinks
 	mkdir -p $(dir $@)
-	ls -1 $(MESA3D_GALLIUM_DRI_DIR)/ | PATH=/usr/bin:$$PATH xargs -I{} ln -s -f libgallium_dri.so $(dir $@)/{}
+	ln -s -f libgallium_dri.so $(dir $@)/radeonsi_dri.so
 	touch $@
 
 $($(M_TARGET_PREFIX)MESA3D_GALLIUM_DRI_BIN): $(TARGET_OUT_VENDOR)/$(MESA3D_LIB_DIR)/dri/.symlinks.timestamp
+	echo "Build $@"
+	touch $@
+
+$($(M_TARGET_PREFIX)MESA3D_RADEONSI_DRI_VIDEO_BIN): $(TARGET_OUT_VENDOR)/$(MESA3D_LIB_DIR)/dri/.symlinks.timestamp
 	echo "Build $@"
 	touch $@

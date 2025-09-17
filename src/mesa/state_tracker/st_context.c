@@ -874,6 +874,7 @@ st_create_context(gl_api api, struct pipe_context *pipe,
       return NULL;
    }
 
+   ctx->FlushSwitch = shareCtx;
    st_debug_init();
 
    if (pipe->screen->get_disk_shader_cache)

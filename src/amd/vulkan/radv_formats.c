@@ -1022,6 +1022,7 @@ radv_translate_dbformat(VkFormat format)
       return V_028040_Z_16;
    case VK_FORMAT_D32_SFLOAT:
    case VK_FORMAT_D32_SFLOAT_S8_UINT:
+   case VK_FORMAT_D24_UNORM_S8_UINT:   // 纹理D24_S8_UINT转换为D32_SLOAT_S8_UINT处理，否则深度缓冲区创建失败会导致空指针
       return V_028040_Z_32_FLOAT;
    default:
       return V_028040_Z_INVALID;

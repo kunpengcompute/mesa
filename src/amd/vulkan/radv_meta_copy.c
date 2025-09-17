@@ -23,6 +23,9 @@
 
 #include "radv_meta.h"
 #include "vk_format.h"
+#include "main/formats.h"
+#include "main/texcompress_etc.h"
+#include "main/texcompress_bptc_tmp.h"
 
 static VkExtent3D
 meta_image_block_size(const struct radv_image *image)
@@ -122,11 +125,162 @@ radv_image_is_renderable(struct radv_device *device, struct radv_image *image)
    return true;
 }
 
+// 函数返回 image 所占的字节数
+static size_t
+radv_get_texel_count(const VkBufferImageCopy2* pRegions, struct radv_image* image)
+{
+	if (image == NULL) {
+		return 0;
+	}
+
+   const VkExtent3D bufferExtent = {
+      .width  = pRegions->bufferRowLength ? pRegions->bufferRowLength : pRegions->imageExtent.width,
+      .height = pRegions->bufferImageHeight ? pRegions->bufferImageHeight : pRegions->imageExtent.height,
+   };
+   const VkExtent3D buf_extent_el = meta_region_extent_el(image, image->type, &bufferExtent);
+   size_t w = buf_extent_el.width;
+   size_t h = buf_extent_el.height;
+
+	int bs = vk_format_get_blocksize(image->vk_format);
+
+	return w * h * bs;
+}
+
+static mesa_format
+radv_translate_etc_to_mesa_format(VkFormat format)
+{
+	switch (format) {
+	case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_RGB8;
+	case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+		return MESA_FORMAT_ETC2_SRGB8;
+	case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_RGB8_PUNCHTHROUGH_ALPHA1;
+	case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+		return MESA_FORMAT_ETC2_SRGB8_PUNCHTHROUGH_ALPHA1;
+	case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+		return MESA_FORMAT_ETC2_RGBA8_EAC;
+	case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+		return MESA_FORMAT_ETC2_SRGB8_ALPHA8_EAC;
+	default:
+		return MESA_FORMAT_ETC2_RGB8;
+	}
+}
+
+static mesa_format
+radv_translate_vkformat_to_mesa_format(VkFormat format)
+{
+	switch (format) {
+    case VK_FORMAT_R8G8B8_UNORM:
+		return MESA_FORMAT_RGB_UNORM8;
+	case VK_FORMAT_R8G8B8A8_UNORM:
+		return MESA_FORMAT_R8G8B8A8_UNORM;
+	case VK_FORMAT_R8G8B8_SRGB:
+		return MESA_FORMAT_BGR_SRGB8;
+	case VK_FORMAT_R8G8B8A8_SRGB:
+		return MESA_FORMAT_R8G8B8A8_SRGB;
+	case VK_FORMAT_BC7_UNORM_BLOCK:
+		return MESA_FORMAT_BPTC_RGBA_UNORM;
+	case VK_FORMAT_BC7_SRGB_BLOCK:
+		return MESA_FORMAT_BPTC_SRGB_ALPHA_UNORM;
+	default:
+		return MESA_FORMAT_RGB_UNORM8;
+	}
+}
+
+static void
+prepare_bufferMemory(struct radv_device* device, struct radv_buffer *buffer,
+                     struct radv_image *image, const VkBufferImageCopy2 *region,
+                     void** pDstData, VkBuffer* dstBuffer, VkDeviceMemory* memory_h, bool isDecodeBuffer) {
+      int dstBufferSize = radv_get_texel_count(region, image);
+
+      if (isDecodeBuffer && image->isNeedSoftEncode) {
+         VkFormat tempFormat = image->vk_format;
+         image->vk_format = image->unpackETCFormat;
+         dstBufferSize = radv_get_texel_count(region, image);
+         image->vk_format = tempFormat;
+      }
+      if(VK_SUCCESS != radv_CreateBuffer(radv_device_to_handle(device), &(VkBufferCreateInfo) {
+				.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+				.flags = buffer->flags,
+				.size = dstBufferSize,
+				.usage = buffer->usage,
+				.sharingMode = VK_SHARING_MODE_EXCLUSIVE
+            }, NULL, dstBuffer)) {
+			return;
+		}
+
+      RADV_FROM_HANDLE(radv_buffer, _dstbuffer, *dstBuffer);
+      if (isDecodeBuffer) {
+         buffer->unpack_buffer_for_ct = _dstbuffer;
+      } else {
+         buffer->compressed_buffer_for_BC = _dstbuffer;
+      }
+
+		VkMemoryRequirements2 memoryRequirements2 = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+         };
+		radv_GetBufferMemoryRequirements2(radv_device_to_handle(device),
+         &(VkBufferMemoryRequirementsInfo2) {
+            .buffer = *dstBuffer,
+         }, &memoryRequirements2);
+		int memory_type_index = -1;
+		for (int i = 0; i < device->physical_device->memory_properties.memoryTypeCount; ++i) {
+			bool is_local = !!(device->physical_device->memory_properties.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
+			if (is_local) {
+				memory_type_index = i;
+				break;
+			}
+		}
+
+      // 分配设备内存，返回设备内存地址 memory_h
+		if(VK_SUCCESS != radv_AllocateMemory(radv_device_to_handle(device),
+			&(VkMemoryAllocateInfo) {
+				.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+				.pNext = NULL,
+				.allocationSize = memoryRequirements2.memoryRequirements.size,
+				.memoryTypeIndex = memory_type_index,
+		  }, NULL, memory_h)) {
+			return;
+		}
+
+      RADV_FROM_HANDLE(radv_device_memory, _mem, *memory_h);
+      if (isDecodeBuffer) {
+         buffer->unpack_mem_for_ct = _mem;
+      } else {
+         buffer->compressed_mem_for_BC = _mem;
+      }
+
+      // 将 buffer 绑定到设备内存
+		if(VK_SUCCESS != radv_BindBufferMemory2(radv_device_to_handle(device), 1,
+         &(VkBindBufferMemoryInfo) {
+            .sType = VK_STRUCTURE_TYPE_BIND_BUFFER_MEMORY_INFO,
+            .buffer = *dstBuffer,
+            .memory = *memory_h,
+            .memoryOffset = 0,
+         })) {
+			return;
+		}
+		// 将设备内存 memory_h 映射到 pDstData
+		radv_MapMemory(radv_device_to_handle(device), *memory_h, 0, dstBufferSize, 0, pDstData);
+}
+
 static void
 copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer *buffer,
                      struct radv_image *image, VkImageLayout layout,
                      const VkBufferImageCopy2 *region)
 {
+   struct radv_device* device = cmd_buffer->device;
+	VkBuffer dstBuffer;
+	struct radv_buffer* radvDstBuffer = buffer;
+	VkDeviceMemory memory_h;
+	void* pDstData = NULL;
+	void* pSrcData = NULL;
+
+   VkBuffer dstBCnBuffer;
+	VkDeviceMemory memory_h_BCn;
+	void* pDstBCnData = NULL;
+
    struct radv_meta_saved_state saved_state;
    bool old_predicating;
    bool cs;
@@ -148,6 +302,19 @@ copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer *buf
     */
    old_predicating = cmd_buffer->state.predicating;
    cmd_buffer->state.predicating = false;
+
+   pSrcData = device->ws->buffer_map(buffer->bo) + buffer->offset;
+   // 申请软解 buffer 内存
+   if (image->isNeedSoftDecode) {
+      prepare_bufferMemory(device, buffer, image, region, &pDstData, &dstBuffer, &memory_h, true);
+   }
+   // 申请软编 buffer 内存
+   if (image->isNeedSoftEncode) {
+      prepare_bufferMemory(device, buffer, image, region, &pDstBCnData, &dstBCnBuffer, &memory_h_BCn, false);
+   }
+
+   void* realDstData = pDstData;
+	void* realDstBcData = pDstBCnData;
 
    /**
     * From the Vulkan 1.0.6 spec: 18.3 Copying Data Between Images
@@ -197,11 +364,51 @@ copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer *buf
       img_bsurf.format = vk_format_for_size(vk_format_get_blocksize(img_bsurf.format));
    }
 
+   uint32_t offset = region->bufferOffset;
+   mesa_format unpackETCFormat;
+   if (image->isNeedSoftDecode) {
+      // translate vkFormat to MESA format
+      unpackETCFormat = radv_translate_vkformat_to_mesa_format(image->unpackETCFormat);
+      mesa_format srcFormat = radv_translate_etc_to_mesa_format(image->srcFormat);
+      bool bgra = false;
+		void * realSrcData = pSrcData;
+      realSrcData += region->bufferOffset;
+      unsigned dst_stride = _mesa_format_row_stride(unpackETCFormat, region->imageExtent.width);
+      unsigned src_stride =_mesa_format_row_stride(srcFormat, bufferExtent.width);
+      _mesa_unpack_etc2_format(realDstData, dst_stride, realSrcData, src_stride, bufferExtent.width, bufferExtent.height, srcFormat, bgra);
+      if (image->isNeedSoftEncode) {
+         RADV_FROM_HANDLE(radv_buffer, _tmp, dstBuffer);
+			radvDstBuffer = _tmp;
+			offset = realDstData - pDstData;
+      }
+   }
+   if (image->isNeedSoftEncode) {
+      mesa_format srcFormat;
+      void * realSrcData;
+      if (image->isNeedSoftDecode) {
+         srcFormat = unpackETCFormat;
+			realSrcData = realDstData;
+      } else {
+         srcFormat = radv_translate_vkformat_to_mesa_format(image->srcFormat);
+         realSrcData = pSrcData;
+         realSrcData += region->bufferOffset;
+      }
+      mesa_format dstFormat = radv_translate_vkformat_to_mesa_format(image->vk_format);
+      unsigned dst_stride = _mesa_format_row_stride(dstFormat, region->imageExtent.width);
+      unsigned src_stride = _mesa_format_row_stride(srcFormat, bufferExtent.width);
+
+	   compress_rgba_unorm(bufferExtent.width, bufferExtent.height, realSrcData, src_stride, realDstBcData, dst_stride);
+
+      RADV_FROM_HANDLE(radv_buffer, _tmp, dstBCnBuffer);
+		radvDstBuffer = _tmp;
+		offset = realDstBcData - pDstBCnData;
+   }
+
    struct radv_meta_blit2d_buffer buf_bsurf = {
       .bs = img_bsurf.bs,
       .format = img_bsurf.format,
-      .buffer = buffer,
-      .offset = region->bufferOffset,
+      .buffer = radvDstBuffer,
+      .offset = offset,
       .pitch = buf_extent_el.width,
    };
 
@@ -230,11 +437,32 @@ copy_buffer_to_image(struct radv_cmd_buffer *cmd_buffer, struct radv_buffer *buf
        * re-binding it to different backing memory.
        */
       buf_bsurf.offset += buf_extent_el.width * buf_extent_el.height * buf_bsurf.bs;
+      if (image->isNeedSoftDecode) {
+         realDstData += buf_extent_el.width * buf_extent_el.height * buf_bsurf.bs;
+      }
+      if (image->isNeedSoftEncode) {
+         realDstBcData += buf_extent_el.width * buf_extent_el.height * buf_bsurf.bs;
+      }
       img_bsurf.layer++;
       if (image->type == VK_IMAGE_TYPE_3D)
          slice_3d++;
       else
          slice_array++;
+   }
+   pSrcData = NULL;
+   if (image->isNeedSoftDecode || image->isNeedSoftEncode) {
+      device->ws->buffer_unmap(buffer->bo);
+   }
+   if (image->isNeedSoftDecode) {
+      radv_UnmapMemory(radv_device_to_handle(device), memory_h);
+   }
+   if (image->isNeedSoftEncode) {
+      radv_UnmapMemory(radv_device_to_handle(device), memory_h_BCn);
+      // 压缩纹理的原始纹理由ETC2纹理解压而来因此需要释放掉内存
+      if (buffer->unpack_mem_for_ct) {
+         radv_free_memory(device, NULL, buffer->unpack_mem_for_ct);
+         buffer->unpack_mem_for_ct = NULL;
+      }
    }
 
    /* Restore conditional rendering. */

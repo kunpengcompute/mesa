@@ -657,6 +657,65 @@ fail:
 }
 
 static VAStatus
+surface_from_external_memory_native(VADriverContextP ctx, vlVaSurface *surface,
+                                    VASurfaceAttribExternalBuffers *memory_attribute,
+                                    unsigned index, struct pipe_video_buffer *templat)
+{
+   vlVaDriver *drv;
+   struct pipe_screen *pscreen;
+   struct pipe_resource *resources[VL_NUM_COMPONENTS];
+   enum pipe_format resource_formats[VL_NUM_COMPONENTS];
+   VAStatus result;
+   int i;
+
+   pscreen = VL_VA_PSCREEN(ctx);
+   drv = VL_VA_DRIVER(ctx);
+
+   if (!memory_attribute || !memory_attribute->buffers ||
+       index > memory_attribute->num_buffers)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+   if (surface->templat.width != memory_attribute->width ||
+       surface->templat.height != memory_attribute->height ||
+       memory_attribute->num_planes != 1)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+   if (memory_attribute->num_planes > VL_NUM_COMPONENTS)
+      return VA_STATUS_ERROR_INVALID_PARAMETER;
+
+   vl_get_video_buffer_formats(pscreen, templat->buffer_format, resource_formats);
+
+   unsigned long nativebuffer = memory_attribute->buffers[index];
+   // Create a resource for each plane.
+   memset(resources, 0, sizeof resources);
+   resources[0] = (struct pipe_resource *)nativebuffer;
+   if (!resources[0]) {
+      result = VA_STATUS_ERROR_ALLOCATION_FAILED;
+      goto fail;
+   }
+
+   /* implicitly re-explain the pipeline format form RGBA to RGBX, because valid alpha value
+      lets "green" background([0,0,0] instead of [-127,-127,-127]) go through when transfering to YUV */
+   if (resource_formats[0] == PIPE_FORMAT_B8G8R8X8_UNORM &&
+      resources[0]->format == PIPE_FORMAT_R8G8B8A8_UNORM) {
+      resources[0]->format = PIPE_FORMAT_R8G8B8X8_UNORM;
+   }
+
+   surface->buffer = vl_video_buffer_create_ex2(drv->pipe, templat, resources);
+   if (!surface->buffer) {
+      result = VA_STATUS_ERROR_ALLOCATION_FAILED;
+      goto fail;
+   }
+   vl_video_setresourceflag(surface->buffer);
+   return VA_STATUS_SUCCESS;
+
+fail:
+   for (i = 0; i < VL_NUM_COMPONENTS; i++)
+      pipe_resource_reference(&resources[i], NULL);
+   return result;
+}
+
+static VAStatus
 surface_from_prime_2(VADriverContextP ctx, vlVaSurface *surface,
                      VADRMPRIMESurfaceDescriptor *desc,
                      struct pipe_video_buffer *templat)
@@ -883,6 +942,7 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
          case VA_SURFACE_ATTRIB_MEM_TYPE_VA:
          case VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME:
          case VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2:
+         case VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM:
             memory_type = attrib_list[i].value.value.i;
             break;
          default:
@@ -932,6 +992,7 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
    case VA_SURFACE_ATTRIB_MEM_TYPE_VA:
       break;
    case VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME:
+   case VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM:
       if (!memory_attribute)
          return VA_STATUS_ERROR_INVALID_PARAMETER;
       if (modifiers)
@@ -1010,6 +1071,12 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
 
       case VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME:
          vaStatus = surface_from_external_memory(ctx, surf, memory_attribute, i, &templat);
+         if (vaStatus != VA_STATUS_SUCCESS)
+            goto free_surf;
+         break;
+
+      case VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM:
+         vaStatus = surface_from_external_memory_native(ctx, surf, memory_attribute, i, &templat);
          if (vaStatus != VA_STATUS_SUCCESS)
             goto free_surf;
          break;

@@ -23,6 +23,7 @@
 
 #include "nir/nir_builder.h"
 #include "radv_meta.h"
+#include "log/log.h"
 
 struct blit_region {
    VkOffset3D src_offset;
@@ -272,6 +273,10 @@ meta_emit_blit(struct radv_cmd_buffer *cmd_buffer, struct radv_image *src_image,
       unsigned dst_layout = radv_meta_dst_layout_from_layout(dest_image_layout);
       VkImageLayout layout = radv_meta_dst_layout_to_layout(dst_layout);
       fs_key = radv_format_meta_fs_key(device, dest_image->vk_format);
+      if (fs_key >= NUM_META_FS_KEYS) {
+         ALOGE("Invalid fs key. if sys.vmi.vk.texturecompress is enabled, disable it and restart app.");
+         return;
+      }
       format = radv_fs_key_format_exemplars[fs_key];
 
       color_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -936,7 +941,7 @@ radv_device_init_meta_blit_state(struct radv_device *device, bool on_demand)
       radv_CreateDescriptorSetLayout(radv_device_to_handle(device), &ds_layout_info,
                                      &device->meta_state.alloc, &device->meta_state.blit.ds_layout);
    if (result != VK_SUCCESS)
-      goto fail;
+      return result;
 
    const VkPushConstantRange push_constant_range = {VK_SHADER_STAGE_VERTEX_BIT, 0, 20};
 
@@ -951,20 +956,15 @@ radv_device_init_meta_blit_state(struct radv_device *device, bool on_demand)
                                       &device->meta_state.alloc,
                                       &device->meta_state.blit.pipeline_layout);
    if (result != VK_SUCCESS)
-      goto fail;
+      return result;
 
    result = radv_device_init_meta_blit_color(device, on_demand);
    if (result != VK_SUCCESS)
-      goto fail;
+      return result;
 
    result = radv_device_init_meta_blit_depth(device, on_demand);
    if (result != VK_SUCCESS)
-      goto fail;
+      return result;
 
-   result = radv_device_init_meta_blit_stencil(device, on_demand);
-
-fail:
-   if (result != VK_SUCCESS)
-      radv_device_finish_meta_blit_state(device);
-   return result;
+   return radv_device_init_meta_blit_stencil(device, on_demand);
 }

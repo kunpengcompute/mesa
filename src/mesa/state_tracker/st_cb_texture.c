@@ -2205,6 +2205,19 @@ st_try_pbo_compressed_texsubimage(struct gl_context *ctx,
    return success;
 }
 
+unsigned long *
+st_nativeTexImage(struct gl_context * ctx, GLuint dims,
+                  struct gl_texture_image *texImage,
+                  GLenum format, GLenum type, const void *pixels,
+                  const struct gl_pixelstore_attrib *unpack)
+{
+   struct st_context *st = st_context(ctx);
+   struct pipe_screen *screen = st->pipe->screen;
+   struct gl_texture_object *texObj = texImage->TexObject;
+   struct pipe_resource *src = texObj->pt;
+   return (unsigned long *)src;
+}
+
 void
 st_CompressedTexSubImage(struct gl_context *ctx, GLuint dims,
                          struct gl_texture_image *texImage,

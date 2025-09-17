@@ -344,6 +344,10 @@ vk_render_pass_attachment_init(struct vk_render_pass_attachment *att,
       .initial_stencil_layout = vk_att_desc_stencil_layout(desc, false),
       .final_stencil_layout   = vk_att_desc_stencil_layout(desc, true),
    };
+
+   if(desc->format == VK_FORMAT_D24_UNORM_S8_UINT) {
+      att->format = VK_FORMAT_D32_SFLOAT_S8_UINT;
+   }
 }
 
 static void

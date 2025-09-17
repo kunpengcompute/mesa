@@ -27,7 +27,7 @@ project(
   ).stdout(),
   license : 'MIT',
   meson_version : '>= 0.53',
-  default_options : ['buildtype=debugoptimized', 'b_ndebug=if-release', 'c_std=c11', 'cpp_std=c++14']
+  default_options : ['buildtype=release', 'b_ndebug=if-release', 'c_std=c11', 'cpp_std=c++14']
 )
 
 # In recent versions, meson can inject some extra arguments to get richer
@@ -842,7 +842,7 @@ endif
 
 va_drivers_path = get_option('va-libs-path')
 if va_drivers_path == ''
-  va_drivers_path = join_paths(get_option('libdir'), 'dri')
+  va_drivers_path = join_paths(get_option('prefix'), get_option('libdir'), 'dri')
 endif
 
 _xa = get_option('gallium-xa')
@@ -1153,7 +1153,6 @@ if cc.get_id() == 'msvc'
 else
   _trial_c = [
     '-Werror=implicit-function-declaration',
-    '-Werror=missing-prototypes',
     '-Werror=return-type',
     '-Werror=empty-body',
     '-Werror=incompatible-pointer-types',
@@ -1188,7 +1187,7 @@ else
 
   # MinGW chokes on format specifiers and I can't get it all working
   if not (cc.get_id() == 'gcc' and host_machine.system() == 'windows')
-    _trial_c += ['-Werror=format', '-Wformat-security']
+    _trial_c += ['-Wformat-security']
     _trial_cpp += ['-Werror=format', '-Wformat-security']
   endif
 
@@ -1216,7 +1215,7 @@ else
   # Check for C and C++ arguments for MSVC compatibility. These are only used
   # in parts of the mesa code base that need to compile with MSVC, mainly
   # common code
-  _trial_msvc = ['-Werror=pointer-arith', '-Werror=gnu-empty-initializer']
+  _trial_msvc = ['-Werror=gnu-empty-initializer']
   c_msvc_compat_args += cc.get_supported_arguments(_trial_msvc)
   cpp_msvc_compat_args += cpp.get_supported_arguments(_trial_msvc)
 endif

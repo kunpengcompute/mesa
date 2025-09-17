@@ -493,7 +493,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_index_type_uint8 = device->rad_info.chip_class >= GFX8,
       .EXT_inline_uniform_block = true,
       .EXT_line_rasterization = true,
-      .EXT_memory_budget = true,
+      .EXT_memory_budget = false,
       .EXT_memory_priority = true,
       .EXT_multi_draw = true,
       .EXT_pci_bus_info = true,
@@ -5388,6 +5388,12 @@ radv_CreateBuffer(VkDevice _device, const VkBufferCreateInfo *pCreateInfo,
    buffer->usage = pCreateInfo->usage;
    buffer->flags = pCreateInfo->flags;
 
+   buffer->unpack_buffer_for_ct = NULL;
+	buffer->unpack_mem_for_ct = NULL;
+
+	buffer->compressed_buffer_for_BC = NULL;
+	buffer->compressed_mem_for_BC = NULL;
+
    if (pCreateInfo->flags & VK_BUFFER_CREATE_SPARSE_BINDING_BIT) {
       enum radeon_bo_flag flags = RADEON_FLAG_VIRTUAL;
       if (pCreateInfo->flags & VK_BUFFER_CREATE_DEVICE_ADDRESS_CAPTURE_REPLAY_BIT)
@@ -5421,6 +5427,26 @@ radv_DestroyBuffer(VkDevice _device, VkBuffer _buffer, const VkAllocationCallbac
 
    if (!buffer)
       return;
+
+   if (buffer->unpack_mem_for_ct) {
+		radv_free_memory(device, NULL, buffer->unpack_mem_for_ct);
+      buffer->unpack_mem_for_ct = NULL;
+	}
+
+	if (buffer->unpack_buffer_for_ct) {
+		radv_destroy_buffer(device, NULL, buffer->unpack_buffer_for_ct);
+      buffer->unpack_buffer_for_ct = NULL;
+	}
+
+	if (buffer->compressed_mem_for_BC) {
+		radv_free_memory(device, NULL, buffer->compressed_mem_for_BC);
+      buffer->compressed_mem_for_BC = NULL;
+	}
+
+	if (buffer->compressed_buffer_for_BC) {
+		radv_destroy_buffer(device, NULL, buffer->compressed_buffer_for_BC);
+      buffer->compressed_buffer_for_BC = NULL;
+	}
 
    radv_destroy_buffer(device, pAllocator, buffer);
 }

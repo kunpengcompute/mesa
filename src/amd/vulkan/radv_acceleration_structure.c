@@ -1769,7 +1769,6 @@ radv_device_init_accel_struct_build_state(struct radv_device *device)
    return VK_SUCCESS;
 
 fail:
-   radv_device_finish_accel_struct_build_state(device);
    ralloc_free(copy_cs);
    ralloc_free(internal_cs);
    ralloc_free(leaf_cs);

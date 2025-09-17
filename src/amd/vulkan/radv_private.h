@@ -1019,6 +1019,13 @@ struct radv_buffer {
    /* Set when bound */
    struct radeon_winsys_bo *bo;
    VkDeviceSize offset;
+
+  // 存储解压的buffer
+  struct radv_buffer* unpack_buffer_for_ct;
+  struct radv_device_memory* unpack_mem_for_ct;
+  // 存储软压缩的buffer
+  struct radv_buffer* compressed_buffer_for_BC;
+  struct radv_device_memory* compressed_mem_for_BC;
 };
 
 void radv_buffer_init(struct radv_buffer *buffer, struct radv_device *device,
@@ -2076,6 +2083,11 @@ struct radv_image {
    bool l2_coherent;
    bool dcc_sign_reinterpret;
    bool support_comp_to_single;
+
+   bool isNeedSoftEncode;// 是否需要使用 软编
+   bool isNeedSoftDecode;// 是否需要使用 软解
+	VkFormat srcFormat; //用于保存纹理的原始格式
+	VkFormat unpackETCFormat;//用于保存ETC纹理解压后的格式
 
    /* Set when bound */
    struct radeon_winsys_bo *bo;

@@ -31,6 +31,9 @@ radv_entrypoints = custom_target(
 )
 
 libradv_files = files(
+  '../../mesa/main/texcompress_etc.h',
+  '../../mesa/main/texcompress_etc.c',
+  '../../mesa/main/formats.c',
   'layers/radv_metro_exodus.c',
   'layers/radv_sqtt_layer.c',
   'winsys/null/radv_null_bo.c',

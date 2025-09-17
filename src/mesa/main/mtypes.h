@@ -3219,6 +3219,7 @@ struct gl_attrib_node
  */
 struct gl_context
 {
+   bool FlushSwitch;
    /** State possibly shared with other contexts in the address space */
    struct gl_shared_state *Shared;
 

@@ -77,6 +77,10 @@ void st_TexImage(struct gl_context * ctx, GLuint dims,
                  struct gl_texture_image *texImage,
                  GLenum format, GLenum type, const void *pixels,
                  const struct gl_pixelstore_attrib *unpack);
+unsigned long * st_nativeTexImage(struct gl_context * ctx, GLuint dims,
+                                  struct gl_texture_image *texImage,
+                                  GLenum format, GLenum type, const void *pixels,
+                                  const struct gl_pixelstore_attrib *unpack);
 void st_CompressedTexSubImage(struct gl_context *ctx, GLuint dims,
                               struct gl_texture_image *texImage,
                               GLint x, GLint y, GLint z,

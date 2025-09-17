@@ -5020,6 +5020,11 @@ typedef struct nir_lower_tex_options {
     */
    bool lower_lod_zero_width;
 
+   /* If true, round the layer component of the coordinates source to the nearest
+    * integer for all array ops.
+    */
+   bool lower_array_layer_round_even;
+
    /**
     * Payload data to be sent to callback / filter functions.
     */

@@ -573,7 +573,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
                sscreen->info.enc_caps.codec_info[codec - 1].valid)
             return sscreen->info.enc_caps.codec_info[codec - 1].max_height;
          else
-            return (sscreen->info.family < CHIP_TONGA) ? 1152 : 2304;
+            return (sscreen->info.family < CHIP_TONGA) ? 1152 : 4096;
       case PIPE_VIDEO_CAP_PREFERED_FORMAT:
          if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
             return PIPE_FORMAT_P010;
