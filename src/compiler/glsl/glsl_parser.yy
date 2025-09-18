@@ -32,7 +32,6 @@
 #include "ast.h"
 #include "glsl_parser_extras.h"
 #include "compiler/glsl_types.h"
-#include "main/context.h"
 #include "util/u_string.h"
 #include "util/format/u_format.h"
 
@@ -2047,9 +2046,9 @@ type_qualifier:
        * output from one shader stage will still match an input of a subsequent
        * stage without the input being declared as invariant."
        *
-       * On the desktop side, this text first appears in GLSL 4.30.
+       * On the desktop side, this text first appears in GLSL 4.20.
        */
-      if (state->is_version(430, 300) && $$.flags.q.in)
+      if (state->is_version(420, 300) && $$.flags.q.in)
          _mesa_glsl_error(&@1, state, "invariant qualifiers cannot be used with shader inputs");
    }
    | interpolation_qualifier type_qualifier
@@ -2743,7 +2742,7 @@ iteration_statement:
                                             NULL, $3, NULL, $5);
       $$->set_location_range(@1, @4);
    }
-   | DO statement WHILE '(' expression ')' ';'
+   | DO statement_no_new_scope WHILE '(' expression ')' ';'
    {
       void *ctx = state->linalloc;
       $$ = new(ctx) ast_iteration_statement(ast_iteration_statement::ast_do_while,

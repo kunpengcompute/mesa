@@ -35,6 +35,7 @@
 
 #include "draw/draw_vertex.h"
 #include "util/u_blitter.h"
+#include "util/list.h"
 
 #include "lp_tex_sample.h"
 #include "lp_jit.h"
@@ -58,6 +59,7 @@ struct lp_velems_state;
 struct llvmpipe_context {
    struct pipe_context pipe;  /**< base class */
 
+   struct list_head list;
    /** Constant state objects */
    const struct pipe_blend_state *blend;
    struct pipe_sampler_state *samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
@@ -90,7 +92,7 @@ struct llvmpipe_context {
 
    struct pipe_shader_buffer ssbos[PIPE_SHADER_TYPES][LP_MAX_TGSI_SHADER_BUFFERS];
    struct pipe_image_view images[PIPE_SHADER_TYPES][LP_MAX_TGSI_SHADER_IMAGES];
-
+   uint32_t fs_ssbo_write_mask;
    unsigned num_samplers[PIPE_SHADER_TYPES];
    unsigned num_sampler_views[PIPE_SHADER_TYPES];
    unsigned num_images[PIPE_SHADER_TYPES];
@@ -117,6 +119,8 @@ struct llvmpipe_context {
    
    /** Vertex format */
    struct vertex_info vertex_info;
+
+   uint8_t patch_vertices;
    
    /** Which vertex shader output slot contains color */
    int8_t color_slot[2];
@@ -155,6 +159,9 @@ struct llvmpipe_context {
    struct lp_fs_variant_list_item fs_variants_list;
    unsigned nr_fs_variants;
    unsigned nr_fs_instrs;
+
+   boolean permit_linear_rasterizer;
+   boolean single_vp;
 
    struct lp_setup_variant_list_item setup_variants_list;
    unsigned nr_setup_variants;

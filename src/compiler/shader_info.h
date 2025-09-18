@@ -26,6 +26,7 @@
 #define SHADER_INFO_H
 
 #include "util/bitset.h"
+#include "util/sha1/sha1.h"
 #include "shader_enums.h"
 #include <stdint.h>
 
@@ -33,6 +34,7 @@
 extern "C" {
 #endif
 
+#define MAX_XFB_BUFFERS        4
 #define MAX_INLINABLE_UNIFORMS 4
 
 struct spirv_supported_capabilities {
@@ -45,6 +47,7 @@ struct spirv_supported_capabilities {
    bool descriptor_indexing;
    bool device_group;
    bool draw_parameters;
+   bool float16_atomic_add;
    bool float16_atomic_min_max;
    bool float32_atomic_add;
    bool float32_atomic_min_max;
@@ -56,6 +59,7 @@ struct spirv_supported_capabilities {
    bool fragment_shading_rate;
    bool generic_pointers;
    bool geometry_streams;
+   bool groups;
    bool image_ms_array;
    bool image_read_without_format;
    bool image_write_without_format;
@@ -68,9 +72,12 @@ struct spirv_supported_capabilities {
    bool kernel;
    bool kernel_image;
    bool kernel_image_read_write;
+   bool linkage;
    bool literal_sampler;
+   bool mesh_shading_nv;
    bool min_lod;
    bool multiview;
+   bool per_view_attributes_nv;
    bool physical_storage_buffer_address;
    bool post_depth_coverage;
    bool printf;
@@ -81,6 +88,7 @@ struct spirv_supported_capabilities {
    bool float_controls;
    bool shader_clock;
    bool shader_viewport_index_layer;
+   bool shader_viewport_mask_nv;
    bool sparse_residency;
    bool stencil_export;
    bool storage_8bit;
@@ -89,8 +97,10 @@ struct spirv_supported_capabilities {
    bool subgroup_arithmetic;
    bool subgroup_ballot;
    bool subgroup_basic;
+   bool subgroup_dispatch;
    bool subgroup_quad;
    bool subgroup_shuffle;
+   bool subgroup_uniform_control_flow;
    bool subgroup_vote;
    bool tessellation;
    bool transform_feedback;
@@ -117,8 +127,11 @@ typedef struct shader_info {
    /* Descriptive name provided by the client; may be NULL */
    const char *label;
 
-   /* Shader is internal, and should be ignored by things like NIR_PRINT */
+   /* Shader is internal, and should be ignored by things like NIR_DEBUG=print */
    bool internal;
+
+   /* SHA1 of the original source, used by shader detection in drivers. */
+   uint8_t source_sha1[SHA1_DIGEST_LENGTH];
 
    /** The shader stage, such as MESA_SHADER_VERTEX. */
    gl_shader_stage stage:8;
@@ -151,6 +164,12 @@ typedef struct shader_info {
    uint64_t outputs_read;
    /* Which system values are actually read */
    BITSET_DECLARE(system_values_read, SYSTEM_VALUE_MAX);
+
+   /* Which I/O is per-primitive, for read/written information combine with
+    * the fields above.
+    */
+   uint64_t per_primitive_inputs;
+   uint64_t per_primitive_outputs;
 
    /* Which 16-bit inputs and outputs are used corresponding to
     * VARYING_SLOT_VARn_16BIT.
@@ -198,6 +217,25 @@ typedef struct shader_info {
     */
    unsigned shared_size;
 
+   /**
+    * Size of task payload variables accessed by task/mesh shaders.
+    */
+   unsigned task_payload_size;
+
+   /**
+    * Number of ray tracing queries in the shader (counts all elements of all
+    * variables).
+    */
+   unsigned ray_queries;
+
+   /**
+    * Local workgroup size used by compute/task/mesh shaders.
+    */
+   uint16_t workgroup_size[3];
+
+   /* Transform feedback buffer strides in dwords, max. 1K - 4. */
+   uint8_t xfb_stride[MAX_XFB_BUFFERS];
+
    uint16_t inlinable_uniform_dw_offsets[MAX_INLINABLE_UNIFORMS];
    uint8_t num_inlinable_uniforms:4;
 
@@ -216,6 +254,9 @@ typedef struct shader_info {
     * Note that this does not include the "fine" and "coarse" variants.
     */
    bool uses_fddx_fddy:1;
+
+   /** Has divergence analysis ever been run? */
+   bool divergence_analysis_run:1;
 
    /* Bitmask of bit-sizes used with ALU instructions. */
    uint8_t bit_sizes_float;
@@ -254,6 +295,21 @@ typedef struct shader_info {
     */
    bool shared_memory_explicit_layout:1;
 
+   /**
+    * Used for VK_KHR_zero_initialize_workgroup_memory.
+    */
+   bool zero_initialize_shared_memory:1;
+
+   /**
+    * Used for ARB_compute_variable_group_size.
+    */
+   bool workgroup_size_variable:1;
+
+   /**
+     * Is this an ARB assembly-style program.
+     */
+   bool is_arb_asm;
+
    union {
       struct {
          /* Which inputs are doubles */
@@ -268,13 +324,16 @@ typedef struct shader_info {
 
          /* True if the shader writes position in window space coordinates pre-transform */
          bool window_space_position:1;
+
+         /** Is an edge flag input needed? */
+         bool needs_edge_flag:1;
       } vs;
 
       struct {
-         /** The output primitive type (GL enum value) */
+         /** The output primitive type */
          uint16_t output_primitive;
 
-         /** The input primitive type (GL enum value) */
+         /** The input primitive type */
          uint16_t input_primitive;
 
          /** The maximum number of vertices the geometry shader might write. */
@@ -381,13 +440,16 @@ typedef struct shader_info {
          unsigned color1_interp:3; /* glsl_interp_mode */
          bool color1_sample:1;
          bool color1_centroid:1;
+
+         /* Bitmask of gl_advanced_blend_mode values that may be used with this
+          * shader.
+          */
+         unsigned advanced_blend_modes;
       } fs;
 
       struct {
-         uint16_t local_size[3];
-         uint16_t local_size_hint[3];
+         uint16_t workgroup_size_hint[3];
 
-         bool local_size_variable:1;
          uint8_t user_data_components_amd:3;
 
          /*
@@ -396,7 +458,10 @@ typedef struct shader_info {
           */
          enum gl_derivative_group derivative_group:2;
 
-         bool zero_initialize_shared_memory;
+         /**
+          * Explicit subgroup size if set by the shader, otherwise 0.
+          */
+         unsigned subgroup_size;
 
          /**
           * pointer size is:
@@ -414,11 +479,11 @@ typedef struct shader_info {
 
       /* Applies to both TCS and TES. */
       struct {
-         uint16_t primitive_mode; /* GL_TRIANGLES, GL_QUADS or GL_ISOLINES */
+	 enum tess_primitive_mode _primitive_mode;
 
          /** The number of vertices in the TCS output patch. */
          uint8_t tcs_vertices_out;
-         enum gl_tess_spacing spacing:2;
+         unsigned spacing:2; /*gl_tess_spacing*/
 
          /** Is the vertex order counterclockwise? */
          bool ccw:1;
@@ -434,6 +499,13 @@ typedef struct shader_info {
           */
          uint64_t tcs_cross_invocation_outputs_read;
       } tess;
+
+      /* Applies to MESH. */
+      struct {
+         uint16_t max_vertices_out;
+         uint16_t max_primitives_out;
+         uint16_t primitive_type;  /* GL_POINTS, GL_LINES or GL_TRIANGLES. */
+      } mesh;
    };
 } shader_info;
 

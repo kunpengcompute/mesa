@@ -47,6 +47,48 @@ lower_vulkan_resource_index(const nir_instr *instr, const void *data_cb)
    return false;
 }
 
+static bool
+lower_uniform_block_access(const nir_instr *instr, const void *data_cb)
+{
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+   if (intrin->intrinsic != nir_intrinsic_load_deref)
+      return false;
+   nir_deref_instr *deref = nir_instr_as_deref(intrin->src[0].ssa->parent_instr);
+   return deref->modes == nir_var_mem_ubo;
+}
+
+static nir_ssa_def *
+lower_block_instr(nir_builder *b, nir_instr *instr, void *data_cb)
+{
+   nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
+   nir_binding nb = nir_chase_binding(intrin->src[0]);
+   struct lvp_pipeline_layout *layout = data_cb;
+   struct lvp_descriptor_set_binding_layout *binding = &layout->set[nb.desc_set].layout->binding[nb.binding];
+   if (binding->type != VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+      return NULL;
+   if (!binding->array_size)
+      return NIR_LOWER_INSTR_PROGRESS_REPLACE;
+
+   assert(intrin->src[0].ssa->num_components == 2);
+   unsigned value = 0;
+   for (unsigned s = 0; s < nb.desc_set; s++)
+      value += layout->set[s].layout->stage[b->shader->info.stage].uniform_block_size;
+   if (layout->push_constant_stages & BITFIELD_BIT(b->shader->info.stage))
+      value += layout->push_constant_size;
+   value += binding->stage[b->shader->info.stage].uniform_block_offset;
+
+   b->cursor = nir_before_instr(instr);
+   nir_ssa_def *offset = nir_imm_ivec2(b, 0, value);
+   nir_ssa_def *added = nir_iadd(b, intrin->src[0].ssa, offset);
+   nir_deref_instr *deref = nir_instr_as_deref(intrin->src[0].ssa->parent_instr);
+   nir_deref_instr *cast = nir_build_deref_cast(b, added, deref->modes, deref->type, 0);
+   nir_instr_rewrite_src_ssa(instr, &intrin->src[0], &cast->dest.ssa);
+   return NIR_LOWER_INSTR_PROGRESS;
+}
+
 static nir_ssa_def *lower_vri_intrin_vri(struct nir_builder *b,
                                            nir_instr *instr, void *data_cb)
 {
@@ -59,7 +101,13 @@ static nir_ssa_def *lower_vri_intrin_vri(struct nir_builder *b,
    bool is_ubo = (binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
                   binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC);
 
+   /* always load inline uniform blocks from ubo0 */
+   if (binding->type == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK)
+      return nir_imm_ivec2(b, 0, 0);
+
    for (unsigned s = 0; s < desc_set_idx; s++) {
+     if (!layout->set[s].layout)
+        continue;
      if (is_ubo)
        value += layout->set[s].layout->stage[b->shader->info.stage].const_buffer_count;
      else
@@ -100,15 +148,16 @@ static nir_ssa_def *lower_vri_intrin_lvd(struct nir_builder *b,
    return nir_vec2(b, index, nir_imm_int(b, 0));
 }
 
-static int lower_vri_instr_tex_deref(nir_tex_instr *tex,
-                                     nir_tex_src_type deref_src_type,
-                                     gl_shader_stage stage,
-                                     struct lvp_pipeline_layout *layout)
+static unsigned
+lower_vri_instr_tex_deref(nir_tex_instr *tex,
+                          nir_tex_src_type deref_src_type,
+                          gl_shader_stage stage,
+                          struct lvp_pipeline_layout *layout)
 {
    int deref_src_idx = nir_tex_instr_src_index(tex, deref_src_type);
 
    if (deref_src_idx < 0)
-      return -1;
+      return 0;
 
    nir_deref_instr *deref_instr = nir_src_as_deref(tex->src[deref_src_idx].src);
    nir_variable *var = nir_deref_instr_get_variable(deref_instr);
@@ -118,6 +167,8 @@ static int lower_vri_instr_tex_deref(nir_tex_instr *tex,
    struct lvp_descriptor_set_binding_layout *binding = &layout->set[desc_set_idx].layout->binding[binding_idx];
    nir_tex_instr_remove_src(tex, deref_src_idx);
    for (unsigned s = 0; s < desc_set_idx; s++) {
+      if (!layout->set[s].layout)
+         continue;
       if (deref_src_type == nir_tex_src_sampler_deref)
          value += layout->set[s].layout->stage[stage].sampler_count;
       else
@@ -142,19 +193,33 @@ static int lower_vri_instr_tex_deref(nir_tex_instr *tex,
       tex->sampler_index = value;
    else
       tex->texture_index = value;
-   return value;
+
+   if (deref_src_type == nir_tex_src_sampler_deref)
+      return 0;
+
+   if (deref_instr->deref_type == nir_deref_type_array) {
+      assert(glsl_type_is_array(var->type));
+      assert(value >= 0);
+      if (nir_src_is_const(deref_instr->arr.index))
+         return BITFIELD_BIT(value);
+      unsigned size = glsl_get_aoa_size(var->type);
+      return u_bit_consecutive(value, size);
+   } else
+      return 1u << value;
 }
 
 static void lower_vri_instr_tex(struct nir_builder *b,
                                 nir_tex_instr *tex, void *data_cb)
 {
    struct lvp_pipeline_layout *layout = data_cb;
-   int tex_value = 0;
+   unsigned textures_used;
 
    lower_vri_instr_tex_deref(tex, nir_tex_src_sampler_deref, b->shader->info.stage, layout);
-   tex_value = lower_vri_instr_tex_deref(tex, nir_tex_src_texture_deref, b->shader->info.stage, layout);
-   if (tex_value >= 0)
-      BITSET_SET(b->shader->info.textures_used, tex_value);
+   textures_used = lower_vri_instr_tex_deref(tex, nir_tex_src_texture_deref, b->shader->info.stage, layout);
+   while (textures_used) {
+      int i = u_bit_scan(&textures_used);
+      BITSET_SET(b->shader->info.textures_used, i);
+   }
 }
 
 static nir_ssa_def *lower_vri_instr(struct nir_builder *b,
@@ -196,8 +261,10 @@ void lvp_lower_pipeline_layout(const struct lvp_device *device,
                                struct lvp_pipeline_layout *layout,
                                nir_shader *shader)
 {
+   nir_shader_lower_instructions(shader, lower_uniform_block_access, lower_block_instr, layout);
    nir_shader_lower_instructions(shader, lower_vulkan_resource_index, lower_vri_instr, layout);
-   nir_foreach_uniform_variable(var, shader) {
+   nir_foreach_variable_with_modes(var, shader, nir_var_uniform |
+                                                nir_var_image) {
       const struct glsl_type *type = var->type;
       enum glsl_base_type base_type =
          glsl_get_base_type(glsl_without_array(type));
@@ -206,22 +273,31 @@ void lvp_lower_pipeline_layout(const struct lvp_device *device,
       struct lvp_descriptor_set_binding_layout *binding = &layout->set[desc_set_idx].layout->binding[binding_idx];
       int value = 0;
       var->data.descriptor_set = 0;
-      if (base_type == GLSL_TYPE_SAMPLER) {
+      if (base_type == GLSL_TYPE_SAMPLER || base_type == GLSL_TYPE_TEXTURE) {
          if (binding->type == VK_DESCRIPTOR_TYPE_SAMPLER) {
-            for (unsigned s = 0; s < desc_set_idx; s++)
+            for (unsigned s = 0; s < desc_set_idx; s++) {
+               if (!layout->set[s].layout)
+                  continue;
                value += layout->set[s].layout->stage[shader->info.stage].sampler_count;
+            }
             value += binding->stage[shader->info.stage].sampler_index;
          } else {
-            for (unsigned s = 0; s < desc_set_idx; s++)
+            for (unsigned s = 0; s < desc_set_idx; s++) {
+               if (!layout->set[s].layout)
+                  continue;
                value += layout->set[s].layout->stage[shader->info.stage].sampler_view_count;
+            }
             value += binding->stage[shader->info.stage].sampler_view_index;
          }
          var->data.binding = value;
       }
       if (base_type == GLSL_TYPE_IMAGE) {
          var->data.descriptor_set = 0;
-         for (unsigned s = 0; s < desc_set_idx; s++)
+         for (unsigned s = 0; s < desc_set_idx; s++) {
+           if (!layout->set[s].layout)
+              continue;
            value += layout->set[s].layout->stage[shader->info.stage].image_count;
+         }
          value += binding->stage[shader->info.stage].image_index;
          var->data.binding = value;
       }

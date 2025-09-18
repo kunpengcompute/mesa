@@ -25,6 +25,7 @@
  *
  **************************************************************************/
 
+#include "util/format/format_utils.h"
 #include "util/u_cpu_detect.h"
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
@@ -164,6 +165,90 @@ util_upload_index_buffer(struct pipe_context *pipe,
    u_upload_unmap(pipe->stream_uploader);
    *out_offset -= start_offset;
    return *out_buffer != NULL;
+}
+
+/**
+ * Lower each UINT64 vertex element to 1 or 2 UINT32 vertex elements.
+ * 3 and 4 component formats are expanded into 2 slots.
+ *
+ * @param velems        Original vertex elements, will be updated to contain
+ *                      the lowered vertex elements.
+ * @param velem_count   Original count, will be updated to contain the count
+ *                      after lowering.
+ * @param tmp           Temporary array of PIPE_MAX_ATTRIBS vertex elements.
+ */
+void
+util_lower_uint64_vertex_elements(const struct pipe_vertex_element **velems,
+                                  unsigned *velem_count,
+                                  struct pipe_vertex_element tmp[PIPE_MAX_ATTRIBS])
+{
+   const struct pipe_vertex_element *input = *velems;
+   unsigned count = *velem_count;
+   bool has_64bit = false;
+
+   for (unsigned i = 0; i < count; i++) {
+      has_64bit |= input[i].src_format >= PIPE_FORMAT_R64_UINT &&
+                   input[i].src_format <= PIPE_FORMAT_R64G64B64A64_UINT;
+   }
+
+   /* Return the original vertex elements if there is nothing to do. */
+   if (!has_64bit)
+      return;
+
+   /* Lower 64_UINT to 32_UINT. */
+   unsigned new_count = 0;
+
+   for (unsigned i = 0; i < count; i++) {
+      enum pipe_format format = input[i].src_format;
+
+      /* If the shader input is dvec2 or smaller, reduce the number of
+       * components to 2 at most. If the shader input is dvec3 or larger,
+       * expand the number of components to 3 at least. If the 3rd component
+       * is out of bounds, the hardware shouldn't skip loading the first
+       * 2 components.
+       */
+      if (format >= PIPE_FORMAT_R64_UINT &&
+          format <= PIPE_FORMAT_R64G64B64A64_UINT) {
+         if (input[i].dual_slot)
+            format = MAX2(format, PIPE_FORMAT_R64G64B64_UINT);
+         else
+            format = MIN2(format, PIPE_FORMAT_R64G64_UINT);
+      }
+
+      switch (format) {
+      case PIPE_FORMAT_R64_UINT:
+         tmp[new_count] = input[i];
+         tmp[new_count].src_format = PIPE_FORMAT_R32G32_UINT;
+         new_count++;
+         break;
+
+      case PIPE_FORMAT_R64G64_UINT:
+         tmp[new_count] = input[i];
+         tmp[new_count].src_format = PIPE_FORMAT_R32G32B32A32_UINT;
+         new_count++;
+         break;
+
+      case PIPE_FORMAT_R64G64B64_UINT:
+      case PIPE_FORMAT_R64G64B64A64_UINT:
+         assert(new_count + 2 <= PIPE_MAX_ATTRIBS);
+         tmp[new_count] = tmp[new_count + 1] = input[i];
+         tmp[new_count].src_format = PIPE_FORMAT_R32G32B32A32_UINT;
+         tmp[new_count + 1].src_format =
+            format == PIPE_FORMAT_R64G64B64_UINT ?
+                  PIPE_FORMAT_R32G32_UINT :
+                  PIPE_FORMAT_R32G32B32A32_UINT;
+         tmp[new_count + 1].src_offset += 16;
+         new_count += 2;
+         break;
+
+      default:
+         tmp[new_count++] = input[i];
+         break;
+      }
+   }
+
+   *velem_count = new_count;
+   *velems = tmp;
 }
 
 /* This is a helper for hardware bring-up. Don't remove. */
@@ -373,4 +458,90 @@ util_throttle_memory_usage(struct pipe_context *pipe,
    }
 
    t->ring[t->flush_index].mem_usage += memory_size;
+}
+
+bool
+util_lower_clearsize_to_dword(const void *clearValue, int *clearValueSize, uint32_t *clamped)
+{
+   /* Reduce a large clear value size if possible. */
+   if (*clearValueSize > 4) {
+      bool clear_dword_duplicated = true;
+      const uint32_t *clear_value = clearValue;
+
+      /* See if we can lower large fills to dword fills. */
+      for (unsigned i = 1; i < *clearValueSize / 4; i++) {
+         if (clear_value[0] != clear_value[i]) {
+            clear_dword_duplicated = false;
+            break;
+         }
+      }
+      if (clear_dword_duplicated) {
+         *clamped = *clear_value;
+         *clearValueSize = 4;
+      }
+      return clear_dword_duplicated;
+   }
+
+   /* Expand a small clear value size. */
+   if (*clearValueSize <= 2) {
+      if (*clearValueSize == 1) {
+         *clamped = *(uint8_t *)clearValue;
+         *clamped |=
+            (*clamped << 8) | (*clamped << 16) | (*clamped << 24);
+      } else {
+         *clamped = *(uint16_t *)clearValue;
+         *clamped |= *clamped << 16;
+      }
+      *clearValueSize = 4;
+      return true;
+   }
+   return false;
+}
+
+void
+util_init_pipe_vertex_state(struct pipe_screen *screen,
+                            struct pipe_vertex_buffer *buffer,
+                            const struct pipe_vertex_element *elements,
+                            unsigned num_elements,
+                            struct pipe_resource *indexbuf,
+                            uint32_t full_velem_mask,
+                            struct pipe_vertex_state *state)
+{
+   assert(num_elements == util_bitcount(full_velem_mask));
+
+   pipe_reference_init(&state->reference, 1);
+   state->screen = screen;
+
+   pipe_vertex_buffer_reference(&state->input.vbuffer, buffer);
+   pipe_resource_reference(&state->input.indexbuf, indexbuf);
+   state->input.num_elements = num_elements;
+   for (unsigned i = 0; i < num_elements; i++)
+      state->input.elements[i] = elements[i];
+   state->input.full_velem_mask = full_velem_mask;
+}
+
+/**
+ * Clamp color value to format range.
+ */
+union pipe_color_union
+util_clamp_color(enum pipe_format format,
+                 const union pipe_color_union *color)
+{
+   union pipe_color_union clamp_color = *color;
+   int i;
+
+   for (i = 0; i < util_format_get_nr_components(format); i++) {
+      uint8_t bits = util_format_get_component_bits(format, UTIL_FORMAT_COLORSPACE_RGB, i);
+
+      if (util_format_is_unorm(format))
+         clamp_color.ui[i] = _mesa_unorm_to_unorm(clamp_color.ui[i], bits, bits);
+      else if (util_format_is_snorm(format))
+         clamp_color.i[i] = _mesa_snorm_to_snorm(clamp_color.i[i], bits, bits);
+      else if (util_format_is_pure_uint(format))
+         clamp_color.ui[i] = _mesa_unsigned_to_unsigned(clamp_color.ui[i], bits);
+      else if (util_format_is_pure_sint(format))
+         clamp_color.i[i] = _mesa_signed_to_signed(clamp_color.i[i], bits);
+   }
+
+   return clamp_color;
 }

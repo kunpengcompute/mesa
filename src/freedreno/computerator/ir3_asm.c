@@ -35,23 +35,26 @@ ir3_asm_assemble(struct ir3_compiler *c, FILE *in)
       errx(-1, "assembler failed");
    struct ir3_shader_variant *v = shader->variants;
 
-   v->mergedregs = true;
-
    kernel->v = v;
    kernel->bin = v->bin;
 
    kernel->base.local_size[0] = v->local_size[0];
-   kernel->base.local_size[1] = v->local_size[0];
-   kernel->base.local_size[2] = v->local_size[0];
+   kernel->base.local_size[1] = v->local_size[1];
+   kernel->base.local_size[2] = v->local_size[2];
    kernel->base.num_bufs = kernel->info.num_bufs;
    memcpy(kernel->base.buf_sizes, kernel->info.buf_sizes,
           sizeof(kernel->base.buf_sizes));
+   memcpy(kernel->base.buf_addr_regs, kernel->info.buf_addr_regs,
+          sizeof(kernel->base.buf_addr_regs));
 
    unsigned sz = v->info.size;
 
    v->bo = fd_bo_new(c->dev, sz, 0, "%s", ir3_shader_stage(v));
 
    memcpy(fd_bo_map(v->bo), kernel->bin, sz);
+
+   /* Always include shaders in kernel crash dumps. */
+   fd_bo_mark_for_dump(v->bo);
 
    return kernel;
 }

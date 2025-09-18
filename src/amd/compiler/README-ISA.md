@@ -44,6 +44,18 @@ is written in the GCN3 reference guide:
 D.u = CountOneBits(S0.u) + S1.u.
 ```
 
+## `v_alignbyte_b32`
+
+All versions of the ISA document are vague about it, but after some trial and
+error we discovered that only 2 bits of the 3rd operand are used.
+Therefore, this instruction can't shift more than 24 bits.
+
+The correct description of `v_alignbyte_b32` is probably the following:
+
+```
+D.u = ({S0, S1} >> (8 * S2.u[1:0])) & 0xffffffff
+```
+
 ## SMEM stores
 
 The Vega ISA references doesn't say this (or doesn't make it clear), but
@@ -100,6 +112,16 @@ SGPR_NULL.
 Some instructions have a `_LEGACY` variant which implements "DX9 rules", in which
 the zero "wins" in multiplications, ie. `0.0*x` is always `0.0`. The VEGA ISA
 mentions `V_MAC_LEGACY_F32` but this instruction is not really there on VEGA.
+
+## `m0` with LDS instructions on Vega and newer
+
+The Vega ISA doc (both the old one and the "7nm" one) claims that LDS instructions
+use the `m0` register for address clamping like older GPUs, but this is not the case.
+
+In reality, only the `_addtid` variants of LDS instructions use `m0` on Vega and
+newer GPUs, so the relevant section of the RDNA ISA doc seems to apply.
+LLVM also doesn't emit any initialization of `m0` for LDS instructions, and this
+was also confirmed by AMD devs.
 
 ## RDNA L0, L1 cache and DLC, GLC bits
 
@@ -159,6 +181,12 @@ After issuing a SMEM instructions, we need to wait for the SMEM instructions to
 finish and then write to vcc (for example, `s_mov_b64 vcc, vcc`) to correct vccz
 
 Currently, we don't do this.
+
+## SGPR offset on MUBUF prevents addr clamping on SI/CI
+
+[See this LLVM source.](https://github.com/llvm/llvm-project/blob/main/llvm/lib/Target/AMDGPU/Utils/AMDGPUBaseInfo.cpp#L1917-L1922)
+
+This leads to wrong bounds checking, using a VGPR offset fixes it.
 
 ## GCN / GFX6 hazards
 
@@ -246,3 +274,12 @@ or vice versa: DS instruction, then a branch, then a VMEM/GLOBAL/SCRATCH instruc
 
 Mitigated by:
 Only `s_waitcnt_vscnt null, 0`. Needed even if the first instruction is a load.
+
+### NSAClauseBug
+
+"MIMG-NSA in a hard clause has unpredictable results on GFX10.1"
+
+### NSAMaxSize5
+
+NSA MIMG instructions should be limited to 3 dwords before GFX10.3 to avoid
+stability issues: https://reviews.llvm.org/D103348

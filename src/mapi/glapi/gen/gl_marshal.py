@@ -20,17 +20,17 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-from __future__ import print_function
-
 import contextlib
 import getopt
 import gl_XML
 import license
 import marshal_XML
 import sys
+import collections
+import apiexec
 
 header = """
-#include "api_exec.h"
+#include "context.h"
 #include "glthread_marshal.h"
 #include "bufferobj.h"
 #include "dispatch.h"
@@ -99,6 +99,8 @@ class PrintCode(gl_XML.gl_print_base):
         out('{')
         with indent():
             out('GET_CURRENT_CONTEXT(ctx);')
+            if func.marshal_call_before:
+                out(func.marshal_call_before);
             out('_mesa_glthread_finish_before(ctx, "{0}");'.format(func.name))
             self.print_sync_call(func)
         out('}')
@@ -238,9 +240,9 @@ class PrintCode(gl_XML.gl_print_base):
             fixed_params = func.fixed_params
             variable_params = func.variable_params
 
-        out('void')
+        out('uint32_t')
         out(('_mesa_unmarshal_{0}(struct gl_context *ctx, '
-             'const struct marshal_cmd_{0} *cmd)').format(func.name))
+             'const struct marshal_cmd_{0} *cmd, const uint64_t *last)').format(func.name))
         out('{')
         with indent():
             for p in fixed_params:
@@ -281,6 +283,13 @@ class PrintCode(gl_XML.gl_print_base):
                     i += 1
 
             self.print_sync_call(func, unmarshal = 1)
+            if variable_params:
+                out('return cmd->cmd_base.cmd_size;')
+            else:
+                struct = 'struct marshal_cmd_{0}'.format(func.name)
+                out('const unsigned cmd_size = (align(sizeof({0}), 8) / 8);'.format(struct))
+                out('assert (cmd_size == cmd->cmd_base.cmd_size);')
+                out('return cmd_size;'.format(struct))
         out('}')
 
     def validate_count_or_fallback(self, func):
@@ -312,6 +321,9 @@ class PrintCode(gl_XML.gl_print_base):
         out('{')
         with indent():
             out('GET_CURRENT_CONTEXT(ctx);')
+            if func.marshal_call_before:
+                out(func.marshal_call_before);
+
             if not func.marshal_sync:
                 for p in func.variable_params:
                     out('int {0}_size = {1};'.format(p.name, p.size_string(marshal = 1)))
@@ -367,30 +379,48 @@ class PrintCode(gl_XML.gl_print_base):
         out('#if defined(__GNUC__) && !defined(__clang__)')
         out('__attribute__((optimize("O1")))')
         out('#endif')
-        out('struct _glapi_table *')
-        out('_mesa_create_marshal_table(const struct gl_context *ctx)')
+        out('bool')
+        out('_mesa_create_marshal_tables(struct gl_context *ctx)')
         out('{')
         with indent():
-            out('struct _glapi_table *table;')
-            out('')
-            out('table = _mesa_alloc_dispatch_table();')
-            out('if (table == NULL)')
+            out('ctx->MarshalExec = _mesa_alloc_dispatch_table(true);')
+            out('if (!ctx->MarshalExec)')
             with indent():
-                out('return NULL;')
+                out('return false;')
             out('')
+
+            # Collect SET_* calls by the condition under which they should
+            # be called.
+            settings_by_condition = collections.defaultdict(lambda: [])
+
             for func in api.functionIterateAll():
                 if func.marshal_flavor() == 'skip':
                     continue
+
+                condition = apiexec.get_api_condition(func)
+                if not condition:
+                    continue
+
                 # Don't use the SET_* functions, because they increase compile time
                 # by 20 seconds (on Ryzen 1700X).
-                out('if (_gloffset_{0} >= 0)'.format(func.name))
-                out('   ((_glapi_proc *)(table))[_gloffset_{0}] = (_glapi_proc)_mesa_marshal_{0};'
-                    .format(func.name))
-            out('')
-            out('return table;')
+                settings_by_condition[condition].append(
+                    ('if (_gloffset_{0} >= 0)\n' +
+                     '   ((_glapi_proc *)(ctx->MarshalExec))[_gloffset_{0}] =' +
+                     ' (_glapi_proc)_mesa_marshal_{0};').format(func.name))
+
+            # Print out an if statement for each unique condition, with
+            # the SET_* calls nested inside it.
+            for condition in sorted(settings_by_condition.keys()):
+                out('if ({0}) {{'.format(condition))
+                with indent():
+                    for setting in sorted(settings_by_condition[condition]):
+                        for line in setting.split('\n'):
+                            out(line)
+                out('}')
+
+        out('')
+        out('   return true;')
         out('}')
-        out('')
-        out('')
 
     def printBody(self, api):
         # The first file only contains the dispatch tables

@@ -121,7 +121,7 @@ RegisterSet::reset(DataFile f, bool resetMax)
 void
 RegisterSet::init(const Target *targ)
 {
-   for (unsigned int rf = 0; rf <= FILE_ADDRESS; ++rf) {
+   for (unsigned int rf = 0; rf <= LAST_REGISTER_FILE; ++rf) {
       DataFile f = static_cast<DataFile>(rf);
       last[rf] = targ->getFileSize(f) - 1;
       unit[rf] = targ->getFileUnit(f);
@@ -876,9 +876,9 @@ private:
 
 const GCRA::RelDegree GCRA::relDegree;
 
-GCRA::RIG_Node::RIG_Node() : Node(NULL), next(this), prev(this)
+GCRA::RIG_Node::RIG_Node() : Node(NULL), degree(0), degreeLimit(0), maxReg(0),
+   colors(0), f(FILE_NULL), reg(0), weight(0), next(this), prev(this)
 {
-   colors = 0;
 }
 
 void
@@ -1270,7 +1270,8 @@ GCRA::buildRIG(ArrayList& insns)
    for (int i = 0; i < insns.getSize(); ++i) {
       Instruction *insn = reinterpret_cast<Instruction *>(insns.get(i));
       for (int d = 0; insn->defExists(d); ++d)
-         if (insn->getDef(d)->rep() == insn->getDef(d))
+         if (insn->getDef(d)->reg.file <= LAST_REGISTER_FILE &&
+             insn->getDef(d)->rep() == insn->getDef(d))
             insertOrderedTail(values, getNode(insn->getDef(d)->asLValue()));
    }
    checkList(values);
@@ -1644,8 +1645,14 @@ SpillCodeInserter::assignSlot(const Interval &livei, const unsigned int size)
    int32_t offset;
    std::list<SpillSlot>::iterator pos = slots.end(), it = slots.begin();
 
-   if (offsetBase % size)
-      offsetBase += size - (offsetBase % size);
+   if (!func->stackPtr) {
+      // Later, we compute the address as (offsetBase + tlsBase)
+      // tlsBase might not be size-aligned, so we add just enough
+      // to give the final address the correct alignment
+      offsetBase = align(offsetBase + func->tlsBase, size) - func->tlsBase;
+   } else {
+      offsetBase = align(offsetBase, size);
+   }
 
    slot.sym = NULL;
 
@@ -2652,7 +2659,7 @@ RegAlloc::InsertConstraintsPass::insertConstraintMoves()
       Instruction *cst = *it;
       Instruction *mov;
 
-      if (cst->op == OP_SPLIT && 0) {
+      if (cst->op == OP_SPLIT && false) {
          // spilling splits is annoying, just make sure they're separate
          for (int d = 0; cst->defExists(d); ++d) {
             if (!cst->getDef(d)->refCount())

@@ -60,7 +60,7 @@ bool ac_is_sgpr_param(LLVMValueRef arg)
    llvm::Argument *A = llvm::unwrap<llvm::Argument>(arg);
    llvm::AttributeList AS = A->getParent()->getAttributes();
    unsigned ArgNo = A->getArgNo();
-   return AS.hasAttribute(ArgNo + 1, llvm::Attribute::InReg);
+   return AS.hasParamAttr(ArgNo, llvm::Attribute::InReg);
 }
 
 LLVMValueRef ac_llvm_get_called_value(LLVMValueRef call)
@@ -254,11 +254,6 @@ bool ac_compile_module_to_elf(struct ac_compiler_passes *p, LLVMModuleRef module
 void ac_llvm_add_barrier_noop_pass(LLVMPassManagerRef passmgr)
 {
    llvm::unwrap(passmgr)->add(llvm::createBarrierNoopPass());
-}
-
-void ac_enable_global_isel(LLVMTargetMachineRef tm)
-{
-   reinterpret_cast<llvm::TargetMachine *>(tm)->setGlobalISel(true);
 }
 
 LLVMValueRef ac_build_atomic_rmw(struct ac_llvm_context *ctx, LLVMAtomicRMWBinOp op,

@@ -365,6 +365,7 @@ IndirectPropagation::visit(BasicBlock *bb)
 class ConstantFolding : public Pass
 {
 public:
+   ConstantFolding() : foldCount(0) {}
    bool foldAll(Program *);
 
 private:
@@ -1492,6 +1493,8 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
          int muls;
          if (isFloatType(si->dType))
             return false;
+         if (si->subOp)
+            return false;
          if (si->src(1).getImmediate(imm1))
             muls = 1;
          else if (si->src(0).getImmediate(imm1))
@@ -1501,6 +1504,9 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
 
          bld.setPosition(i, false);
          i->op = OP_MUL;
+         i->subOp = 0;
+         i->dType = si->dType;
+         i->sType = si->sType;
          i->setSrc(0, si->getSrc(!muls));
          i->setSrc(1, bld.loadImm(NULL, imm1.reg.data.u32 << imm0.reg.data.u32));
          break;
@@ -1731,7 +1737,7 @@ ModifierFolding::visit(BasicBlock *bb)
    for (i = bb->getEntry(); i; i = next) {
       next = i->next;
 
-      if (0 && i->op == OP_SUB) {
+      if (false && i->op == OP_SUB) {
          // turn "sub" into "add neg" (do we really want this ?)
          i->op = OP_ADD;
          i->src(0).mod = i->src(0).mod ^ Modifier(NV50_IR_MOD_NEG);
@@ -1828,9 +1834,6 @@ AlgebraicOpt::handleABS(Instruction *abs)
    DataType ty;
    if (!sub ||
        !prog->getTarget()->isOpSupported(OP_SAD, abs->dType))
-      return;
-   // expect not to have mods yet, if we do, bail
-   if (sub->src(0).mod || sub->src(1).mod)
       return;
    // hidden conversion ?
    ty = intTypeToSigned(sub->dType);
@@ -3271,6 +3274,9 @@ MemoryOpt::runOpt(BasicBlock *bb)
 // constructs.
 class FlatteningPass : public Pass
 {
+public:
+   FlatteningPass() : gpr_unit(0) {}
+
 private:
    virtual bool visit(Function *);
    virtual bool visit(BasicBlock *);
@@ -3902,6 +3908,7 @@ LocalCSE::visit(BasicBlock *bb)
 class DeadCodeElim : public Pass
 {
 public:
+   DeadCodeElim() : deadCount(0) {}
    bool buryAll(Program *);
 
 private:

@@ -762,7 +762,7 @@ general_restrictions_based_on_operand_types(const struct intel_device_info *devi
     * 32-bit elements, so they are doubled. For evaluating the validity of an
     * instruction, we halve them.
     */
-   if (devinfo->ver == 7 && !devinfo->is_haswell &&
+   if (devinfo->verx10 == 70 &&
        exec_type_size == 8 && dst_type_size == 4)
       dst_type_size = 8;
 
@@ -862,7 +862,8 @@ general_restrictions_based_on_operand_types(const struct intel_device_info *devi
             ERROR_IF(subreg % 4 != 0,
                      "Conversions between integer and half-float must be "
                      "aligned to a DWord on the destination");
-         } else if ((devinfo->is_cherryview || devinfo->ver >= 9) &&
+         } else if ((devinfo->platform == INTEL_PLATFORM_CHV ||
+                     devinfo->ver >= 9) &&
                     dst_type == BRW_REGISTER_TYPE_HF) {
             unsigned subreg = brw_inst_dst_da1_subreg_nr(devinfo, inst);
             ERROR_IF(dst_stride != 2 &&
@@ -881,7 +882,7 @@ general_restrictions_based_on_operand_types(const struct intel_device_info *devi
     */
    bool validate_dst_size_and_exec_size_ratio =
       !is_mixed_float(devinfo, inst) ||
-      !(devinfo->is_cherryview || devinfo->ver >= 9);
+      !(devinfo->platform == INTEL_PLATFORM_CHV || devinfo->ver >= 9);
 
    if (validate_dst_size_and_exec_size_ratio &&
        exec_type_size > dst_type_size) {
@@ -900,7 +901,7 @@ general_restrictions_based_on_operand_types(const struct intel_device_info *devi
           *    Implementation Restriction: The relaxed alignment rule for byte
           *    destination (#10.5) is not supported.
           */
-         if ((devinfo->ver > 4 || devinfo->is_g4x) && dst_type_is_byte) {
+         if (devinfo->verx10 >= 45 && dst_type_is_byte) {
             ERROR_IF(subreg % exec_type_size != 0 &&
                      subreg % exec_type_size != 1,
                      "Destination subreg must be aligned to the size of the "
@@ -946,7 +947,7 @@ general_restrictions_on_region_parameters(const struct intel_device_info *devinf
                   "Destination Horizontal Stride must be 1");
 
       if (num_sources >= 1) {
-         if (devinfo->is_haswell || devinfo->ver >= 8) {
+         if (devinfo->verx10 >= 75) {
             ERROR_IF(brw_inst_src0_reg_file(devinfo, inst) != BRW_IMMEDIATE_VALUE &&
                      brw_inst_src0_vstride(devinfo, inst) != BRW_VERTICAL_STRIDE_0 &&
                      brw_inst_src0_vstride(devinfo, inst) != BRW_VERTICAL_STRIDE_2 &&
@@ -961,7 +962,7 @@ general_restrictions_on_region_parameters(const struct intel_device_info *devinf
       }
 
       if (num_sources == 2) {
-         if (devinfo->is_haswell || devinfo->ver >= 8) {
+         if (devinfo->verx10 >= 75) {
             ERROR_IF(brw_inst_src1_reg_file(devinfo, inst) != BRW_IMMEDIATE_VALUE &&
                      brw_inst_src1_vstride(devinfo, inst) != BRW_VERTICAL_STRIDE_0 &&
                      brw_inst_src1_vstride(devinfo, inst) != BRW_VERTICAL_STRIDE_2 &&
@@ -1005,7 +1006,7 @@ general_restrictions_on_region_parameters(const struct intel_device_info *devinf
        * 32-bit elements, so they are doubled. For evaluating the validity of an
        * instruction, we halve them.
        */
-      if (devinfo->ver == 7 && !devinfo->is_haswell &&
+      if (devinfo->verx10 == 70 &&
           element_size == 8)
          element_size = 4;
 
@@ -1447,7 +1448,7 @@ region_alignment_rules(const struct intel_device_info *devinfo,
     * 32-bit elements, so they are doubled. For evaluating the validity of an
     * instruction, we halve them.
     */
-   if (devinfo->ver == 7 && !devinfo->is_haswell &&
+   if (devinfo->verx10 == 70 &&
        element_size == 8)
       element_size = 4;
 
@@ -1820,7 +1821,7 @@ special_requirements_for_handling_double_precision_data_types(
        */
       if (is_double_precision &&
           brw_inst_access_mode(devinfo, inst) == BRW_ALIGN_1 &&
-          (devinfo->is_cherryview || intel_device_info_is_9lp(devinfo))) {
+          (devinfo->platform == INTEL_PLATFORM_CHV || intel_device_info_is_9lp(devinfo))) {
          ERROR_IF(!is_scalar_region &&
                   (src_stride % 8 != 0 ||
                    dst_stride % 8 != 0 ||
@@ -1845,7 +1846,7 @@ special_requirements_for_handling_double_precision_data_types(
        * We assume that the restriction applies to GLK as well.
        */
       if (is_double_precision &&
-          (devinfo->is_cherryview || intel_device_info_is_9lp(devinfo))) {
+          (devinfo->platform == INTEL_PLATFORM_CHV || intel_device_info_is_9lp(devinfo))) {
          ERROR_IF(BRW_ADDRESS_REGISTER_INDIRECT_REGISTER == address_mode ||
                   BRW_ADDRESS_REGISTER_INDIRECT_REGISTER == dst_address_mode,
                   "Indirect addressing is not allowed when the execution type "
@@ -1862,7 +1863,8 @@ special_requirements_for_handling_double_precision_data_types(
        * We assume that the restriction does not apply to the null register.
        */
       if (is_double_precision &&
-          (devinfo->is_cherryview || intel_device_info_is_9lp(devinfo))) {
+          (devinfo->platform == INTEL_PLATFORM_CHV ||
+           intel_device_info_is_9lp(devinfo))) {
          ERROR_IF(brw_inst_opcode(devinfo, inst) == BRW_OPCODE_MAC ||
                   brw_inst_acc_wr_control(devinfo, inst) ||
                   (BRW_ARCHITECTURE_REGISTER_FILE == file &&
@@ -1949,7 +1951,7 @@ special_requirements_for_handling_double_precision_data_types(
     * We assume that the restriction applies to GLK as well.
     */
    if (is_double_precision &&
-       (devinfo->is_cherryview || intel_device_info_is_9lp(devinfo))) {
+       (devinfo->platform == INTEL_PLATFORM_CHV || intel_device_info_is_9lp(devinfo))) {
       ERROR_IF(brw_inst_no_dd_check(devinfo, inst) ||
                brw_inst_no_dd_clear(devinfo, inst),
                "DepCtrl is not allowed when the execution type is 64-bit");
@@ -2025,6 +2027,80 @@ instruction_restrictions(const struct intel_device_info *devinfo,
       }
    }
 
+   if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_MATH) {
+      unsigned math_function = brw_inst_math_function(devinfo, inst);
+      switch (math_function) {
+      case BRW_MATH_FUNCTION_INT_DIV_QUOTIENT_AND_REMAINDER:
+      case BRW_MATH_FUNCTION_INT_DIV_QUOTIENT:
+      case BRW_MATH_FUNCTION_INT_DIV_REMAINDER: {
+         /* Page 442 of the Broadwell PRM Volume 2a "Extended Math Function" says:
+          *    INT DIV function does not support source modifiers.
+          * Bspec 6647 extends it back to Ivy Bridge.
+          */
+         bool src0_valid = !brw_inst_src0_negate(devinfo, inst) &&
+                           !brw_inst_src0_abs(devinfo, inst);
+         bool src1_valid = !brw_inst_src1_negate(devinfo, inst) &&
+                           !brw_inst_src1_abs(devinfo, inst);
+         ERROR_IF(!src0_valid || !src1_valid,
+                  "INT DIV function does not support source modifiers.");
+         break;
+      }
+      default:
+         break;
+      }
+   }
+
+   if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_DP4A) {
+      /* Page 396 (page 412 of the PDF) of the DG1 PRM volume 2a says:
+       *
+       *    Only one of src0 or src1 operand may be an the (sic) accumulator
+       *    register (acc#).
+       */
+      ERROR_IF(src0_is_acc(devinfo, inst) && src1_is_acc(devinfo, inst),
+               "Only one of src0 or src1 operand may be an accumulator "
+               "register (acc#).");
+
+   }
+
+   return error_msg;
+}
+
+static struct string
+send_descriptor_restrictions(const struct intel_device_info *devinfo,
+                             const brw_inst *inst)
+{
+   struct string error_msg = { .str = NULL, .len = 0 };
+
+   if (inst_is_split_send(devinfo, inst)) {
+      /* We can only validate immediate descriptors */
+      if (brw_inst_send_sel_reg32_desc(devinfo, inst))
+         return error_msg;
+   } else if (inst_is_send(devinfo, inst)) {
+      /* We can only validate immediate descriptors */
+      if (brw_inst_src1_reg_file(devinfo, inst) != BRW_IMMEDIATE_VALUE)
+         return error_msg;
+   } else {
+      return error_msg;
+   }
+
+   const uint32_t desc = brw_inst_send_desc(devinfo, inst);
+
+   switch (brw_inst_sfid(devinfo, inst)) {
+   case GFX12_SFID_TGM:
+   case GFX12_SFID_SLM:
+   case GFX12_SFID_UGM:
+      ERROR_IF(!devinfo->has_lsc, "Platform does not support LSC");
+
+      ERROR_IF(lsc_opcode_has_transpose(lsc_msg_desc_opcode(devinfo, desc)) &&
+               lsc_msg_desc_transpose(devinfo, desc) &&
+               brw_inst_exec_size(devinfo, inst) != BRW_EXECUTE_1,
+               "Transposed vectors are restricted to Exec_Mask = 1.");
+      break;
+
+   default:
+      break;
+   }
+
    return error_msg;
 }
 
@@ -2051,6 +2127,7 @@ brw_validate_instruction(const struct intel_device_info *devinfo,
          CHECK(vector_immediate_restrictions);
          CHECK(special_requirements_for_handling_double_precision_data_types);
          CHECK(instruction_restrictions);
+         CHECK(send_descriptor_restrictions);
       }
    }
 

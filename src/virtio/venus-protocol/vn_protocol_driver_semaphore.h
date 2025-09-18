@@ -8,7 +8,7 @@
 #ifndef VN_PROTOCOL_DRIVER_SEMAPHORE_H
 #define VN_PROTOCOL_DRIVER_SEMAPHORE_H
 
-#include "vn_device.h"
+#include "vn_instance.h"
 #include "vn_protocol_driver_structs.h"
 
 /* struct VkExportSemaphoreCreateInfo chain */
@@ -296,34 +296,6 @@ vn_encode_VkSemaphoreSignalInfo(struct vn_cs_encoder *enc, const VkSemaphoreSign
     vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO });
     vn_encode_VkSemaphoreSignalInfo_pnext(enc, val->pNext);
     vn_encode_VkSemaphoreSignalInfo_self(enc, val);
-}
-
-static inline void
-vn_decode_VkSemaphoreSignalInfo_pnext(struct vn_cs_decoder *dec, const void *val)
-{
-    /* no known/supported struct */
-    if (vn_decode_simple_pointer(dec))
-        assert(false);
-}
-
-static inline void
-vn_decode_VkSemaphoreSignalInfo_self(struct vn_cs_decoder *dec, VkSemaphoreSignalInfo *val)
-{
-    /* skip val->{sType,pNext} */
-    vn_decode_VkSemaphore(dec, &val->semaphore);
-    vn_decode_uint64_t(dec, &val->value);
-}
-
-static inline void
-vn_decode_VkSemaphoreSignalInfo(struct vn_cs_decoder *dec, VkSemaphoreSignalInfo *val)
-{
-    VkStructureType stype;
-    vn_decode_VkStructureType(dec, &stype);
-    assert(stype == VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO);
-
-    assert(val->sType == stype);
-    vn_decode_VkSemaphoreSignalInfo_pnext(dec, val->pNext);
-    vn_decode_VkSemaphoreSignalInfo_self(dec, val);
 }
 
 static inline size_t vn_sizeof_vkCreateSemaphore(VkDevice device, const VkSemaphoreCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSemaphore* pSemaphore)
@@ -727,6 +699,8 @@ static inline void vn_submit_vkSignalSemaphore(struct vn_instance *vn_instance, 
 
 static inline VkResult vn_call_vkCreateSemaphore(struct vn_instance *vn_instance, VkDevice device, const VkSemaphoreCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSemaphore* pSemaphore)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkCreateSemaphore(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, pCreateInfo, pAllocator, pSemaphore, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -747,6 +721,8 @@ static inline void vn_async_vkCreateSemaphore(struct vn_instance *vn_instance, V
 
 static inline void vn_call_vkDestroySemaphore(struct vn_instance *vn_instance, VkDevice device, VkSemaphore semaphore, const VkAllocationCallbacks* pAllocator)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkDestroySemaphore(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, semaphore, pAllocator, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -764,6 +740,8 @@ static inline void vn_async_vkDestroySemaphore(struct vn_instance *vn_instance, 
 
 static inline VkResult vn_call_vkGetSemaphoreCounterValue(struct vn_instance *vn_instance, VkDevice device, VkSemaphore semaphore, uint64_t* pValue)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkGetSemaphoreCounterValue(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, semaphore, pValue, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -784,6 +762,8 @@ static inline void vn_async_vkGetSemaphoreCounterValue(struct vn_instance *vn_in
 
 static inline VkResult vn_call_vkWaitSemaphores(struct vn_instance *vn_instance, VkDevice device, const VkSemaphoreWaitInfo* pWaitInfo, uint64_t timeout)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkWaitSemaphores(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, pWaitInfo, timeout, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -804,6 +784,8 @@ static inline void vn_async_vkWaitSemaphores(struct vn_instance *vn_instance, Vk
 
 static inline VkResult vn_call_vkSignalSemaphore(struct vn_instance *vn_instance, VkDevice device, const VkSemaphoreSignalInfo* pSignalInfo)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkSignalSemaphore(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, pSignalInfo, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);

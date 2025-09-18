@@ -26,6 +26,7 @@
 #include "util/bitscan.h"
 #include "util/macros.h"
 #include "compiler/shader_enums.h"
+#include <stdlib.h>
 #include <string.h>
 
 #ifdef __cplusplus
@@ -57,15 +58,16 @@ extern "C" {
  *       uint32_t*                  pQueueFamilyPropertyCount,
  *       VkQueueFamilyProperties*   pQueueFamilyProperties)
  *    {
- *       VK_OUTARRAY_MAKE(props, pQueueFamilyProperties,
- *                         pQueueFamilyPropertyCount);
+ *       VK_OUTARRAY_MAKE_TYPED(VkQueueFamilyProperties, props,
+ *                              pQueueFamilyProperties,
+ *                              pQueueFamilyPropertyCount);
  *
- *       vk_outarray_append(&props, p) {
+ *       vk_outarray_append_typed(VkQueueFamilyProperties, &props, p) {
  *          p->queueFlags = ...;
  *          p->queueCount = ...;
  *       }
  *
- *       vk_outarray_append(&props, p) {
+ *       vk_outarray_append_typed(VkQueueFamilyProperties, &props, p) {
  *          p->queueFlags = ...;
  *          p->queueCount = ...;
  *       }
@@ -150,8 +152,6 @@ __vk_outarray_next(struct __vk_outarray *a, size_t elem_size)
 #define vk_outarray_init(a, data, len) \
    __vk_outarray_init(&(a)->base, (data), (len))
 
-#define VK_OUTARRAY_MAKE(name, data, len) \
-   VK_OUTARRAY_MAKE_TYPED(__typeof__((data)[0]), name, data, len)
 #define VK_OUTARRAY_MAKE_TYPED(type, name, data, len) \
    vk_outarray(type) name; \
    vk_outarray_init(&name, (data), (len))
@@ -170,13 +170,13 @@ __vk_outarray_next(struct __vk_outarray *a, size_t elem_size)
  *
  * This is a block-based macro. For example:
  *
- *    vk_outarray_append(&a, elem) {
+ *    vk_outarray_append_typed(T, &a, elem) {
  *       elem->foo = ...;
  *       elem->bar = ...;
  *    }
  *
  * The array `a` has type `vk_outarray(elem_t) *`. It is usually declared with
- * VK_OUTARRAY_MAKE(). The variable `elem` is block-scoped and has type
+ * VK_OUTARRAY_MAKE_TYPED(). The variable `elem` is block-scoped and has type
  * `elem_t *`.
  *
  * The macro unconditionally increments the array's `wanted_len`. If the array
@@ -184,8 +184,6 @@ __vk_outarray_next(struct __vk_outarray *a, size_t elem_size)
  * executes the block. When the block is executed, `elem` is non-null and
  * points to the newly appended element.
  */
-#define vk_outarray_append(a, elem) \
-   vk_outarray_append_typed(vk_outarray_typeof_elem(a), a, elem)
 #define vk_outarray_append_typed(type, a, elem) \
    for (type *elem = vk_outarray_next_typed(type, a); \
         elem != NULL; elem = NULL)
@@ -223,6 +221,8 @@ uint32_t vk_get_driver_version(void);
 
 uint32_t vk_get_version_override(void);
 
+void vk_warn_non_conformant_implementation(const char *driver_name);
+
 struct vk_pipeline_cache_header {
    uint32_t header_size;
    uint32_t header_version;
@@ -254,6 +254,43 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 {
    return (VkShaderStageFlagBits) (1 << ((uint32_t) mesa_stage));
 }
+
+/* iterate over a sequence of indexed multidraws for VK_EXT_multi_draw extension */
+/* 'i' must be explicitly declared */
+#define vk_foreach_multi_draw_indexed(_draw, _i, _pDrawInfo, _num_draws, _stride) \
+   for (const VkMultiDrawIndexedInfoEXT *_draw = (const void*)(_pDrawInfo); \
+        (_i) < (_num_draws); \
+        (_i)++, (_draw) = (const VkMultiDrawIndexedInfoEXT*)((const uint8_t*)(_draw) + (_stride)))
+
+/* iterate over a sequence of multidraws for VK_EXT_multi_draw extension */
+/* 'i' must be explicitly declared */
+#define vk_foreach_multi_draw(_draw, _i, _pDrawInfo, _num_draws, _stride) \
+   for (const VkMultiDrawInfoEXT *_draw = (const void*)(_pDrawInfo); \
+        (_i) < (_num_draws); \
+        (_i)++, (_draw) = (const VkMultiDrawInfoEXT*)((const uint8_t*)(_draw) + (_stride)))
+
+
+struct nir_spirv_specialization;
+
+struct nir_spirv_specialization*
+vk_spec_info_to_nir_spirv(const VkSpecializationInfo *spec_info,
+                          uint32_t *out_num_spec_entries);
+
+#define STACK_ARRAY_SIZE 8
+
+#ifdef __cplusplus
+#define STACK_ARRAY_ZERO_INIT {}
+#else
+#define STACK_ARRAY_ZERO_INIT {0}
+#endif
+
+#define STACK_ARRAY(type, name, size) \
+   type _stack_##name[STACK_ARRAY_SIZE] = STACK_ARRAY_ZERO_INIT; \
+   type *const name = \
+     ((size) <= STACK_ARRAY_SIZE ? _stack_##name : (type *)malloc((size) * sizeof(type)))
+
+#define STACK_ARRAY_FINISH(name) \
+   if (name != _stack_##name) free(name)
 
 #ifdef __cplusplus
 }

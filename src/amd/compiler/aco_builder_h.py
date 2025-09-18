@@ -29,8 +29,6 @@ template = """\
 #define _ACO_BUILDER_
 
 #include "aco_ir.h"
-#include "util/u_math.h"
-#include "util/bitscan.h"
 
 namespace aco {
 enum dpp_ctrl {
@@ -338,19 +336,6 @@ public:
        return def;
    }
 
-   Definition hint_${fixed}(Definition def) {
-       % if fixed == 'vcc' or fixed == 'exec':
-          //vcc_hi and exec_hi can still be used in wave32
-          assert(def.regClass().type() == RegType::sgpr && def.bytes() <= 8);
-       % endif
-       def.setHint(aco::${fixed});
-       return def;
-   }
-
-   Definition hint_${fixed}(RegClass rc) {
-       return hint_${fixed}(def(rc));
-   }
-
 % endfor
 
    Operand set16bit(Operand op) {
@@ -379,19 +364,19 @@ public:
       bool has_lshl_add = program->chip_class >= GFX9;
       /* v_mul_lo_u32 has 1.6x the latency of most VALU on GFX10 (8 vs 5 cycles),
        * compared to 4x the latency on <GFX10. */
-      unsigned mul_cost = program->chip_class >= GFX10 ? 1 : (4 + Operand(imm).isLiteral());
+      unsigned mul_cost = program->chip_class >= GFX10 ? 1 : (4 + Operand::c32(imm).isLiteral());
       if (imm == 0) {
-         return copy(dst, Operand(0u));
+         return copy(dst, Operand::zero());
       } else if (imm == 1) {
          return copy(dst, Operand(tmp));
       } else if (util_is_power_of_two_or_zero(imm)) {
-         return vop2(aco_opcode::v_lshlrev_b32, dst, Operand((uint32_t)ffs(imm) - 1u), tmp);
+         return vop2(aco_opcode::v_lshlrev_b32, dst, Operand::c32(ffs(imm) - 1u), tmp);
       } else if (bits24) {
-        return vop2(aco_opcode::v_mul_u32_u24, dst, Operand(imm), tmp);
+        return vop2(aco_opcode::v_mul_u32_u24, dst, Operand::c32(imm), tmp);
       } else if (util_is_power_of_two_nonzero(imm - 1u)) {
-         return vadd32(dst, vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand((uint32_t)ffs(imm - 1u) - 1u), tmp), tmp);
+         return vadd32(dst, vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand::c32(ffs(imm - 1u) - 1u), tmp), tmp);
       } else if (mul_cost > 2 && util_is_power_of_two_nonzero(imm + 1u)) {
-         return vsub32(dst, vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand((uint32_t)ffs(imm + 1u) - 1u), tmp), tmp);
+         return vsub32(dst, vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand::c32(ffs(imm + 1u) - 1u), tmp), tmp);
       }
 
       unsigned instrs_required = util_bitcount(imm);
@@ -407,9 +392,9 @@ public:
             Definition tmp_dst = imm ? def(v1) : dst;
 
             if (shift && cur.id())
-               res = vadd32(Definition(tmp_dst), vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand(shift), tmp), cur);
+               res = vadd32(Definition(tmp_dst), vop2(aco_opcode::v_lshlrev_b32, def(v1), Operand::c32(shift), tmp), cur);
             else if (shift)
-               res = vop2(aco_opcode::v_lshlrev_b32, Definition(tmp_dst), Operand(shift), tmp);
+               res = vop2(aco_opcode::v_lshlrev_b32, Definition(tmp_dst), Operand::c32(shift), tmp);
             else if (cur.id())
                res = vadd32(Definition(tmp_dst), tmp, cur);
             else
@@ -420,7 +405,7 @@ public:
          return res;
       }
 
-      Temp imm_tmp = copy(def(s1), Operand(imm));
+      Temp imm_tmp = copy(def(s1), Operand::c32(imm));
       return vop3(aco_opcode::v_mul_lo_u32, dst, imm_tmp, tmp);
    }
 
@@ -434,17 +419,17 @@ public:
    }
 
    Result vadd32(Definition dst, Op a, Op b, bool carry_out=false, Op carry_in=Op(Operand(s2)), bool post_ra=false) {
-      if (!b.op.isTemp() || b.op.regClass().type() != RegType::vgpr)
+      if (b.op.isConstant() || b.op.regClass().type() != RegType::vgpr)
          std::swap(a, b);
       if (!post_ra && (!b.op.hasRegClass() || b.op.regClass().type() == RegType::sgpr))
          b = copy(def(v1), b);
 
       if (!carry_in.op.isUndefined())
-         return vop2(aco_opcode::v_addc_co_u32, Definition(dst), hint_vcc(def(lm)), a, b, carry_in);
+         return vop2(aco_opcode::v_addc_co_u32, Definition(dst), def(lm), a, b, carry_in);
       else if (program->chip_class >= GFX10 && carry_out)
          return vop3(aco_opcode::v_add_co_u32_e64, Definition(dst), def(lm), a, b);
       else if (program->chip_class < GFX9 || carry_out)
-         return vop2(aco_opcode::v_add_co_u32, Definition(dst), hint_vcc(def(lm)), a, b);
+         return vop2(aco_opcode::v_add_co_u32, Definition(dst), def(lm), a, b);
       else
          return vop2(aco_opcode::v_add_u32, Definition(dst), a, b);
    }
@@ -492,10 +477,9 @@ public:
       if (!borrow.op.isUndefined())
          sub->operands[2] = borrow.op;
       sub->definitions[0] = dst;
-      if (carry_out) {
+      if (carry_out)
          sub->definitions[1] = Definition(carry);
-         sub->definitions[1].setHint(aco::vcc);
-      }
+
       return insert(std::move(sub));
    }
 
@@ -534,12 +518,16 @@ formats = [("pseudo", [Format.PSEUDO], 'Pseudo_instruction', list(itertools.prod
            ("vop2", [Format.VOP2], 'VOP2_instruction', itertools.product([1, 2], [2, 3])),
            ("vop2_sdwa", [Format.VOP2, Format.SDWA], 'SDWA_instruction', itertools.product([1, 2], [2, 3])),
            ("vopc", [Format.VOPC], 'VOPC_instruction', itertools.product([1, 2], [2])),
+           ("vopc_sdwa", [Format.VOPC, Format.SDWA], 'SDWA_instruction', itertools.product([1, 2], [2])),
            ("vop3", [Format.VOP3], 'VOP3_instruction', [(1, 3), (1, 2), (1, 1), (2, 2)]),
            ("vop3p", [Format.VOP3P], 'VOP3P_instruction', [(1, 2), (1, 3)]),
            ("vintrp", [Format.VINTRP], 'Interp_instruction', [(1, 2), (1, 3)]),
-           ("vop1_dpp", [Format.VOP1, Format.DPP], 'DPP_instruction', [(1, 1)]),
-           ("vop2_dpp", [Format.VOP2, Format.DPP], 'DPP_instruction', itertools.product([1, 2], [2, 3])),
-           ("vopc_dpp", [Format.VOPC, Format.DPP], 'DPP_instruction', itertools.product([1, 2], [2])),
+           ("vop1_dpp", [Format.VOP1, Format.DPP16], 'DPP16_instruction', [(1, 1)]),
+           ("vop2_dpp", [Format.VOP2, Format.DPP16], 'DPP16_instruction', itertools.product([1, 2], [2, 3])),
+           ("vopc_dpp", [Format.VOPC, Format.DPP16], 'DPP16_instruction', itertools.product([1, 2], [2])),
+           ("vop1_dpp8", [Format.VOP1, Format.DPP8], 'DPP8_instruction', [(1, 1)]),
+           ("vop2_dpp8", [Format.VOP2, Format.DPP8], 'DPP8_instruction', itertools.product([1, 2], [2, 3])),
+           ("vopc_dpp8", [Format.VOPC, Format.DPP8], 'DPP8_instruction', itertools.product([1, 2], [2])),
            ("vop1_e64", [Format.VOP1, Format.VOP3], 'VOP3_instruction', itertools.product([1], [1])),
            ("vop2_e64", [Format.VOP2, Format.VOP3], 'VOP3_instruction', itertools.product([1, 2], [2, 3])),
            ("vopc_e64", [Format.VOPC, Format.VOP3], 'VOP3_instruction', itertools.product([1, 2], [2])),
@@ -600,7 +588,8 @@ formats = [(f if len(f) == 5 else f + ('',)) for f in formats]
 % endfor
 };
 
-}
+} // namespace aco
+
 #endif /* _ACO_BUILDER_ */"""
 
 from aco_opcodes import opcodes, Format

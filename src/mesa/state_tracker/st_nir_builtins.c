@@ -26,6 +26,7 @@
 
 #include "compiler/nir/nir_builder.h"
 #include "compiler/glsl/gl_nir.h"
+#include "compiler/glsl/gl_nir_linker.h"
 #include "tgsi/tgsi_parse.h"
 
 struct pipe_shader_state *
@@ -68,10 +69,12 @@ st_nir_finish_builtin_shader(struct st_context *st,
    if (!screen->get_param(screen, PIPE_CAP_NIR_IMAGES_AS_DEREF))
       NIR_PASS_V(nir, gl_nir_lower_images, false);
 
-   if (screen->finalize_nir)
-      screen->finalize_nir(screen, nir, true);
-   else
-      st_nir_opts(nir);
+   if (screen->finalize_nir) {
+      char *msg = screen->finalize_nir(screen, nir);
+      free(msg);
+   } else {
+      gl_nir_opts(nir);
+   }
 
    struct pipe_shader_state state = {
       .type = PIPE_SHADER_IR_NIR,

@@ -55,6 +55,7 @@ static const struct debug_named_value sp_debug_options[] = {
    {"no_rast",   SP_DBG_NO_RAST,    "no-ops rasterization, for profiling purposes"},
    {"use_llvm",  SP_DBG_USE_LLVM,   "Use LLVM if available for shaders"},
    {"use_tgsi",  SP_DBG_USE_TGSI,   "Request TGSI from the API instead of NIR"},
+   DEBUG_NAMED_VALUE_END
 };
 
 int sp_debug;
@@ -74,10 +75,13 @@ softpipe_get_name(struct pipe_screen *screen)
 }
 
 static const nir_shader_compiler_options sp_compiler_options = {
+   .fdot_replicates = true,
    .fuse_ffma32 = true,
    .fuse_ffma64 = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
    .lower_fdph = true,
    .lower_flrp64 = true,
    .lower_fmod = true,
@@ -135,15 +139,16 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_TEXTURE_CUBE_LEVELS:
       return SP_MAX_TEXTURE_CUBE_LEVELS;
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
+   case PIPE_CAP_RGB_OVERRIDE_DST_ALPHA_BLEND:
       return 1;
    case PIPE_CAP_INDEP_BLEND_ENABLE:
       return 1;
    case PIPE_CAP_INDEP_BLEND_FUNC:
       return 1;
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
-   case PIPE_CAP_TGSI_FS_COORD_ORIGIN_LOWER_LEFT:
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-   case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_INTEGER:
+   case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
+   case PIPE_CAP_FS_COORD_ORIGIN_LOWER_LEFT:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+   case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
       return 1;
    case PIPE_CAP_DEPTH_CLIP_DISABLE:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
@@ -168,8 +173,8 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_SHADER_STENCIL_EXPORT:
       return 1;
-   case PIPE_CAP_TGSI_ATOMFADD:
-   case PIPE_CAP_TGSI_INSTANCEID:
+   case PIPE_CAP_IMAGE_ATOMIC_FLOAT_ADD:
+   case PIPE_CAP_VS_INSTANCEID:
    case PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR:
    case PIPE_CAP_START_INSTANCE:
       return 1;
@@ -197,7 +202,7 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_USER_VERTEX_BUFFERS:
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
    case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
-   case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
+   case PIPE_CAP_VS_LAYER_VIEWPORT:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:
    case PIPE_CAP_INT64_DIVMOD:
@@ -216,7 +221,7 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 65536;
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 16;
-   case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
+   case PIPE_CAP_TEXTURE_TRANSFER_MODES:
       return 0;
    case PIPE_CAP_MAX_VIEWPORTS:
       return PIPE_MAX_VIEWPORTS;
@@ -227,9 +232,9 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_GATHER_SM5:
    case PIPE_CAP_TEXTURE_QUERY_LOD:
       return 1;
-   case PIPE_CAP_TGSI_VS_WINDOW_SPACE_POSITION:
+   case PIPE_CAP_VS_WINDOW_SPACE_POSITION:
       return 1;
-   case PIPE_CAP_TGSI_FS_FINE_DERIVATIVE:
+   case PIPE_CAP_FS_FINE_DERIVATIVE:
       return 1;
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
       return 1;
@@ -284,9 +289,8 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_CULL_DISTANCE:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
-   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+   case PIPE_CAP_SHADER_ARRAY_COMPONENTS:
    case PIPE_CAP_TGSI_TEXCOORD:
-   case PIPE_CAP_TGSI_ANY_REG_AS_ADDRESS:
       return 1;
    case PIPE_CAP_CLEAR_TEXTURE:
       return 1;
@@ -303,6 +307,8 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1 << 27;
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       return 4;
+   case PIPE_CAP_IMAGE_STORE_FORMATTED:
+      return 1;
    default:
       return u_pipe_screen_get_param_defaults(screen, param);
    }
@@ -345,13 +351,21 @@ static float
 softpipe_get_paramf(struct pipe_screen *screen, enum pipe_capf param)
 {
    switch (param) {
+   case PIPE_CAPF_MIN_LINE_WIDTH:
+   case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+   case PIPE_CAPF_MIN_POINT_SIZE:
+   case PIPE_CAPF_MIN_POINT_SIZE_AA:
+      return 1;
+   case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+   case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+      return 0.1;
    case PIPE_CAPF_MAX_LINE_WIDTH:
       FALLTHROUGH;
    case PIPE_CAPF_MAX_LINE_WIDTH_AA:
       return 255.0; /* arbitrary */
-   case PIPE_CAPF_MAX_POINT_WIDTH:
+   case PIPE_CAPF_MAX_POINT_SIZE:
       FALLTHROUGH;
-   case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+   case PIPE_CAPF_MAX_POINT_SIZE_AA:
       return 255.0; /* arbitrary */
    case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
       return 16.0;

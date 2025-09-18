@@ -223,7 +223,7 @@ struct gfx9_meta_equation {
        * The gfx10 HTILE equation is chip-specific, it requires 64KB_Z_X, and it varies with:
        * - number of samples
        */
-      uint16_t gfx10_bits[60];
+      uint16_t gfx10_bits[64];
    } u;
 };
 
@@ -287,6 +287,9 @@ struct gfx9_surf_layout {
          /* For DCC retiling. */
          struct gfx9_meta_equation dcc_equation; /* 2D only */
          struct gfx9_meta_equation display_dcc_equation;
+
+         /* For FCE compute. */
+         struct gfx9_meta_equation cmask_equation; /* 2D only */
       } color;
 
       /* Z/S */
@@ -327,6 +330,7 @@ struct radeon_surf {
    /* Not supported yet for depth + stencil. */
    uint16_t prt_tile_width;
    uint16_t prt_tile_height;
+   uint16_t prt_tile_depth;
 
    /* Tile swizzle can be OR'd with low bits of the BASE_256B address.
     * The value is the same for all mipmap levels. Supported tile modes:
@@ -368,6 +372,8 @@ struct radeon_surf {
 
    uint32_t cmask_size;
    uint32_t cmask_slice_size;
+   uint16_t cmask_pitch; /* GFX9+ */
+   uint16_t cmask_height; /* GFX9+ */
 
    /* All buffers combined. */
    uint64_t meta_offset; /* DCC or HTILE */
@@ -449,6 +455,9 @@ bool ac_get_supported_modifiers(const struct radeon_info *info,
                                 uint64_t *mods);
 bool ac_modifier_has_dcc(uint64_t modifier);
 bool ac_modifier_has_dcc_retile(uint64_t modifier);
+bool ac_modifier_supports_dcc_image_stores(uint64_t modifier);
+void ac_modifier_max_extent(const struct radeon_info *info,
+                            uint64_t modifier, uint32_t *width, uint32_t *height);
 
 unsigned ac_surface_get_nplanes(const struct radeon_surf *surf);
 uint64_t ac_surface_get_plane_offset(enum chip_class chip_class,
@@ -456,13 +465,16 @@ uint64_t ac_surface_get_plane_offset(enum chip_class chip_class,
                                      unsigned plane, unsigned layer);
 uint64_t ac_surface_get_plane_stride(enum chip_class chip_class,
                                      const struct radeon_surf *surf,
-                                     unsigned plane);
+                                     unsigned plane, unsigned level);
 /* Of the whole miplevel, not an individual layer */
 uint64_t ac_surface_get_plane_size(const struct radeon_surf *surf,
                                    unsigned plane);
 
 void ac_surface_print_info(FILE *out, const struct radeon_info *info,
                            const struct radeon_surf *surf);
+
+bool ac_surface_supports_dcc_image_stores(enum chip_class chip_class,
+                                          const struct radeon_surf *surf);
 
 #ifdef AC_SURFACE_INCLUDE_NIR
 nir_ssa_def *ac_nir_dcc_addr_from_coord(nir_builder *b, const struct radeon_info *info,
@@ -471,6 +483,14 @@ nir_ssa_def *ac_nir_dcc_addr_from_coord(nir_builder *b, const struct radeon_info
                                         nir_ssa_def *dcc_slice_size,
                                         nir_ssa_def *x, nir_ssa_def *y, nir_ssa_def *z,
                                         nir_ssa_def *sample, nir_ssa_def *pipe_xor);
+
+nir_ssa_def *ac_nir_cmask_addr_from_coord(nir_builder *b, const struct radeon_info *info,
+                                        struct gfx9_meta_equation *equation,
+                                        nir_ssa_def *cmask_pitch, nir_ssa_def *cmask_height,
+                                        nir_ssa_def *cmask_slice_size,
+                                        nir_ssa_def *x, nir_ssa_def *y, nir_ssa_def *z,
+                                        nir_ssa_def *pipe_xor,
+                                        nir_ssa_def **bit_position);
 
 nir_ssa_def *ac_nir_htile_addr_from_coord(nir_builder *b, const struct radeon_info *info,
                                           struct gfx9_meta_equation *equation,

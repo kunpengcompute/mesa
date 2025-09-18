@@ -85,14 +85,6 @@ if not (dep_clang.found() and dep_clang_usable)
   endif
 endif
 
-# Be explicit about only using this lib on Windows, to avoid picking
-# up random libs with the generic name 'libversion'
-if host_machine.system() == 'windows'
-  dep_version = cpp.find_library('version')
-else
-  dep_version = null_dep
-endif
-
 ocldef = files(opencl_libname + '.def')[0]
 
 libopencl = shared_library(
@@ -122,4 +114,12 @@ if with_opencl_icd
     install : true,
     install_dir : join_paths(get_option('sysconfdir'), 'OpenCL', 'vendors'),
   )
+
+  if meson.version().version_compare('>= 0.58')
+    # .so is hardcoded in the icd as well
+    devenv.prepend(
+      'OCL_ICD_FILENAMES',
+      meson.current_build_dir() / 'libMesaOpenCL.so.@0@'.format(opencl_version)
+    )
+  endif
 endif

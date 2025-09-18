@@ -101,42 +101,53 @@ agxdecode_find_handle(unsigned handle, unsigned type)
 }
 
 static void
+agxdecode_mark_mapped(unsigned handle)
+{
+   struct agx_bo *bo = agxdecode_find_handle(handle, AGX_ALLOC_REGULAR);
+
+   if (!bo) {
+      fprintf(stderr, "ERROR - unknown BO mapped with handle %u\n", handle);
+      return;
+   }
+
+   /* Mark mapped for future consumption */
+   bo->mapped = true;
+}
+
+static void
 agxdecode_validate_map(void *map)
 {
+   unsigned nr_handles = 0;
+
    /* First, mark everything unmapped */
    for (unsigned i = 0; i < mmap_count; ++i)
       mmap_array[i].mapped = false;
 
    /* Check the header */
    struct agx_map_header *hdr = map;
-   if (hdr->nr_entries_1 == 0) {
+   if (hdr->nr_entries == 0) {
       fprintf(stderr, "ERROR - empty map\n");
       return;
    }
 
-   if (hdr->nr_entries_1 != hdr->nr_entries_2) {
-      fprintf(stderr, "WARN - mismatched map %u vs %u\n", hdr->nr_entries_1, hdr->nr_entries_2);
-   }
-
    /* Check the entries */
-   struct agx_map_entry *entries = (struct agx_map_entry *) (&hdr[1]);
-   for (unsigned i = 0; i < hdr->nr_entries_1 - 1; ++i) {
+   struct agx_map_entry *entries = ((void *) hdr) + sizeof(*hdr);
+   for (unsigned i = 0; i < hdr->nr_entries; ++i) {
       struct agx_map_entry entry = entries[i];
-      struct agx_bo *bo = agxdecode_find_handle(entry.index, AGX_ALLOC_REGULAR);
-
-      if (!bo) {
-         fprintf(stderr, "ERROR - unknown BO mapped with handle %u\n", entry.index);
-         continue;
+      
+      for (unsigned j = 0; j < ARRAY_SIZE(entry.indices); ++j) {
+         unsigned handle = entry.indices[j];
+         if (handle) {
+            agxdecode_mark_mapped(handle);
+            nr_handles++;
+         }
       }
-
-      /* Mark mapped for future consumption */
-      bo->mapped = true;
    }
 
-   /* Check the sentinel */
-   if (entries[hdr->nr_entries_1 - 1].index) {
-      fprintf(stderr, "ERROR - last entry nonzero %u\n", entries[hdr->nr_entries_1 - 1].index);
-      return;
+   /* Check the handle count */
+   if (nr_handles != hdr->nr_handles) {
+      fprintf(stderr, "ERROR - wrong handle count, got %u, expected %u (%u entries)\n",
+            nr_handles, hdr->nr_handles, hdr->nr_entries);
    }
 }
 
@@ -192,6 +203,7 @@ agxdecode_map_read_write(void)
 #define agxdecode_msg(str) fprintf(agxdecode_dump_stream, "// %s", str)
 
 unsigned agxdecode_indent = 0;
+uint64_t pipeline_base = 0;
 
 static void
 agxdecode_dump_bo(struct agx_bo *bo, const char *name)
@@ -338,8 +350,11 @@ agxdecode_record(uint64_t va, size_t size, bool verbose)
    } else if (tag == 0x10000b5) {
       assert(size == AGX_RASTERIZER_LENGTH);
       DUMP_CL(RASTERIZER, map, "Rasterizer");
+   } else if (tag == 0x200000) {
+      assert(size == AGX_CULL_LENGTH);
+      DUMP_CL(CULL, map, "Cull");
    } else if (tag == 0x800000) {
-      assert(size == (AGX_BIND_PIPELINE_LENGTH + 4));
+      assert(size == (AGX_BIND_PIPELINE_LENGTH - 4));
 
       agx_unpack(agxdecode_dump_stream, map, BIND_PIPELINE, cmd);
       agxdecode_stateful(cmd.pipeline, "Pipeline", agxdecode_pipeline, verbose);
@@ -348,9 +363,19 @@ agxdecode_record(uint64_t va, size_t size, bool verbose)
       if (cmd.fs_varyings) {
          uint8_t *map = agxdecode_fetch_gpu_mem(cmd.fs_varyings, 128);
          hexdump(agxdecode_dump_stream, map, 128, false);
+
+         DUMP_CL(VARYING_HEADER, map, "Varying header:");
+         map += AGX_VARYING_HEADER_LENGTH;
+
+         for (unsigned i = 0; i < cmd.input_count; ++i) {
+            DUMP_CL(VARYING, map, "Varying:");
+            map += AGX_VARYING_LENGTH;
+         }
       }
 
       DUMP_UNPACKED(BIND_PIPELINE, cmd, "Bind fragment pipeline\n");
+   } else if (size == 0) {
+      pipeline_base = va;
    } else {
       fprintf(agxdecode_dump_stream, "Record %" PRIx64 "\n", va);
       hexdump(agxdecode_dump_stream, map, size, false);
@@ -369,30 +394,25 @@ agxdecode_cmd(const uint8_t *map, bool verbose)
       agx_unpack(agxdecode_dump_stream, map, BIND_PIPELINE, cmd);
       agxdecode_stateful(cmd.pipeline, "Pipeline", agxdecode_pipeline, verbose);
       DUMP_UNPACKED(BIND_PIPELINE, cmd, "Bind vertex pipeline\n");
-
-      /* Random unaligned null byte, it's pretty awful.. */
-      if (map[AGX_BIND_PIPELINE_LENGTH]) {
-         fprintf(agxdecode_dump_stream, "Unk unaligned %X\n",
-               map[AGX_BIND_PIPELINE_LENGTH]);
-      }
-
-      return AGX_BIND_PIPELINE_LENGTH + 1;
-   } else if (map[1] == 0xc0 && map[2] == 0x61) {
+      return AGX_BIND_PIPELINE_LENGTH;
+   } else if (map[2] == 0xc0 && map[3] == 0x61) {
       DUMP_CL(DRAW, map, "Draw");
       return AGX_DRAW_LENGTH;
-   } else if (map[1] == 0x00 && map[2] == 0x00) {
+   } else if (map[2] == 0x00 && map[3] == 0x00) {
       /* No need to explicitly dump the record */
       agx_unpack(agxdecode_dump_stream, map, RECORD, cmd);
-      struct agx_bo *mem = agxdecode_find_mapped_gpu_mem_containing(cmd.data);
+
+      uint64_t address = (((uint64_t) cmd.pointer_hi) << 32) | cmd.pointer_lo;
+      struct agx_bo *mem = agxdecode_find_mapped_gpu_mem_containing(address);
 
       if (mem)
-         agxdecode_record(cmd.data, cmd.size_words * 4, verbose);
+         agxdecode_record(address, cmd.size_words * 4, verbose);
       else
          DUMP_UNPACKED(RECORD, cmd, "Non-existant record (XXX)\n");
 
       return AGX_RECORD_LENGTH;
-   } else if (map[0] == 0 && map[1] == 0 && map[2] == 0xC0 && map[3] == 0x00) {
-      ASSERTED unsigned zero[16] = { 0 };
+   } else if (map[1] == 0 && map[2] == 0 && map[3] == 0xC0 && map[4] == 0x00) {
+      ASSERTED unsigned zero[4] = { 0 };
       assert(memcmp(map + 4, zero, sizeof(zero)) == 0);
       return STATE_DONE;
    } else {
@@ -418,20 +438,59 @@ agxdecode_cmdstream(unsigned cmdbuf_handle, unsigned map_handle, bool verbose)
    /* Before decoding anything, validate the map. Set bo->mapped fields */
    agxdecode_validate_map(map->ptr.cpu);
 
+   /* Print the IOGPU stuff */
+   agx_unpack(agxdecode_dump_stream, cmdbuf->ptr.cpu, IOGPU_HEADER, cmd);
+   DUMP_UNPACKED(IOGPU_HEADER, cmd, "IOGPU Header\n");
+
+   DUMP_CL(IOGPU_INTERNAL_PIPELINES, ((uint32_t *) cmdbuf->ptr.cpu) + 160, "Internal pipelines");
+   DUMP_CL(IOGPU_AUX_FRAMEBUFFER, ((uint32_t *) cmdbuf->ptr.cpu) + 228, "Aux Framebuffer");
+   DUMP_CL(IOGPU_CLEAR_Z_S, ((uint32_t *) cmdbuf->ptr.cpu) + 292, "Clear Z/S");
+
+   /* Guard against changes */
+   uint32_t zeroes[356 - 344] = { 0 };
+   assert(memcmp(((uint32_t *) cmdbuf->ptr.cpu) + 344, zeroes, 4 * (356 - 344)) == 0);
+
+   DUMP_CL(IOGPU_MISC, ((uint32_t *) cmdbuf->ptr.cpu) + 356, "Misc");
+
+   uint32_t *attachments = (uint32_t *) ((uint8_t *) cmdbuf->ptr.cpu + cmd.attachment_offset);
+   unsigned attachment_count = attachments[3];
+   for (unsigned i = 0; i < attachment_count; ++i) {
+      uint32_t *ptr = attachments + 4 + (i * AGX_IOGPU_ATTACHMENT_LENGTH / 4);
+      DUMP_CL(IOGPU_ATTACHMENT, ptr, "Attachment");
+   }
+
    /* TODO: What else is in here? */
    uint64_t *encoder = ((uint64_t *) cmdbuf->ptr.cpu) + 7;
    agxdecode_stateful(*encoder, "Encoder", agxdecode_cmd, verbose);
+
+   uint64_t *clear_pipeline = ((uint64_t *) cmdbuf->ptr.cpu) + 79;
+   if (*clear_pipeline) {
+      assert(((*clear_pipeline) & 0xF) == 0x4);
+      agxdecode_stateful((*clear_pipeline) & ~0xF, "Clear pipeline",
+            agxdecode_pipeline, verbose);
+   }
+
+   uint64_t *store_pipeline = ((uint64_t *) cmdbuf->ptr.cpu) + 82;
+   if (*store_pipeline) {
+      assert(((*store_pipeline) & 0xF) == 0x4);
+      agxdecode_stateful((*store_pipeline) & ~0xF, "Store pipeline",
+            agxdecode_pipeline, verbose);
+   }
 
    agxdecode_map_read_write();
 }
 
 void
-agxdecode_dump_mappings(void)
+agxdecode_dump_mappings(unsigned map_handle)
 {
    agxdecode_dump_file_open();
 
+   struct agx_bo *map = agxdecode_find_handle(map_handle, AGX_ALLOC_MEMMAP);
+   assert(map != NULL && "nonexistant mapping");
+   agxdecode_validate_map(map->ptr.cpu);
+
    for (unsigned i = 0; i < mmap_count; ++i) {
-      if (!mmap_array[i].ptr.cpu || !mmap_array[i].size)
+      if (!mmap_array[i].ptr.cpu || !mmap_array[i].size || !mmap_array[i].mapped)
          continue;
 
       assert(mmap_array[i].type < AGX_NUM_ALLOC);
@@ -449,20 +508,31 @@ void
 agxdecode_track_alloc(struct agx_bo *alloc)
 {
    assert((mmap_count + 1) < MAX_MAPPINGS);
+
+   for (unsigned i = 0; i < mmap_count; ++i) {
+      struct agx_bo *bo = &mmap_array[i];
+      bool match = (bo->handle == alloc->handle && bo->type == alloc->type);
+      assert(!match && "tried to alloc already allocated BO");
+   }
+
    mmap_array[mmap_count++] = *alloc;
 }
 
 void
 agxdecode_track_free(struct agx_bo *bo)
 {
+   bool found = false;
+
    for (unsigned i = 0; i < mmap_count; ++i) {
       if (mmap_array[i].handle == bo->handle && mmap_array[i].type == bo->type) {
-         mmap_array[i].ptr.cpu = 0;
-         mmap_array[i].ptr.gpu = 0;
-         mmap_array[i].size = 0;
-         break;
+         assert(!found && "mapped multiple times!");
+         found = true;
+
+         memset(&mmap_array[i], 0, sizeof(mmap_array[i]));
       }
    }
+
+   assert(found && "freed unmapped memory");
 }
 
 static int agxdecode_dump_frame_count = 0;
@@ -476,7 +546,7 @@ agxdecode_dump_file_open(void)
    /* This does a getenv every frame, so it is possible to use
     * setenv to change the base at runtime.
     */
-   const char *dump_file_base = getenv("PANDECODE_DUMP_FILE") ?: "agxdecode.dump";
+   const char *dump_file_base = getenv("AGXDECODE_DUMP_FILE") ?: "agxdecode.dump";
    if (!strcmp(dump_file_base, "stderr"))
       agxdecode_dump_stream = stderr;
    else {

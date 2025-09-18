@@ -44,7 +44,7 @@ fi
 case $CI_JOB_NAME in
     # strace and wine don't seem to mix well
     # ASAN leak detection is incompatible with strace
-    meson-mingw32-x86_64|*-asan*)
+    debian-mingw32-x86_64|*-asan*)
         if test -f /usr/bin/time; then
             MESON_TEST_ARGS+=--wrapper=$PWD/.gitlab-ci/meson/time.sh
         fi
@@ -68,7 +68,6 @@ meson _build --native-file=native.file \
       -D cpp_args="$(echo -n $CPP_ARGS)" \
       -D libunwind=${UNWIND} \
       ${DRI_LOADERS} \
-      -D dri-drivers=${DRI_DRIVERS:-[]} \
       ${GALLIUM_ST} \
       -D gallium-drivers=${GALLIUM_DRIVERS:-[]} \
       -D vulkan-drivers=${VULKAN_DRIVERS:-[]} \

@@ -49,7 +49,7 @@ fd3_zsa_state_create(struct pipe_context *pctx,
 
    if (cso->depth_enabled)
       so->rb_depth_control |=
-         A3XX_RB_DEPTH_CONTROL_Z_ENABLE | A3XX_RB_DEPTH_CONTROL_Z_TEST_ENABLE;
+         A3XX_RB_DEPTH_CONTROL_Z_TEST_ENABLE | A3XX_RB_DEPTH_CONTROL_Z_READ_ENABLE;
 
    if (cso->depth_writemask)
       so->rb_depth_control |= A3XX_RB_DEPTH_CONTROL_Z_WRITE_ENABLE;
@@ -89,7 +89,7 @@ fd3_zsa_state_create(struct pipe_context *pctx,
       so->rb_render_control =
          A3XX_RB_RENDER_CONTROL_ALPHA_TEST |
          A3XX_RB_RENDER_CONTROL_ALPHA_TEST_FUNC(cso->alpha_func);
-      so->rb_alpha_ref = A3XX_RB_ALPHA_REF_UINT(cso->alpha_ref_value * 255.0) |
+      so->rb_alpha_ref = A3XX_RB_ALPHA_REF_UINT(cso->alpha_ref_value * 255.0f) |
                          A3XX_RB_ALPHA_REF_FLOAT(cso->alpha_ref_value);
       so->rb_depth_control |= A3XX_RB_DEPTH_CONTROL_EARLY_Z_DISABLE;
    }

@@ -106,6 +106,7 @@ print_usage(const char *name)
            "\t                   which can be useful when looking at state that does\n"
            "\t                   not change per tile\n"
            "\t--not-once       - decode cmdstream for each IB (default)\n"
+           "\t--unit-test      - make reproducible output for unit testing\n"
            "\t-h, --help       - show this message\n"
            , name);
    /* clang-format on */
@@ -128,6 +129,7 @@ static const struct option opts[] = {
       { "query-compare",   no_argument, &options.query_compare, 1 },
       { "once",            no_argument, &options.once,          1 },
       { "not-once",        no_argument, &options.once,          0 },
+      { "unit-test",       no_argument, &options.unit_test,     1 },
 
       /* Long opts with short alias: */
       { "verbose",   no_argument,       0, 'v' },
@@ -263,7 +265,8 @@ handle_file(const char *filename, int start, int end, int draw)
 
    cffdec_init(&options);
 
-   printf("Reading %s...\n", filename);
+   if (!options.unit_test)
+      printf("Reading %s...\n", filename);
 
    script_start_cmdstream(filename);
 
@@ -367,7 +370,21 @@ handle_file(const char *filename, int start, int end, int draw)
          break;
       case RD_GPU_ID:
          if (!got_gpu_id) {
-            options.gpu_id = *((unsigned int *)buf);
+            uint32_t gpu_id = *((unsigned int *)buf);
+            if (!gpu_id)
+               break;
+            options.gpu_id = gpu_id;
+            printl(2, "gpu_id: %d\n", options.gpu_id);
+            cffdec_init(&options);
+            got_gpu_id = 1;
+         }
+         break;
+      case RD_CHIP_ID:
+         if (!got_gpu_id) {
+            uint64_t chip_id = *((uint64_t *)buf);
+            options.gpu_id = 100 * ((chip_id >> 24) & 0xff) +
+                  10 * ((chip_id >> 16) & 0xff) +
+                  ((chip_id >> 8) & 0xff);
             printl(2, "gpu_id: %d\n", options.gpu_id);
             cffdec_init(&options);
             got_gpu_id = 1;

@@ -38,6 +38,7 @@ files_libintel_common = files(
   'intel_uuid.h',
   'intel_measure.c',
   'intel_measure.h',
+  'intel_pixel_hash.h'
 )
 
 files_batch_decoder = files(
@@ -95,7 +96,7 @@ if install_intel_gpu_tests
   endforeach
 endif
 
-if with_tests
+if with_tests and not with_platform_android
   gentest_xml = files('tests/gentest.xml')
   _name = 'gentest_pack.h'
   gentest_pack = custom_target(
@@ -104,6 +105,7 @@ if with_tests
     output : _name,
     command : [prog_python, '@INPUT@'],
     capture : true,
+    depend_files: gen_pack_header_deps
   )
 
   genxml_path = join_paths(meson.source_root(),

@@ -33,11 +33,60 @@
 #include "drm-uapi/panfrost_drm.h"
 #include "pan_encoder.h"
 #include "pan_device.h"
-#include "panfrost-quirks.h"
 #include "pan_bo.h"
 #include "pan_texture.h"
 #include "wrap.h"
 #include "pan_util.h"
+
+/* Fixed "minimum revisions" */
+#define NO_ANISO (~0)
+#define HAS_ANISO (0)
+
+#define MODEL(gpu_id_, shortname, counters_, min_rev_anisotropic_, quirks_) \
+        { \
+                .gpu_id = gpu_id_, \
+                .name = "Mali-" shortname " (Panfrost)", \
+                .performance_counters = counters_, \
+                .min_rev_anisotropic = min_rev_anisotropic_, \
+                .quirks = quirks_, \
+        }
+
+/* Table of supported Mali GPUs */
+const struct panfrost_model panfrost_model_list[] = {
+        MODEL(0x720, "T720", "T72x", NO_ANISO, { .no_hierarchical_tiling = true }),
+        MODEL(0x750, "T760", "T76x", NO_ANISO, {}),
+        MODEL(0x820, "T820", "T82x", NO_ANISO, { .no_hierarchical_tiling = true }),
+        MODEL(0x830, "T830", "T83x", NO_ANISO, { .no_hierarchical_tiling = true }),
+        MODEL(0x860, "T860", "T86x", NO_ANISO, {}),
+        MODEL(0x880, "T880", "T88x", NO_ANISO, {}),
+
+        MODEL(0x6000, "G71", "TMIx", NO_ANISO, {}),
+        MODEL(0x6221, "G72", "THEx", 0x0030 /* r0p3 */, {}),
+        MODEL(0x7090, "G51", "TSIx", 0x1010 /* r1p1 */, {}),
+        MODEL(0x7093, "G31", "TDVx", HAS_ANISO, {}),
+        MODEL(0x7211, "G76", "TNOx", HAS_ANISO, {}),
+        MODEL(0x7212, "G52", "TGOx", HAS_ANISO, {}),
+        MODEL(0x7402, "G52 r1", "TGOx", HAS_ANISO, {}),
+};
+
+#undef NO_ANISO
+#undef HAS_ANISO
+#undef MODEL
+
+/*
+ * Look up a supported model by its GPU ID, or return NULL if the model is not
+ * supported at this time.
+ */
+const struct panfrost_model *
+panfrost_get_model(uint32_t gpu_id)
+{
+        for (unsigned i = 0; i < ARRAY_SIZE(panfrost_model_list); ++i) {
+                if (panfrost_model_list[i].gpu_id == gpu_id)
+                        return &panfrost_model_list[i];
+        }
+
+        return NULL;
+}
 
 /* Abstraction over the raw drm_panfrost_get_param ioctl for fetching
  * information about devices */
@@ -83,6 +132,20 @@ static unsigned
 panfrost_query_gpu_revision(int fd)
 {
         return panfrost_query_raw(fd, DRM_PANFROST_PARAM_GPU_REVISION, true, 0);
+}
+
+static struct panfrost_tiler_features
+panfrost_query_tiler_features(int fd)
+{
+        /* Default value (2^9 bytes and 8 levels) to match old behaviour */
+        uint32_t raw = panfrost_query_raw(fd, DRM_PANFROST_PARAM_TILER_FEATURES,
+                        false, 0x809);
+
+        /* Bin size is log2 in the first byte, max levels in the second byte */
+        return (struct panfrost_tiler_features) {
+                .bin_size = (1 << (raw & BITFIELD_MASK(5))),
+                .max_levels = (raw >> 8) & BITFIELD_MASK(4)
+        };
 }
 
 static unsigned
@@ -177,49 +240,17 @@ panfrost_supports_compressed_format(struct panfrost_device *dev, unsigned fmt)
         return dev->compressed_formats & (1 << idx);
 }
 
-/* Returns the architecture version given a GPU ID, either from a table for
- * old-style Midgard versions or directly for new-style Bifrost/Valhall
- * versions */
+/* Check for AFBC hardware support. AFBC is introduced in v5. Implementations
+ * may omit it, signaled as a nonzero value in the AFBC_FEATURES property. */
 
-static unsigned
-panfrost_major_version(unsigned gpu_id)
+static bool
+panfrost_query_afbc(int fd, unsigned arch)
 {
-        switch (gpu_id) {
-        case 0x600:
-        case 0x620:
-        case 0x720:
-                return 4;
-        case 0x750:
-        case 0x820:
-        case 0x830:
-        case 0x860:
-        case 0x880:
-                return 5;
-        default:
-                return gpu_id >> 12;
-        }
-}
+        unsigned reg = panfrost_query_raw(fd,
+                                          DRM_PANFROST_PARAM_AFBC_FEATURES,
+                                          false, 0);
 
-/* Given a GPU ID like 0x860, return a prettified model name */
-
-const char *
-panfrost_model_name(unsigned gpu_id)
-{
-        switch (gpu_id) {
-        case 0x600: return "Mali T600 (Panfrost)";
-        case 0x620: return "Mali T620 (Panfrost)";
-        case 0x720: return "Mali T720 (Panfrost)";
-        case 0x820: return "Mali T820 (Panfrost)";
-        case 0x830: return "Mali T830 (Panfrost)";
-        case 0x750: return "Mali T760 (Panfrost)";
-        case 0x860: return "Mali T860 (Panfrost)";
-        case 0x880: return "Mali T880 (Panfrost)";
-        case 0x6221: return "Mali G72 (Panfrost)";
-        case 0x7093: return "Mali G31 (Panfrost)";
-        case 0x7212: return "Mali G52 (Panfrost)";
-        default:
-                    unreachable("Invalid GPU ID");
-        }
+        return (arch >= 5) && (reg == 0);
 }
 
 void
@@ -228,18 +259,22 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
         dev->fd = fd;
         dev->memctx = memctx;
         dev->gpu_id = panfrost_query_gpu_version(fd);
-        dev->arch = panfrost_major_version(dev->gpu_id);
+        dev->arch = pan_arch(dev->gpu_id);
         dev->core_count = panfrost_query_core_count(fd);
         dev->thread_tls_alloc = panfrost_query_thread_tls_alloc(fd, dev->arch);
         dev->kernel_version = drmGetVersion(fd);
-        unsigned revision = panfrost_query_gpu_revision(fd);
-        dev->quirks = panfrost_get_quirks(dev->gpu_id, revision);
+        dev->revision = panfrost_query_gpu_revision(fd);
+        dev->model = panfrost_get_model(dev->gpu_id);
         dev->compressed_formats = panfrost_query_compressed_formats(fd);
+        dev->tiler_features = panfrost_query_tiler_features(fd);
+        dev->has_afbc = panfrost_query_afbc(fd, dev->arch);
 
-        if (dev->quirks & HAS_SWIZZLES)
+        if (dev->arch <= 6)
                 dev->formats = panfrost_pipe_format_v6;
-        else
+        else if (dev->arch <= 7)
                 dev->formats = panfrost_pipe_format_v7;
+        else
+                dev->formats = panfrost_pipe_format_v9;
 
         util_sparse_array_init(&dev->bo_map, sizeof(struct panfrost_bo), 512);
 
@@ -257,8 +292,8 @@ panfrost_open_device(void *memctx, int fd, struct panfrost_device *dev)
          * active for a single job chain at once, so a single heap can be
          * shared across batches/contextes */
 
-        dev->tiler_heap = panfrost_bo_create(dev, 4096 * 4096,
-                        PAN_BO_INVISIBLE | PAN_BO_GROWABLE);
+        dev->tiler_heap = panfrost_bo_create(dev, 64 * 1024 * 1024,
+                        PAN_BO_INVISIBLE | PAN_BO_GROWABLE, "Tiler heap");
 
         pthread_mutex_init(&dev->submit_lock, NULL);
 
@@ -275,5 +310,5 @@ panfrost_close_device(struct panfrost_device *dev)
         pthread_mutex_destroy(&dev->bo_cache.lock);
         drmFreeVersion(dev->kernel_version);
         util_sparse_array_finish(&dev->bo_map);
-
+        close(dev->fd);
 }

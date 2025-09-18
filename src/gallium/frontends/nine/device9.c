@@ -257,13 +257,13 @@ NineDevice9_ctor( struct NineDevice9 *This,
 
     This->pure = !!(This->params.BehaviorFlags & D3DCREATE_PUREDEVICE);
 
-    This->context.pipe = This->screen->context_create(This->screen, NULL, 0);
+    This->context.pipe = This->screen->context_create(This->screen, NULL, PIPE_CONTEXT_PREFER_THREADED);
     This->pipe_secondary = This->screen->context_create(This->screen, NULL, 0);
     if (!This->context.pipe || !This->pipe_secondary) { return E_OUTOFMEMORY; } /* guess */
-    This->pipe_sw = This->screen_sw->context_create(This->screen_sw, NULL, 0);
+    This->pipe_sw = This->screen_sw->context_create(This->screen_sw, NULL, PIPE_CONTEXT_PREFER_THREADED);
     if (!This->pipe_sw) { return E_OUTOFMEMORY; }
 
-    This->context.cso = cso_create_context(This->context.pipe, 0);
+    This->context.cso = cso_create_context(This->context.pipe, CSO_NO_USER_VERTEX_BUFFERS);
     if (!This->context.cso) { return E_OUTOFMEMORY; } /* also a guess */
     This->cso_sw = cso_create_context(This->pipe_sw, 0);
     if (!This->cso_sw) { return E_OUTOFMEMORY; }
@@ -393,14 +393,14 @@ NineDevice9_ctor( struct NineDevice9 *This,
             return D3DERR_OUTOFVIDEOMEMORY;
 
         u_box_1d(0, 16, &box);
-        data = This->context.pipe->transfer_map(This->context.pipe, This->dummy_vbo, 0,
+        data = This->context.pipe->buffer_map(This->context.pipe, This->dummy_vbo, 0,
                                         PIPE_MAP_WRITE |
                                         PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                                         &box, &transfer);
         assert(data);
         assert(transfer);
         memset(data, 0, 16);
-        This->context.pipe->transfer_unmap(This->context.pipe, transfer);
+        This->context.pipe->buffer_unmap(This->context.pipe, transfer);
     }
 
     This->cursor.software = FALSE;
@@ -556,7 +556,7 @@ NineDevice9_ctor( struct NineDevice9 *This,
 
     This->driver_caps.user_sw_vbufs = This->screen_sw->get_param(This->screen_sw, PIPE_CAP_USER_VERTEX_BUFFERS);
     This->vertex_uploader = This->csmt_active ? This->pipe_secondary->stream_uploader : This->context.pipe->stream_uploader;
-    This->driver_caps.window_space_position_support = GET_PCAP(TGSI_VS_WINDOW_SPACE_POSITION);
+    This->driver_caps.window_space_position_support = GET_PCAP(VS_WINDOW_SPACE_POSITION);
     This->driver_caps.vs_integer = pScreen->get_shader_param(pScreen, PIPE_SHADER_VERTEX, PIPE_SHADER_CAP_INTEGERS);
     This->driver_caps.ps_integer = pScreen->get_shader_param(pScreen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_INTEGERS);
     This->driver_caps.offset_units_unscaled = GET_PCAP(POLYGON_OFFSET_UNITS_UNSCALED);
@@ -834,7 +834,7 @@ NineDevice9_SetCursorProperties( struct NineDevice9 *This,
 
     u_box_origin_2d(This->cursor.w, This->cursor.h, &box);
 
-    ptr = pipe->transfer_map(pipe, This->cursor.image, 0,
+    ptr = pipe->texture_map(pipe, This->cursor.image, 0,
                              PIPE_MAP_WRITE |
                              PIPE_MAP_DISCARD_WHOLE_RESOURCE,
                              &box, &transfer);
@@ -876,7 +876,7 @@ NineDevice9_SetCursorProperties( struct NineDevice9 *This,
 
         NineSurface9_UnlockRect(surf);
     }
-    pipe->transfer_unmap(pipe, transfer);
+    pipe->texture_unmap(pipe, transfer);
 
     /* hide cursor if we emulate it */
     if (!hw_cursor)
@@ -2983,7 +2983,9 @@ NineTrackSystemmemDynamic( struct NineBuffer9 *This, unsigned start, unsigned wi
 {
     struct pipe_box box;
 
-    u_box_1d(start, width, &box);
+    if (start >= This->size)
+        return; /* outside bounds, nothing to do */
+    u_box_1d(start, MIN2(width, This->size-start), &box);
     u_box_union_1d(&This->managed.required_valid_region,
                    &This->managed.required_valid_region,
                    &box);
@@ -3321,7 +3323,7 @@ NineDevice9_ProcessVertices( struct NineDevice9 *This,
     pipe_sw->stream_output_target_destroy(pipe_sw, target);
 
     u_box_1d(0, VertexCount * so.stride[0] * 4, &box);
-    map = pipe_sw->transfer_map(pipe_sw, resource, 0, PIPE_MAP_READ, &box,
+    map = pipe_sw->buffer_map(pipe_sw, resource, 0, PIPE_MAP_READ, &box,
                                 &transfer);
     if (!map) {
         hr = D3DERR_DRIVERINTERNALERROR;
@@ -3332,7 +3334,7 @@ NineDevice9_ProcessVertices( struct NineDevice9 *This,
                                                     dst, DestIndex, VertexCount,
                                                     map, &so);
     if (transfer)
-        pipe_sw->transfer_unmap(pipe_sw, transfer);
+        pipe_sw->buffer_unmap(pipe_sw, transfer);
 
 out:
     nine_state_after_draw_sw(This);

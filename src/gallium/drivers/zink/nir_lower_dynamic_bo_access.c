@@ -49,13 +49,9 @@ recursive_generate_bo_ssa_def(nir_builder *b, nir_intrinsic_instr *instr, nir_ss
       new_instr->src[0] = nir_src_for_ssa(nir_imm_int(b, start));
       for (unsigned i = 0; i < nir_intrinsic_infos[instr->intrinsic].num_srcs; i++) {
          if (i)
-            nir_src_copy(&new_instr->src[i], &instr->src[i], &new_instr->instr);
+            nir_src_copy(&new_instr->src[i], &instr->src[i]);
       }
-      if (instr->intrinsic != nir_intrinsic_load_ubo_vec4) {
-         nir_intrinsic_set_align(new_instr, nir_intrinsic_align_mul(instr), nir_intrinsic_align_offset(instr));
-         if (instr->intrinsic != nir_intrinsic_load_ssbo)
-            nir_intrinsic_set_range(new_instr, nir_intrinsic_range(instr));
-      }
+      nir_intrinsic_copy_const_indices(new_instr, instr);
       new_instr->num_components = instr->num_components;
       nir_ssa_dest_init(&new_instr->instr, &new_instr->dest,
                         nir_dest_num_components(instr->dest),
@@ -91,8 +87,15 @@ generate_store_ssbo_ssa_def(nir_builder *b, nir_intrinsic_instr *instr, nir_ssa_
 }
 
 static bool
-lower_dynamic_bo_access_instr(nir_intrinsic_instr *instr, nir_builder *b)
+lower_dynamic_bo_access_instr(nir_builder *b,
+                              nir_instr *instr_,
+                              UNUSED void *cb_data)
 {
+   if (instr_->type != nir_instr_type_intrinsic)
+      return false;
+
+   nir_intrinsic_instr *instr = nir_instr_as_intrinsic(instr_);
+
    if (instr->intrinsic != nir_intrinsic_load_ubo &&
        instr->intrinsic != nir_intrinsic_load_ubo_vec4 &&
        instr->intrinsic != nir_intrinsic_get_ssbo_size &&
@@ -137,24 +140,8 @@ lower_dynamic_bo_access_instr(nir_intrinsic_instr *instr, nir_builder *b)
 bool
 nir_lower_dynamic_bo_access(nir_shader *shader)
 {
-   bool progress = false;
-
-   nir_foreach_function(function, shader) {
-      if (function->impl) {
-         nir_builder builder;
-         nir_builder_init(&builder, function->impl);
-         nir_foreach_block(block, function->impl) {
-            nir_foreach_instr_safe(instr, block) {
-               if (instr->type == nir_instr_type_intrinsic)
-                  progress |= lower_dynamic_bo_access_instr(
-                                                  nir_instr_as_intrinsic(instr),
-                                                  &builder);
-            }
-         }
-
-         nir_metadata_preserve(function->impl, nir_metadata_dominance);
-      }
-   }
-
-   return progress;
+   return nir_shader_instructions_pass(shader,
+                                       lower_dynamic_bo_access_instr,
+                                       nir_metadata_dominance,
+                                       NULL);
 }

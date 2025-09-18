@@ -39,8 +39,9 @@
 
 #include "panfrost/util/pan_ir.h"
 #include "pan_pool.h"
+#include "pan_util.h"
 
-#include <midgard_pack.h>
+#include <genxml/gen_macros.h>
 
 #if defined(__cplusplus)
 extern "C" {
@@ -48,22 +49,6 @@ extern "C" {
 
 /* Driver limits */
 #define PAN_MAX_CONST_BUFFERS 16
-
-/* Transient slab size. This is a balance between fragmentation against cache
- * locality and ease of bookkeeping */
-
-#define TRANSIENT_SLAB_PAGES (16) /* 64kb */
-#define TRANSIENT_SLAB_SIZE (4096 * TRANSIENT_SLAB_PAGES)
-
-/* Maximum number of transient slabs so we don't need dynamic arrays. Most
- * interesting Mali boards are 4GB RAM max, so if the entire RAM was filled
- * with transient slabs, you could never exceed (4GB / TRANSIENT_SLAB_SIZE)
- * allocations anyway. By capping, we can use a fixed-size bitset for tracking
- * free slabs, eliminating quite a bit of complexity. We can pack the free
- * state of 8 slabs into a single byte, so for 128kb transient slabs the bitset
- * occupies a cheap 4kb of memory */
-
-#define MAX_TRANSIENT_SLABS (1024*1024 / TRANSIENT_SLAB_PAGES)
 
 /* How many power-of-two levels in the BO cache do we want? 2^12
  * minimum chosen as it is the page size that all allocations are
@@ -77,13 +62,13 @@ extern "C" {
 
 struct pan_blitter {
         struct {
-                struct pan_pool pool;
+                struct pan_pool *pool;
                 struct hash_table *blit;
                 struct hash_table *blend;
                 pthread_mutex_t lock;
         } shaders;
         struct {
-                struct pan_pool pool;
+                struct pan_pool *pool;
                 struct hash_table *rsds;
                 pthread_mutex_t lock;
         } rsds;
@@ -103,11 +88,15 @@ enum pan_indirect_draw_flags {
         PAN_INDIRECT_DRAW_HAS_PSIZ = 1 << 2,
         PAN_INDIRECT_DRAW_PRIMITIVE_RESTART = 1 << 3,
         PAN_INDIRECT_DRAW_UPDATE_PRIM_SIZE = 1 << 4,
-        PAN_INDIRECT_DRAW_LAST_FLAG = PAN_INDIRECT_DRAW_UPDATE_PRIM_SIZE,
+        PAN_INDIRECT_DRAW_IDVS = 1 << 5,
+        PAN_INDIRECT_DRAW_LAST_FLAG = PAN_INDIRECT_DRAW_IDVS,
         PAN_INDIRECT_DRAW_FLAGS_MASK = (PAN_INDIRECT_DRAW_LAST_FLAG << 1) - 1,
         PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_1B_INDEX = PAN_INDIRECT_DRAW_LAST_FLAG << 1,
         PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_2B_INDEX,
         PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_4B_INDEX,
+        PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_1B_INDEX_PRIM_RESTART,
+        PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_2B_INDEX_PRIM_RESTART,
+        PAN_INDIRECT_DRAW_MIN_MAX_SEARCH_3B_INDEX_PRIM_RESTART,
         PAN_INDIRECT_DRAW_NUM_SHADERS,
 };
 
@@ -129,7 +118,7 @@ struct pan_indirect_draw_shaders {
          * is not trivial, and changes to the compiler might influence this
          * estimation.
          */
-        struct pan_pool bin_pool;
+        struct pan_pool *bin_pool;
 
         /* BO containing all renderer states attached to the compute shaders.
          * Those are built at shader compilation time and re-used every time
@@ -149,11 +138,40 @@ struct pan_indirect_dispatch {
         struct panfrost_bo *descs;
 };
 
-typedef uint32_t mali_pixel_format;
+/** Implementation-defined tiler features */
+struct panfrost_tiler_features {
+        /** Number of bytes per tiler bin */
+        unsigned bin_size;
 
-struct panfrost_format {
-        mali_pixel_format hw;
-        unsigned bind;
+        /** Maximum number of levels that may be simultaneously enabled.
+         * Invariant: bitcount(hierarchy_mask) <= max_levels */
+        unsigned max_levels;
+};
+
+struct panfrost_model {
+        /* GPU ID */
+        uint32_t gpu_id;
+
+        /* Marketing name for the GPU, used as the GL_RENDERER */
+        const char *name;
+
+        /* Set of associated performance counters */
+        const char *performance_counters;
+
+        /* Minimum GPU revision required for anisotropic filtering. ~0 and 0
+         * means "no revisions support anisotropy" and "all revisions support
+         * anistropy" respectively -- so checking for anisotropy is simply
+         * comparing the reivsion.
+         */
+        uint32_t min_rev_anisotropic;
+
+        struct {
+                /* The GPU lacks the capability for hierarchical tiling, without
+                 * an "Advanced Tiling Unit", instead requiring a single bin
+                 * size for the entire framebuffer be selected by the driver
+                 */
+                bool no_hierarchical_tiling;
+        } quirks;
 };
 
 struct panfrost_device {
@@ -165,9 +183,12 @@ struct panfrost_device {
         /* Properties of the GPU in use */
         unsigned arch;
         unsigned gpu_id;
+        unsigned revision;
         unsigned core_count;
         unsigned thread_tls_alloc;
-        unsigned quirks;
+        struct panfrost_tiler_features tiler_features;
+        const struct panfrost_model *model;
+        bool has_afbc;
 
         /* Table of formats, indexed by a PIPE format */
         const struct panfrost_format *formats;
@@ -262,6 +283,8 @@ pan_is_bifrost(const struct panfrost_device *dev)
 {
         return dev->arch >= 6 && dev->arch <= 7;
 }
+
+const struct panfrost_model * panfrost_get_model(uint32_t gpu_id);
 
 #if defined(__cplusplus)
 } // extern "C"

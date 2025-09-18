@@ -33,35 +33,23 @@ build_fmask_expand_compute_shader(struct radv_device *device, int samples)
       glsl_sampler_type(GLSL_SAMPLER_DIM_MS, false, true, GLSL_TYPE_FLOAT);
    const struct glsl_type *img_type = glsl_image_type(GLSL_SAMPLER_DIM_MS, true, GLSL_TYPE_FLOAT);
 
-   nir_builder b =
-      nir_builder_init_simple_shader(MESA_SHADER_COMPUTE, NULL, "meta_fmask_expand_cs-%d", samples);
-   b.shader->info.cs.local_size[0] = 8;
-   b.shader->info.cs.local_size[1] = 8;
-   b.shader->info.cs.local_size[2] = 1;
+   nir_builder b = radv_meta_init_shader(MESA_SHADER_COMPUTE, "meta_fmask_expand_cs-%d", samples);
+   b.shader->info.workgroup_size[0] = 8;
+   b.shader->info.workgroup_size[1] = 8;
 
    nir_variable *input_img = nir_variable_create(b.shader, nir_var_uniform, type, "s_tex");
    input_img->data.descriptor_set = 0;
    input_img->data.binding = 0;
 
-   nir_variable *output_img = nir_variable_create(b.shader, nir_var_uniform, img_type, "out_img");
+   nir_variable *output_img = nir_variable_create(b.shader, nir_var_image, img_type, "out_img");
    output_img->data.descriptor_set = 0;
    output_img->data.binding = 1;
    output_img->data.access = ACCESS_NON_READABLE;
 
-   nir_ssa_def *invoc_id = nir_load_local_invocation_id(&b);
-   nir_ssa_def *wg_id = nir_load_work_group_id(&b, 32);
-   nir_ssa_def *block_size =
-      nir_imm_ivec4(&b, b.shader->info.cs.local_size[0], b.shader->info.cs.local_size[1],
-                    b.shader->info.cs.local_size[2], 0);
-
-   nir_ssa_def *global_id = nir_iadd(&b, nir_imul(&b, wg_id, block_size), invoc_id);
-   nir_ssa_def *layer_id = nir_channel(&b, wg_id, 2);
-
    nir_ssa_def *input_img_deref = &nir_build_deref_var(&b, input_img)->dest.ssa;
    nir_ssa_def *output_img_deref = &nir_build_deref_var(&b, output_img)->dest.ssa;
 
-   nir_ssa_def *tex_coord =
-      nir_vec3(&b, nir_channel(&b, global_id, 0), nir_channel(&b, global_id, 1), layer_id);
+   nir_ssa_def *tex_coord = get_global_ids(&b, 3);
 
    nir_tex_instr *tex_instr[8];
    for (uint32_t i = 0; i < samples; i++) {
@@ -86,13 +74,13 @@ build_fmask_expand_compute_shader(struct radv_device *device, int samples)
 
    nir_ssa_def *img_coord =
       nir_vec4(&b, nir_channel(&b, tex_coord, 0), nir_channel(&b, tex_coord, 1),
-               nir_channel(&b, tex_coord, 2), nir_imm_int(&b, 0));
+               nir_channel(&b, tex_coord, 2), nir_ssa_undef(&b, 1, 32));
 
    for (uint32_t i = 0; i < samples; i++) {
       nir_ssa_def *outval = &tex_instr[i]->dest.ssa;
 
       nir_image_deref_store(&b, output_img_deref, img_coord, nir_imm_int(&b, i), outval,
-                            nir_imm_int(&b, 0));
+                            nir_imm_int(&b, 0), .image_dim = GLSL_SAMPLER_DIM_MS, .image_array = true);
    }
 
    return b.shader;
@@ -118,7 +106,7 @@ radv_expand_fmask_image_inplace(struct radv_cmd_buffer *cmd_buffer, struct radv_
                         pipeline);
 
    cmd_buffer->state.flush_bits |= radv_dst_access_flush(
-      cmd_buffer, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, image);
+      cmd_buffer, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT, image);
 
    radv_image_view_init(&iview, device,
                         &(VkImageViewCreateInfo){
@@ -165,11 +153,13 @@ radv_expand_fmask_image_inplace(struct radv_cmd_buffer *cmd_buffer, struct radv_
 
    radv_unaligned_dispatch(cmd_buffer, image->info.width, image->info.height, layer_count);
 
+   radv_image_view_finish(&iview);
+
    radv_meta_restore(&saved_state, cmd_buffer);
 
    cmd_buffer->state.flush_bits |=
       RADV_CMD_FLAG_CS_PARTIAL_FLUSH |
-      radv_src_access_flush(cmd_buffer, VK_ACCESS_SHADER_WRITE_BIT, image);
+      radv_src_access_flush(cmd_buffer, VK_ACCESS_2_SHADER_WRITE_BIT, image);
 
    /* Re-initialize FMASK in fully expanded mode. */
    cmd_buffer->state.flush_bits |= radv_init_fmask(cmd_buffer, image, subresourceRange);
@@ -248,7 +238,7 @@ radv_device_init_meta_fmask_expand_state(struct radv_device *device)
    result = radv_CreateDescriptorSetLayout(radv_device_to_handle(device), &ds_create_info,
                                            &state->alloc, &state->fmask_expand.ds_layout);
    if (result != VK_SUCCESS)
-      goto fail;
+      return result;
 
    VkPipelineLayoutCreateInfo color_create_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
@@ -261,17 +251,14 @@ radv_device_init_meta_fmask_expand_state(struct radv_device *device)
    result = radv_CreatePipelineLayout(radv_device_to_handle(device), &color_create_info,
                                       &state->alloc, &state->fmask_expand.p_layout);
    if (result != VK_SUCCESS)
-      goto fail;
+      return result;
 
    for (uint32_t i = 0; i < MAX_SAMPLES_LOG2; i++) {
       uint32_t samples = 1 << i;
       result = create_fmask_expand_pipeline(device, samples, &state->fmask_expand.pipeline[i]);
       if (result != VK_SUCCESS)
-         goto fail;
+         return result;
    }
 
    return VK_SUCCESS;
-fail:
-   radv_device_finish_meta_fmask_expand_state(device);
-   return result;
 }

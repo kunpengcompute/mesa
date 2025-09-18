@@ -48,7 +48,9 @@ anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
 
    struct intel_perf_config *perf = intel_perf_new(NULL);
 
-   intel_perf_init_metrics(perf, &device->info, fd, false /* pipeline statistics */);
+   intel_perf_init_metrics(perf, &device->info, fd,
+                           false /* pipeline statistics */,
+                           true /* register snapshots */);
 
    if (!perf->n_queries) {
       if (perf->platform_supported) {
@@ -66,7 +68,7 @@ anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
    /* We need DRM_I915_PERF_PROP_HOLD_PREEMPTION support, only available in
     * perf revision 2.
     */
-   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG)) {
+   if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       if (!intel_perf_has_hold_preemption(perf))
          goto err;
    }
@@ -221,9 +223,9 @@ VkResult anv_AcquirePerformanceConfigurationINTEL(
    config = vk_object_alloc(&device->vk, NULL, sizeof(*config),
                             VK_OBJECT_TYPE_PERFORMANCE_CONFIGURATION_INTEL);
    if (!config)
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG)) {
+   if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       config->register_config =
          intel_perf_load_configuration(device->physical->perf, device->fd,
                                      INTEL_PERF_QUERY_GUID_MDAPI);
@@ -256,7 +258,7 @@ VkResult anv_ReleasePerformanceConfigurationINTEL(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_performance_configuration_intel, config, _configuration);
 
-   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG))
+   if (!INTEL_DEBUG(DEBUG_NO_OACONFIG))
       intel_ioctl(device->fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &config->config_id);
 
    ralloc_free(config->register_config);
@@ -274,7 +276,7 @@ VkResult anv_QueueSetPerformanceConfigurationINTEL(
    ANV_FROM_HANDLE(anv_performance_configuration_intel, config, _configuration);
    struct anv_device *device = queue->device;
 
-   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG)) {
+   if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       if (device->perf_fd < 0) {
          device->perf_fd = anv_device_perf_open(device, config->config_id);
          if (device->perf_fd < 0)
@@ -283,7 +285,7 @@ VkResult anv_QueueSetPerformanceConfigurationINTEL(
          int ret = intel_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
                                (void *)(uintptr_t) config->config_id);
          if (ret < 0)
-            return anv_device_set_lost(device, "i915-perf config failed: %m");
+            return vk_device_set_lost(&device->vk, "i915-perf config failed: %m");
       }
    }
 
@@ -344,13 +346,14 @@ VkResult anv_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
 
    uint32_t desc_count = *pCounterCount;
 
-   VK_OUTARRAY_MAKE(out, pCounters, pCounterCount);
-   VK_OUTARRAY_MAKE(out_desc, pCounterDescriptions, &desc_count);
+   VK_OUTARRAY_MAKE_TYPED(VkPerformanceCounterKHR, out, pCounters, pCounterCount);
+   VK_OUTARRAY_MAKE_TYPED(VkPerformanceCounterDescriptionKHR, out_desc,
+                          pCounterDescriptions, &desc_count);
 
    for (int c = 0; c < (perf ? perf->n_counters : 0); c++) {
       const struct intel_perf_query_counter *intel_counter = perf->counter_infos[c].counter;
 
-      vk_outarray_append(&out, counter) {
+      vk_outarray_append_typed(VkPerformanceCounterKHR, &out, counter) {
          counter->unit = intel_perf_counter_unit_to_vk_unit[intel_counter->units];
          counter->scope = VK_QUERY_SCOPE_COMMAND_KHR;
          counter->storage = intel_perf_counter_data_type_to_vk_storage[intel_counter->data_type];
@@ -362,7 +365,7 @@ VkResult anv_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
          memcpy(counter->uuid, sha1_result, sizeof(counter->uuid));
       }
 
-      vk_outarray_append(&out_desc, desc) {
+      vk_outarray_append_typed(VkPerformanceCounterDescriptionKHR, &out_desc, desc) {
          desc->flags = 0; /* None so far. */
          snprintf(desc->name, sizeof(desc->name), "%s", intel_counter->name);
          snprintf(desc->category, sizeof(desc->category), "%s", intel_counter->category);
@@ -403,7 +406,7 @@ VkResult anv_AcquireProfilingLockKHR(
 
    assert(device->perf_fd == -1);
 
-   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG)) {
+   if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       fd = anv_device_perf_open(device, first_metric_set->oa_metrics_set_id);
       if (fd < 0)
          return VK_TIMEOUT;
@@ -418,7 +421,7 @@ void anv_ReleaseProfilingLockKHR(
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
 
-   if (!(INTEL_DEBUG & DEBUG_NO_OACONFIG)) {
+   if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       assert(device->perf_fd >= 0);
       close(device->perf_fd);
    }

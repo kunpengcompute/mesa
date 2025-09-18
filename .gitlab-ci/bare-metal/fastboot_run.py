@@ -31,8 +31,13 @@ import threading
 class FastbootRun:
     def __init__(self, args):
         self.powerup = args.powerup
-        self.ser = SerialBuffer(args.dev, "results/serial-output.txt", "R SERIAL> ")
+        # We would like something like a 1 minute timeout, but the piglit traces
+        # jobs stall out for long periods of time.
+        self.ser = SerialBuffer(args.dev, "results/serial-output.txt", "R SERIAL> ", timeout=600)
         self.fastboot="fastboot boot -s {ser} artifacts/fastboot.img".format(ser=args.fbserial)
+
+    def close(self):
+        self.ser.close()
 
     def print_error(self, message):
         RED = '\033[0;31m'
@@ -55,16 +60,23 @@ class FastbootRun:
                 break
 
             if re.search("data abort", line):
-                return 1
+                self.print_error("Detected crash during boot, restarting run...")
+                return 2
 
         if not fastboot_ready:
-            self.print_error("Failed to get to fastboot prompt")
-            return 1
+            self.print_error("Failed to get to fastboot prompt, restarting run...")
+            return 2
 
         if self.logged_system(self.fastboot) != 0:
             return 1
 
+        print_more_lines = -1
         for line in self.ser.lines():
+            if print_more_lines == 0:
+                return 2
+            if print_more_lines > 0:
+                print_more_lines -= 1
+
             if re.search("---. end Kernel panic", line):
                 return 1
 
@@ -80,15 +92,33 @@ class FastbootRun:
                     "Detected kernel soft lockup, restarting run...")
                 return 2
 
-            result = re.search("bare-metal result: (\S*)", line)
+            # If the network device dies, it's probably not graphics's fault, just try again.
+            if re.search("NETDEV WATCHDOG", line):
+                self.print_error(
+                    "Detected network device failure, restarting run...")
+                return 2
+
+            # A3xx recovery doesn't quite work. Sometimes the GPU will get
+            # wedged and recovery will fail (because power can't be reset?)
+            # This assumes that the jobs are sufficiently well-tested that GPU
+            # hangs aren't always triggered, so just try again. But print some
+            # more lines first so that we get better information on the cause
+            # of the hang. Once a hang happens, it's pretty chatty.
+            if "[drm:adreno_recover] *ERROR* gpu hw init failed: -22" in line:
+                self.print_error(
+                    "Detected GPU hang, restarting run...")
+                if print_more_lines == -1:
+                    print_more_lines = 30
+
+            result = re.search("hwci: mesa: (\S*)", line)
             if result:
                 if result.group(1) == "pass":
                     return 0
                 else:
                     return 1
 
-        self.print_error("Reached the end of the CPU serial log without finding a result")
-        return 1
+        self.print_error("Reached the end of the CPU serial log without finding a result, restarting run...")
+        return 2
 
 def main():
     parser = argparse.ArgumentParser()
@@ -102,8 +132,11 @@ def main():
 
     while True:
         retval = fastboot.run()
+        fastboot.close()
         if retval != 2:
             break
+
+        fastboot = FastbootRun(args)
 
     fastboot.logged_system(args.powerdown)
 

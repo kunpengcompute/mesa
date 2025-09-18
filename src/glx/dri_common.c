@@ -339,10 +339,12 @@ driInferDrawableConfig(struct glx_screen *psc, GLXDrawable draw)
 _X_HIDDEN __GLXDRIdrawable *
 driFetchDrawable(struct glx_context *gc, GLXDrawable glxDrawable)
 {
-   struct glx_display *const priv = __glXInitialize(gc->psc->dpy);
+   Display *dpy = gc->psc->dpy;
+   struct glx_display *const priv = __glXInitialize(dpy);
    __GLXDRIdrawable *pdraw;
    struct glx_screen *psc;
    struct glx_config *config = gc->config;
+   unsigned int type;
 
    if (priv == NULL)
       return NULL;
@@ -355,6 +357,9 @@ driFetchDrawable(struct glx_context *gc, GLXDrawable glxDrawable)
       return NULL;
 
    if (__glxHashLookup(priv->drawHash, glxDrawable, (void *) &pdraw) == 0) {
+      /* Resurrected, so remove from the alive-query-set if exist. */
+      _mesa_set_remove_key(priv->zombieGLXDrawable, pdraw);
+
       pdraw->refcount ++;
       return pdraw;
    }
@@ -365,8 +370,43 @@ driFetchDrawable(struct glx_context *gc, GLXDrawable glxDrawable)
    if (config == NULL)
       return NULL;
 
+   /* We can't find this GLX drawable above because it's either:
+    *
+    * 1. An X window ID instead of a GLX window ID. This could happend when
+    *    glXMakeCurrent() is passed an X window directly instead of creating
+    *    GLXWindow with glXCreateWindow() first.
+    *
+    * 2. A GLXPbuffer created on other display:
+    *
+    *    From the GLX spec:
+    *
+    *      Like other drawable types, GLXPbuffers are shared; any client which
+    *      knows the associated XID can use a GLXPbuffer.
+    *
+    *    So client other than the creator of this GLXPbuffer could use its
+    *    XID to do something like glXMakeCurrent(). I can't find explicite
+    *    statement in GLX spec that also allow GLXWindow and GLXPixmap.
+    *
+    *    But even GLXWindow and GLXPixmap is allowed, currently client other
+    *    than the GLX drawable creator has no way to find which X drawable
+    *    (window or pixmap) this GLX drawable uses, except the GLXPbuffer
+    *    case which use the same XID for both X pixmap and GLX drawable.
+    */
+
+   /* Infer the GLX drawable type. */
+   if (__glXGetDrawableAttribute(dpy, glxDrawable, GLX_DRAWABLE_TYPE, &type)) {
+      /* Xserver may support query with raw X11 window. */
+      if (type == GLX_PIXMAP_BIT) {
+         ErrorMessageF("GLXPixmap drawable type is not supported\n");
+         return NULL;
+      }
+   } else {
+      /* Xserver may not implement GLX_DRAWABLE_TYPE query yet. */
+      type = GLX_PBUFFER_BIT | GLX_WINDOW_BIT;
+   }
+
    pdraw = psc->driScreen->createDrawable(psc, glxDrawable, glxDrawable,
-                                          config);
+                                          type, config);
 
    if (pdraw == NULL) {
       ErrorMessageF("failed to create drawable\n");
@@ -382,180 +422,202 @@ driFetchDrawable(struct glx_context *gc, GLXDrawable glxDrawable)
    return pdraw;
 }
 
+static int
+discardGLXBadDrawableHandler(Display *display, xError *err, XExtCodes *codes,
+                             int *ret_code)
+{
+   int code = codes->first_error + GLXBadDrawable;
+
+   /* Only discard error which is expected. */
+   if (err->majorCode == codes->major_opcode &&
+       err->minorCode == X_GLXGetDrawableAttributes &&
+       /* newer xserver use GLXBadDrawable, old one use BadDrawable */
+       (err->errorCode == code || err->errorCode == BadDrawable)) {
+      *ret_code = 1;
+      return 1;
+   }
+
+   return 0;
+}
+
+static void
+checkServerGLXDrawableAlive(const struct glx_display *priv)
+{
+   ErrorType old = XESetError(priv->dpy, priv->codes.extension,
+                              discardGLXBadDrawableHandler);
+
+   set_foreach(priv->zombieGLXDrawable, entry) {
+      __GLXDRIdrawable *pdraw = (__GLXDRIdrawable *)entry->key;
+      GLXDrawable drawable = pdraw->drawable;
+      unsigned int dummy;
+
+      /* Fail to query, so the window has been closed. Release the GLXDrawable. */
+      if (!__glXGetDrawableAttribute(priv->dpy, drawable, GLX_WIDTH, &dummy)) {
+         pdraw->destroyDrawable(pdraw);
+         __glxHashDelete(priv->drawHash, drawable);
+         _mesa_set_remove(priv->zombieGLXDrawable, entry);
+      }
+   }
+
+   XESetError(priv->dpy, priv->codes.extension, old);
+}
+
+static void
+releaseDrawable(const struct glx_display *priv, GLXDrawable drawable)
+{
+   __GLXDRIdrawable *pdraw;
+
+   if (__glxHashLookup(priv->drawHash, drawable, (void *) &pdraw) == 0) {
+      /* Only native window and pbuffer have same GLX and X11 drawable ID. */
+      if (pdraw->drawable == pdraw->xDrawable) {
+         pdraw->refcount --;
+         /* If pbuffer's refcount reaches 0, it must be imported from other
+          * display. Because pbuffer created from this display will always
+          * hold the last refcount until destroy the GLXPbuffer object.
+          */
+         if (pdraw->refcount == 0) {
+            if (pdraw->psc->keep_native_window_glx_drawable) {
+               checkServerGLXDrawableAlive(priv);
+               _mesa_set_add(priv->zombieGLXDrawable, pdraw);
+            } else {
+               pdraw->destroyDrawable(pdraw);
+               __glxHashDelete(priv->drawHash, drawable);
+            }
+         }
+      }
+   }
+}
+
 _X_HIDDEN void
 driReleaseDrawables(struct glx_context *gc)
 {
    const struct glx_display *priv = gc->psc->display;
-   __GLXDRIdrawable *pdraw;
 
    if (priv == NULL)
       return;
 
-   if (__glxHashLookup(priv->drawHash,
-		       gc->currentDrawable, (void *) &pdraw) == 0) {
-      if (pdraw->drawable == pdraw->xDrawable) {
-	 pdraw->refcount --;
-	 if (pdraw->refcount == 0) {
-	    pdraw->destroyDrawable(pdraw);
-	    __glxHashDelete(priv->drawHash, gc->currentDrawable);
-	 }
-      }
-   }
-
-   if (__glxHashLookup(priv->drawHash,
-		       gc->currentReadable, (void *) &pdraw) == 0) {
-      if (pdraw->drawable == pdraw->xDrawable) {
-	 pdraw->refcount --;
-	 if (pdraw->refcount == 0) {
-	    pdraw->destroyDrawable(pdraw);
-	    __glxHashDelete(priv->drawHash, gc->currentReadable);
-	 }
-      }
-   }
+   releaseDrawable(priv, gc->currentDrawable);
+   releaseDrawable(priv, gc->currentReadable);
 
    gc->currentDrawable = None;
    gc->currentReadable = None;
 
 }
 
-_X_HIDDEN bool
-dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
-                         unsigned *major_ver, unsigned *minor_ver,
-                         uint32_t *render_type, uint32_t *flags, unsigned *api,
-                         int *reset, int *release, unsigned *error)
+_X_HIDDEN int
+dri_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
+                        struct dri_ctx_attribs *dca)
 {
    unsigned i;
-   bool got_profile = false;
-   int no_error = 0;
-   uint32_t profile;
+   uint32_t profile = GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
 
-   *major_ver = 1;
-   *minor_ver = 0;
-   *render_type = GLX_RGBA_TYPE;
-   *reset = __DRI_CTX_RESET_NO_NOTIFICATION;
-   *release = __DRI_CTX_RELEASE_BEHAVIOR_FLUSH;
-   *flags = 0;
-   *api = __DRI_API_OPENGL;
+   dca->major_ver = 1;
+   dca->minor_ver = 0;
+   dca->render_type = GLX_RGBA_TYPE;
+   dca->reset = __DRI_CTX_RESET_NO_NOTIFICATION;
+   dca->release = __DRI_CTX_RELEASE_BEHAVIOR_FLUSH;
+   dca->flags = 0;
+   dca->api = __DRI_API_OPENGL;
+   dca->no_error = 0;
 
-   if (num_attribs == 0) {
-      return true;
-   }
+   if (num_attribs == 0)
+      return __DRI_CTX_ERROR_SUCCESS;
 
-   /* This is actually an internal error, but what the heck.
-    */
-   if (attribs == NULL) {
-      *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
-      return false;
-   }
+   /* This is actually an internal error, but what the heck. */
+   if (attribs == NULL)
+      return __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
 
    for (i = 0; i < num_attribs; i++) {
       switch (attribs[i * 2]) {
       case GLX_CONTEXT_MAJOR_VERSION_ARB:
-	 *major_ver = attribs[i * 2 + 1];
+	 dca->major_ver = attribs[i * 2 + 1];
 	 break;
       case GLX_CONTEXT_MINOR_VERSION_ARB:
-	 *minor_ver = attribs[i * 2 + 1];
+	 dca->minor_ver = attribs[i * 2 + 1];
 	 break;
       case GLX_CONTEXT_FLAGS_ARB:
-	 *flags = attribs[i * 2 + 1];
+	 dca->flags = attribs[i * 2 + 1];
 	 break;
       case GLX_CONTEXT_OPENGL_NO_ERROR_ARB:
-	 no_error = attribs[i * 2 + 1];
+	 dca->no_error = attribs[i * 2 + 1];
 	 break;
       case GLX_CONTEXT_PROFILE_MASK_ARB:
 	 profile = attribs[i * 2 + 1];
-	 got_profile = true;
 	 break;
       case GLX_RENDER_TYPE:
-         *render_type = attribs[i * 2 + 1];
+         dca->render_type = attribs[i * 2 + 1];
 	 break;
       case GLX_CONTEXT_RESET_NOTIFICATION_STRATEGY_ARB:
          switch (attribs[i * 2 + 1]) {
          case GLX_NO_RESET_NOTIFICATION_ARB:
-            *reset = __DRI_CTX_RESET_NO_NOTIFICATION;
+            dca->reset = __DRI_CTX_RESET_NO_NOTIFICATION;
             break;
          case GLX_LOSE_CONTEXT_ON_RESET_ARB:
-            *reset = __DRI_CTX_RESET_LOSE_CONTEXT;
+            dca->reset = __DRI_CTX_RESET_LOSE_CONTEXT;
             break;
          default:
-            *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
-            return false;
+            return __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
          }
          break;
       case GLX_CONTEXT_RELEASE_BEHAVIOR_ARB:
          switch (attribs[i * 2 + 1]) {
          case GLX_CONTEXT_RELEASE_BEHAVIOR_NONE_ARB:
-            *release = __DRI_CTX_RELEASE_BEHAVIOR_NONE;
+            dca->release = __DRI_CTX_RELEASE_BEHAVIOR_NONE;
             break;
          case GLX_CONTEXT_RELEASE_BEHAVIOR_FLUSH_ARB:
-            *release = __DRI_CTX_RELEASE_BEHAVIOR_FLUSH;
+            dca->release = __DRI_CTX_RELEASE_BEHAVIOR_FLUSH;
             break;
          default:
-            *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
-            return false;
+            return __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
          }
          break;
       case GLX_SCREEN:
          /* Implies GLX_EXT_no_config_context */
-         *render_type = GLX_DONT_CARE;
+         dca->render_type = GLX_DONT_CARE;
          break;
       default:
 	 /* If an unknown attribute is received, fail.
 	  */
-	 *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
-	 return false;
+	 return __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
       }
    }
 
-   if (no_error) {
-      *flags |= __DRI_CTX_FLAG_NO_ERROR;
-   }
-
-   if (!got_profile) {
-      if (*major_ver > 3 || (*major_ver == 3 && *minor_ver >= 2))
-	 *api = __DRI_API_OPENGL_CORE;
-   } else {
-      switch (profile) {
-      case GLX_CONTEXT_CORE_PROFILE_BIT_ARB:
-	 /* There are no profiles before OpenGL 3.2.  The
-	  * GLX_ARB_create_context_profile spec says:
-	  *
-	  *     "If the requested OpenGL version is less than 3.2,
-	  *     GLX_CONTEXT_PROFILE_MASK_ARB is ignored and the functionality
-	  *     of the context is determined solely by the requested version."
-	  */
-	 *api = (*major_ver > 3 || (*major_ver == 3 && *minor_ver >= 2))
-	    ? __DRI_API_OPENGL_CORE : __DRI_API_OPENGL;
-	 break;
-      case GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB:
-	 *api = __DRI_API_OPENGL;
-	 break;
-      case GLX_CONTEXT_ES_PROFILE_BIT_EXT:
-         if (*major_ver >= 3)
-            *api = __DRI_API_GLES3;
-         else if (*major_ver == 2 && *minor_ver == 0)
-            *api = __DRI_API_GLES2;
-         else if (*major_ver == 1 && *minor_ver < 2)
-            *api = __DRI_API_GLES;
-         else {
-            *error = __DRI_CTX_ERROR_BAD_API;
-            return false;
-         }
-         break;
-      default:
-	 *error = __DRI_CTX_ERROR_BAD_API;
-	 return false;
+   switch (profile) {
+   case GLX_CONTEXT_CORE_PROFILE_BIT_ARB:
+      /* This is the default value, but there are no profiles before OpenGL
+       * 3.2. The GLX_ARB_create_context_profile spec says:
+       *
+       *     "If the requested OpenGL version is less than 3.2,
+       *     GLX_CONTEXT_PROFILE_MASK_ARB is ignored and the functionality
+       *     of the context is determined solely by the requested version."
+       */
+      dca->api = (dca->major_ver > 3 || (dca->major_ver == 3 && dca->minor_ver >= 2))
+         ? __DRI_API_OPENGL_CORE : __DRI_API_OPENGL;
+      break;
+   case GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB:
+      dca->api = __DRI_API_OPENGL;
+      break;
+   case GLX_CONTEXT_ES_PROFILE_BIT_EXT:
+      if (dca->major_ver >= 3)
+         dca->api = __DRI_API_GLES3;
+      else if (dca->major_ver == 2 && dca->minor_ver == 0)
+         dca->api = __DRI_API_GLES2;
+      else if (dca->major_ver == 1 && dca->minor_ver < 2)
+         dca->api = __DRI_API_GLES;
+      else {
+         return __DRI_CTX_ERROR_BAD_API;
       }
+      break;
+   default:
+      return __DRI_CTX_ERROR_BAD_API;
    }
 
-   /* Unknown flag value.
-    */
-   if (*flags & ~(__DRI_CTX_FLAG_DEBUG | __DRI_CTX_FLAG_FORWARD_COMPATIBLE
-                  | __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS
-                  | __DRI_CTX_FLAG_NO_ERROR)) {
-      *error = __DRI_CTX_ERROR_UNKNOWN_FLAG;
-      return false;
-   }
+   /* Unknown flag value */
+   if (dca->flags & ~(__DRI_CTX_FLAG_DEBUG |
+                      __DRI_CTX_FLAG_FORWARD_COMPATIBLE |
+                      __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS |
+                      __DRI_CTX_FLAG_RESET_ISOLATION))
+      return __DRI_CTX_ERROR_UNKNOWN_FLAG;
 
    /* There are no forward-compatible contexts before OpenGL 3.0.  The
     * GLX_ARB_create_context spec says:
@@ -563,45 +625,18 @@ dri2_convert_glx_attribs(unsigned num_attribs, const uint32_t *attribs,
     *     "Forward-compatible contexts are defined only for OpenGL versions
     *     3.0 and later."
     */
-   if (*major_ver < 3 && (*flags & __DRI_CTX_FLAG_FORWARD_COMPATIBLE) != 0) {
-      *error = __DRI_CTX_ERROR_BAD_FLAG;
-      return false;
-   }
+   if (dca->major_ver < 3 && (dca->flags & __DRI_CTX_FLAG_FORWARD_COMPATIBLE) != 0)
+      return __DRI_CTX_ERROR_BAD_FLAG;
 
-   if (*major_ver >= 3 && *render_type == GLX_COLOR_INDEX_TYPE) {
-      *error = __DRI_CTX_ERROR_BAD_FLAG;
-      return false;
-   }
-
-   *error = __DRI_CTX_ERROR_SUCCESS;
-   return true;
-}
-
-_X_HIDDEN bool
-dri2_check_no_error(uint32_t flags, struct glx_context *share_context,
-                    int major, unsigned *error)
-{
-   Bool noError = flags & __DRI_CTX_FLAG_NO_ERROR;
+   if (dca->major_ver >= 3 && dca->render_type == GLX_COLOR_INDEX_TYPE)
+      return __DRI_CTX_ERROR_BAD_FLAG;
 
    /* The KHR_no_error specs say:
     *
     *    Requires OpenGL ES 2.0 or OpenGL 2.0.
     */
-   if (noError && major < 2) {
-      *error = __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
-      return false;
-   }
-
-   /* The GLX_ARB_create_context_no_error specs say:
-    *
-    *    BadMatch is generated if the value of GLX_CONTEXT_OPENGL_NO_ERROR_ARB
-    *    used to create <share_context> does not match the value of
-    *    GLX_CONTEXT_OPENGL_NO_ERROR_ARB for the context being created.
-    */
-   if (share_context && !!share_context->noError != !!noError) {
-      *error = __DRI_CTX_ERROR_BAD_FLAG;
-      return false;
-   }
+   if (dca->no_error && dca->major_ver < 2)
+      return __DRI_CTX_ERROR_UNKNOWN_ATTRIBUTE;
 
    /* The GLX_ARB_create_context_no_error specs say:
     *
@@ -609,13 +644,11 @@ dri2_check_no_error(uint32_t flags, struct glx_context *share_context,
     *    the same time as a debug or robustness context is specified.
     *
     */
-   if (noError && ((flags & __DRI_CTX_FLAG_DEBUG) ||
-                   (flags & __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS))) {
-      *error = __DRI_CTX_ERROR_BAD_FLAG;
-      return false;
-   }
+   if (dca->no_error && ((dca->flags & __DRI_CTX_FLAG_DEBUG) ||
+                         (dca->flags & __DRI_CTX_FLAG_ROBUST_BUFFER_ACCESS)))
+      return __DRI_CTX_ERROR_BAD_FLAG;
 
-   return true;
+   return __DRI_CTX_ERROR_SUCCESS;
 }
 
 struct glx_context *

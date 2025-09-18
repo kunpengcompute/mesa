@@ -84,6 +84,7 @@ enum glsl_base_type {
    GLSL_TYPE_INT64,
    GLSL_TYPE_BOOL,
    GLSL_TYPE_SAMPLER,
+   GLSL_TYPE_TEXTURE,
    GLSL_TYPE_IMAGE,
    GLSL_TYPE_ATOMIC_UINT,
    GLSL_TYPE_STRUCT,
@@ -122,6 +123,7 @@ static unsigned glsl_base_type_bit_size(enum glsl_base_type type)
    case GLSL_TYPE_INT64:
    case GLSL_TYPE_UINT64:
    case GLSL_TYPE_IMAGE:
+   case GLSL_TYPE_TEXTURE:
    case GLSL_TYPE_SAMPLER:
       return 64;
 
@@ -158,6 +160,7 @@ static inline bool glsl_base_type_is_integer(enum glsl_base_type type)
           type == GLSL_TYPE_INT64 ||
           type == GLSL_TYPE_BOOL ||
           type == GLSL_TYPE_SAMPLER ||
+          type == GLSL_TYPE_TEXTURE ||
           type == GLSL_TYPE_IMAGE;
 }
 
@@ -188,6 +191,7 @@ glsl_base_type_get_bit_size(const enum glsl_base_type base_type)
    case GLSL_TYPE_UINT64:
    case GLSL_TYPE_IMAGE:
    case GLSL_TYPE_SAMPLER:
+   case GLSL_TYPE_TEXTURE:
       return 64;
 
    default:
@@ -456,6 +460,10 @@ public:
     */
    static const glsl_type *get_sampler_instance(enum glsl_sampler_dim dim,
                                                 bool shadow,
+                                                bool array,
+                                                glsl_base_type type);
+
+   static const glsl_type *get_texture_instance(enum glsl_sampler_dim dim,
                                                 bool array,
                                                 glsl_base_type type);
 
@@ -942,6 +950,14 @@ public:
    }
 
    /**
+    * Query whether or not a type is a texture
+    */
+   bool is_texture() const
+   {
+      return base_type == GLSL_TYPE_TEXTURE;
+   }
+
+   /**
     * Query whether or not type is a sampler, or for struct, interface and
     * array types, contains a sampler.
     */
@@ -1373,6 +1389,12 @@ struct glsl_struct_field {
    int location;
 
    /**
+    * For interface blocks, members may explicitly assign the component used
+    * by a varying. Ignored for structs.
+    */
+   int component;
+
+   /**
     * For interface blocks, members may have an explicit byte offset
     * specified; -1 otherwise. Also used for xfb_offset layout qualifier.
     *
@@ -1391,6 +1413,7 @@ struct glsl_struct_field {
     * -1 otherwise.
     */
    int xfb_stride;
+
    /**
     * Layout format, applicable to image variables only.
     */
@@ -1455,8 +1478,8 @@ struct glsl_struct_field {
    };
 #ifdef __cplusplus
 #define DEFAULT_CONSTRUCTORS(_type, _name)                  \
-   type(_type), name(_name), location(-1), offset(-1), xfb_buffer(0),   \
-   xfb_stride(0), image_format(PIPE_FORMAT_NONE), flags(0) \
+   type(_type), name(_name), location(-1), component(-1), offset(-1), \
+   xfb_buffer(0),  xfb_stride(0), image_format(PIPE_FORMAT_NONE), flags(0) \
 
    glsl_struct_field(const struct glsl_type *_type,
                      int _precision,

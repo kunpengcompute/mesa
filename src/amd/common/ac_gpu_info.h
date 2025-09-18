@@ -37,6 +37,9 @@
 extern "C" {
 #endif
 
+#define AMD_MAX_SE         8
+#define AMD_MAX_SA_PER_SE  2
+
 struct amdgpu_gpu_info;
 
 struct radeon_info {
@@ -48,6 +51,7 @@ struct radeon_info {
 
    /* Device info. */
    const char *name;
+   char lowercase_name[32];
    const char *marketing_name;
    bool is_pro_graphics;
    uint32_t pci_id;
@@ -70,6 +74,7 @@ struct radeon_info {
    bool has_load_ctx_reg_pkt;
    bool has_out_of_order_rast;
    bool has_packed_math_16bit;
+   bool has_accelerated_dot_product;
    bool cpdma_prefetch_writes_memory;
    bool has_gfx9_scissor_bug;
    bool has_tc_compat_zrange_bug;
@@ -77,8 +82,12 @@ struct radeon_info {
    bool has_ls_vgpr_init_bug;
    bool has_zero_index_buffer_bug;
    bool has_image_load_dcc_bug;
+   bool has_two_planes_iterate256_bug;
+   bool has_vgt_flush_ngg_legacy_bug;
+   bool has_cs_regalloc_hang_bug;
    bool has_32bit_predication;
    bool has_3d_cube_border_color_mipmap;
+   bool never_stop_sq_perf_counters;
 
    /* Display features. */
    /* There are 2 display DCC codepaths, because display expects unaligned DCC. */
@@ -125,14 +134,23 @@ struct radeon_info {
    unsigned ib_alignment; /* both start and size alignment */
    uint32_t me_fw_version;
    uint32_t me_fw_feature;
+   uint32_t mec_fw_version;
+   uint32_t mec_fw_feature;
    uint32_t pfp_fw_version;
    uint32_t pfp_fw_feature;
    uint32_t ce_fw_version;
    uint32_t ce_fw_feature;
 
    /* Multimedia info. */
-   bool has_hw_decode;
-   bool uvd_enc_supported;
+   struct {
+      bool uvd_decode;
+      bool vcn_decode;
+      bool jpeg_decode;
+      bool vce_encode;
+      bool uvd_encode;
+      bool vcn_encode;
+   } has_video_hw;
+
    uint32_t uvd_fw_version;
    uint32_t vce_fw_version;
    uint32_t vce_harvest_config;
@@ -172,13 +190,14 @@ struct radeon_info {
    bool has_read_registers_query;
    bool has_gds_ordered_append;
    bool has_scheduled_fence_dependency;
+   bool has_stable_pstate;
    /* Whether SR-IOV is enabled or amdgpu.mcbp=1 was set on the kernel command line. */
    bool mid_command_buffer_preemption_enabled;
    bool has_tmz_support;
    bool kernel_has_modifiers;
 
    /* Shader cores. */
-   uint32_t cu_mask[4][2];
+   uint32_t cu_mask[AMD_MAX_SE][AMD_MAX_SA_PER_SE];
    uint32_t r600_max_quad_pipes; /* wave size / 16 */
    uint32_t max_shader_clock;
    uint32_t num_good_compute_units;
@@ -197,7 +216,6 @@ struct radeon_info {
    uint32_t min_wave64_vgpr_alloc;
    uint32_t max_vgpr_alloc;
    uint32_t wave64_vgpr_alloc_granularity;
-   bool use_late_alloc; /* VS and GS: late pos/param allocation */
 
    /* Render backends (color + depth blocks). */
    uint32_t r300_num_gb_pipes;
@@ -218,6 +236,10 @@ struct radeon_info {
    /* Tile modes. */
    uint32_t si_tile_mode_array[32];
    uint32_t cik_macrotile_mode_array[16];
+
+   /* AMD_CU_MASK environment variable or ~0. */
+   bool spi_cu_en_has_effect;
+   uint32_t spi_cu_en;
 };
 
 bool ac_query_gpu_info(int fd, void *dev_p, struct radeon_info *info,

@@ -36,6 +36,7 @@
 #include "tgsi/tgsi_parse.h"
 #include "tgsi/tgsi_exec.h"
 #include "nir/nir_to_tgsi_info.h"
+#include "compiler/nir/nir.h"
 #include "pipe/p_shader_tokens.h"
 
 #include "util/u_math.h"
@@ -589,7 +590,8 @@ int draw_geometry_shader_run(struct draw_geometry_shader *shader,
       output_verts[i].stride = output_verts[i].vertex_size;
       output_verts[i].verts =
          (struct vertex_header *)MALLOC(output_verts[i].vertex_size *
-                                        total_verts_per_buffer * shader->num_invocations);
+                                        total_verts_per_buffer * shader->num_invocations +
+                                        DRAW_EXTRA_VERTICES_PADDING);
       debug_assert(output_verts[i].verts);
    }
 
@@ -791,8 +793,16 @@ draw_create_geometry_shader(struct draw_context *draw,
       }
 
       tgsi_scan_shader(state->tokens, &gs->info);
-   } else
+      gs->num_vertex_streams = 1;
+      for (i = 0; i < gs->state.stream_output.num_outputs; i++) {
+         if (gs->state.stream_output.output[i].stream >= gs->num_vertex_streams)
+            gs->num_vertex_streams = gs->state.stream_output.output[i].stream + 1;
+      }
+   } else {
       nir_tgsi_scan_shader(state->ir.nir, &gs->info, true);
+      nir_shader *nir = state->ir.nir;
+      gs->num_vertex_streams = util_last_bit(nir->info.gs.active_stream_mask);
+   }
 
    /* setup the defaults */
    gs->max_out_prims = 0;
@@ -833,12 +843,18 @@ draw_create_geometry_shader(struct draw_context *draw,
    gs->primitive_boundary = gs->max_output_vertices + 1;
 
    gs->position_output = -1;
+   bool found_clipvertex = false;
    for (i = 0; i < gs->info.num_outputs; i++) {
       if (gs->info.output_semantic_name[i] == TGSI_SEMANTIC_POSITION &&
           gs->info.output_semantic_index[i] == 0)
          gs->position_output = i;
       if (gs->info.output_semantic_name[i] == TGSI_SEMANTIC_VIEWPORT_INDEX)
          gs->viewport_index_output = i;
+      if (gs->info.output_semantic_name[i] == TGSI_SEMANTIC_CLIPVERTEX &&
+          gs->info.output_semantic_index[i] == 0) {
+         found_clipvertex = true;
+         gs->clipvertex_output = i;
+      }
       if (gs->info.output_semantic_name[i] == TGSI_SEMANTIC_CLIPDIST) {
          debug_assert(gs->info.output_semantic_index[i] <
                       PIPE_MAX_CLIP_OR_CULL_DISTANCE_ELEMENT_COUNT);
@@ -846,13 +862,10 @@ draw_create_geometry_shader(struct draw_context *draw,
       }
    }
 
-   gs->machine = draw->gs.tgsi.machine;
+   if (!found_clipvertex)
+      gs->clipvertex_output = gs->position_output;
 
-   gs->num_vertex_streams = 1;
-   for (i = 0; i < gs->state.stream_output.num_outputs; i++) {
-      if (gs->state.stream_output.output[i].stream >= gs->num_vertex_streams)
-         gs->num_vertex_streams = gs->state.stream_output.output[i].stream + 1;
-   }
+   gs->machine = draw->gs.tgsi.machine;
 
 #ifdef DRAW_LLVM_AVAILABLE
    if (use_llvm) {
@@ -899,6 +912,7 @@ void draw_bind_geometry_shader(struct draw_context *draw,
       draw->gs.geometry_shader = dgs;
       draw->gs.num_gs_outputs = dgs->info.num_outputs;
       draw->gs.position_output = dgs->position_output;
+      draw->gs.clipvertex_output = dgs->clipvertex_output;
       draw_geometry_shader_prepare(dgs, draw);
    }
    else {

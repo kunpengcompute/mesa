@@ -38,6 +38,7 @@
 #include "freedreno_state.h"
 #include "freedreno_texture.h"
 #include "freedreno_util.h"
+#include "util/u_trace_gallium.h"
 
 static void
 fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
@@ -52,12 +53,14 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
     */
    fd_batch_reference(&batch, ctx->batch);
 
-   DBG("%p: flush: flags=%x", batch, flags);
+   DBG("%p: flush: flags=%x, fencep=%p", batch, flags, fencep);
 
    if (fencep && !batch) {
       batch = fd_context_batch(ctx);
    } else if (!batch) {
-      fd_bc_dump(ctx->screen, "%p: NULL batch, remaining:\n", ctx);
+      if (ctx->screen->reorder)
+         fd_bc_flush(ctx, flags & PIPE_FLUSH_DEFERRED);
+      fd_bc_dump(ctx, "%p: NULL batch, remaining:\n", ctx);
       return;
    }
 
@@ -83,7 +86,7 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
       if (ctx->last_fence) {
          fd_fence_repopulate(*fencep, ctx->last_fence);
          fd_fence_ref(&fence, *fencep);
-         fd_bc_dump(ctx->screen, "%p: (deferred) reuse last_fence, remaining:\n", ctx);
+         fd_bc_dump(ctx, "%p: (deferred) reuse last_fence, remaining:\n", ctx);
          goto out;
       }
 
@@ -109,7 +112,7 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
     */
    if (ctx->last_fence) {
       fd_fence_ref(&fence, ctx->last_fence);
-      fd_bc_dump(ctx->screen, "%p: reuse last_fence, remaining:\n", ctx);
+      fd_bc_dump(ctx, "%p: reuse last_fence, remaining:\n", ctx);
       goto out;
    }
 
@@ -119,7 +122,7 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
    if (flags & PIPE_FLUSH_FENCE_FD)
       fence->submit_fence.use_fence_fd = true;
 
-   fd_bc_dump(ctx->screen, "%p: flushing %p<%u>, flags=0x%x, pending:\n", ctx,
+   fd_bc_dump(ctx, "%p: flushing %p<%u>, flags=0x%x, pending:\n", ctx,
               batch, batch->seqno, flags);
 
    /* If we get here, we need to flush for a fence, even if there is
@@ -129,13 +132,11 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fencep,
 
    if (!ctx->screen->reorder) {
       fd_batch_flush(batch);
-   } else if (flags & PIPE_FLUSH_DEFERRED) {
-      fd_bc_flush_deferred(&ctx->screen->batch_cache, ctx);
    } else {
-      fd_bc_flush(&ctx->screen->batch_cache, ctx);
+      fd_bc_flush(ctx, flags & PIPE_FLUSH_DEFERRED);
    }
 
-   fd_bc_dump(ctx->screen, "%p: remaining:\n", ctx);
+   fd_bc_dump(ctx, "%p: remaining:\n", ctx);
 
 out:
    if (fencep)
@@ -235,6 +236,8 @@ fd_emit_string_marker(struct pipe_context *pctx, const char *string,
 {
    struct fd_context *ctx = fd_context(pctx);
 
+   DBG("%.*s", len, string);
+
    if (!ctx->batch)
       return;
 
@@ -242,7 +245,7 @@ fd_emit_string_marker(struct pipe_context *pctx, const char *string,
 
    fd_batch_needs_flush(batch);
 
-   if (ctx->screen->gpu_id >= 500) {
+   if (ctx->screen->gen >= 5) {
       fd_emit_string5(batch->draw, string, len);
    } else {
       fd_emit_string(batch->draw, string, len);
@@ -295,7 +298,7 @@ fd_context_batch(struct fd_context *ctx)
 
    if (unlikely(!batch)) {
       batch =
-         fd_batch_from_fb(&ctx->screen->batch_cache, ctx, &ctx->framebuffer);
+         fd_batch_from_fb(ctx, &ctx->framebuffer);
       util_copy_framebuffer_state(&batch->framebuffer, &ctx->framebuffer);
       fd_batch_reference(&ctx->batch, batch);
       fd_context_all_dirty(ctx);
@@ -350,7 +353,9 @@ fd_context_destroy(struct pipe_context *pctx)
 
    util_copy_framebuffer_state(&ctx->framebuffer, NULL);
    fd_batch_reference(&ctx->batch, NULL); /* unref current batch */
-   fd_bc_invalidate_context(ctx);
+
+   /* Make sure nothing in the batch cache references our context any more. */
+   fd_bc_flush(ctx, false);
 
    fd_prog_fini(pctx);
 
@@ -363,9 +368,6 @@ fd_context_destroy(struct pipe_context *pctx)
    for (i = 0; i < ARRAY_SIZE(ctx->clear_rs_state); i++)
       if (ctx->clear_rs_state[i])
          pctx->delete_rasterizer_state(pctx, ctx->clear_rs_state[i]);
-
-   if (ctx->primconvert)
-      util_primconvert_destroy(ctx->primconvert);
 
    slab_destroy_child(&ctx->transfer_pool);
    slab_destroy_child(&ctx->transfer_pool_unsync);
@@ -400,7 +402,7 @@ fd_context_destroy(struct pipe_context *pctx)
 
 static void
 fd_set_debug_callback(struct pipe_context *pctx,
-                      const struct pipe_debug_callback *cb)
+                      const struct util_debug_callback *cb)
 {
    struct fd_context *ctx = fd_context(pctx);
 
@@ -428,11 +430,6 @@ fd_get_device_reset_status(struct pipe_context *pctx)
    int global_faults = fd_get_reset_count(ctx, false);
    enum pipe_reset_status status;
 
-   /* Not called in driver thread, but threaded_context syncs
-    * before calling this:
-    */
-   fd_context_access_begin(ctx);
-
    if (context_faults != ctx->context_reset_count) {
       status = PIPE_GUILTY_CONTEXT_RESET;
    } else if (global_faults != ctx->global_reset_count) {
@@ -444,36 +441,36 @@ fd_get_device_reset_status(struct pipe_context *pctx)
    ctx->context_reset_count = context_faults;
    ctx->global_reset_count = global_faults;
 
-   fd_context_access_end(ctx);
-
    return status;
 }
 
 static void
-fd_trace_record_ts(struct u_trace *ut, struct pipe_resource *timestamps,
-                   unsigned idx)
+fd_trace_record_ts(struct u_trace *ut, void *cs, void *timestamps,
+                   unsigned idx, bool end_of_pipe)
 {
    struct fd_batch *batch = container_of(ut, struct fd_batch, trace);
-   struct fd_ringbuffer *ring = batch->nondraw ? batch->draw : batch->gmem;
+   struct fd_ringbuffer *ring = cs;
+   struct pipe_resource *buffer = timestamps;
 
    if (ring->cur == batch->last_timestamp_cmd) {
-      uint64_t *ts = fd_bo_map(fd_resource(timestamps)->bo);
+      uint64_t *ts = fd_bo_map(fd_resource(buffer)->bo);
       ts[idx] = U_TRACE_NO_TIMESTAMP;
       return;
    }
 
    unsigned ts_offset = idx * sizeof(uint64_t);
-   batch->ctx->record_timestamp(ring, fd_resource(timestamps)->bo, ts_offset);
+   batch->ctx->record_timestamp(ring, fd_resource(buffer)->bo, ts_offset);
    batch->last_timestamp_cmd = ring->cur;
 }
 
 static uint64_t
 fd_trace_read_ts(struct u_trace_context *utctx,
-                 struct pipe_resource *timestamps, unsigned idx)
+                 void *timestamps, unsigned idx, void *flush_data)
 {
    struct fd_context *ctx =
       container_of(utctx, struct fd_context, trace_context);
-   struct fd_bo *ts_bo = fd_resource(timestamps)->bo;
+   struct pipe_resource *buffer = timestamps;
+   struct fd_bo *ts_bo = fd_resource(buffer)->bo;
 
    /* Only need to stall on results for the first entry: */
    if (idx == 0) {
@@ -496,6 +493,12 @@ fd_trace_read_ts(struct u_trace_context *utctx,
    return ctx->ts_to_ns(ts[idx]);
 }
 
+static void
+fd_trace_delete_flush_data(struct u_trace_context *utctx, void *flush_data)
+{
+   /* We don't use flush_data at the moment. */
+}
+
 /* TODO we could combine a few of these small buffers (solid_vbuf,
  * blit_texcoord_vbuf, and vsc_size_mem, into a single buffer and
  * save a tiny bit of memory
@@ -505,7 +508,7 @@ static struct pipe_resource *
 create_solid_vertexbuf(struct pipe_context *pctx)
 {
    static const float init_shader_const[] = {
-      -1.000000, +1.000000, +1.000000, +1.000000, -1.000000, +1.000000,
+      -1.000000f, +1.000000f, +1.000000f, +1.000000f, -1.000000f, +1.000000f,
    };
    struct pipe_resource *prsc =
       pipe_buffer_create(pctx->screen, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
@@ -579,13 +582,12 @@ fd_context_cleanup_common_vbos(struct fd_context *ctx)
 
 struct pipe_context *
 fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
-                const uint8_t *primtypes, void *priv,
-                unsigned flags) disable_thread_safety_analysis
+                void *priv, unsigned flags)
+   disable_thread_safety_analysis
 {
    struct fd_screen *screen = fd_screen(pscreen);
    struct pipe_context *pctx;
    unsigned prio = 1;
-   int i;
 
    /* lower numerical value == higher priority: */
    if (FD_DBG(HIPRIO))
@@ -601,6 +603,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
    if (FD_DBG(BSTAT) || FD_DBG(MSGS))
       ctx->stats_users++;
 
+   ctx->flags = flags;
    ctx->screen = screen;
    ctx->pipe = fd_pipe_new2(screen->dev, FD_PIPE_3D, prio);
 
@@ -610,12 +613,6 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
       ctx->context_reset_count = fd_get_reset_count(ctx, true);
       ctx->global_reset_count = fd_get_reset_count(ctx, false);
    }
-
-   ctx->primtypes = primtypes;
-   ctx->primtype_mask = 0;
-   for (i = 0; i <= PIPE_PRIM_MAX; i++)
-      if (primtypes[i])
-         ctx->primtype_mask |= (1 << i);
 
    simple_mtx_init(&ctx->gmem_lock, mtx_plain);
 
@@ -656,10 +653,6 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
    if (!ctx->blitter)
       goto fail;
 
-   ctx->primconvert = util_primconvert_create(pctx, ctx->primtype_mask);
-   if (!ctx->primconvert)
-      goto fail;
-
    list_inithead(&ctx->hw_active_queries);
    list_inithead(&ctx->acc_active_queries);
 
@@ -670,8 +663,10 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 
    ctx->current_scissor = &ctx->disabled_scissor;
 
-   u_trace_context_init(&ctx->trace_context, pctx, fd_trace_record_ts,
-                        fd_trace_read_ts);
+   u_trace_pipe_context_init(&ctx->trace_context, pctx,
+                             fd_trace_record_ts,
+                             fd_trace_read_ts,
+                             fd_trace_delete_flush_data);
 
    fd_autotune_init(&ctx->autotune, screen->dev);
 
@@ -695,13 +690,17 @@ fd_context_init_tc(struct pipe_context *pctx, unsigned flags)
       return pctx;
 
    struct pipe_context *tc = threaded_context_create(
-      pctx, &ctx->screen->transfer_pool, fd_replace_buffer_storage,
-      fd_fence_create_unflushed, &ctx->tc);
+      pctx, &ctx->screen->transfer_pool,
+      fd_replace_buffer_storage,
+      &(struct threaded_context_options){
+         .create_fence = fd_fence_create_unflushed,
+         .is_resource_busy = fd_resource_busy,
+         .unsynchronized_get_device_reset_status = true,
+      },
+      &ctx->tc);
 
-   uint64_t total_ram;
-   if (tc && tc != pctx && os_get_total_physical_memory(&total_ram)) {
-      ((struct threaded_context *)tc)->bytes_mapped_limit = total_ram / 16;
-   }
+   if (tc && tc != pctx)
+      threaded_context_init_bytes_mapped_limit((struct threaded_context *)tc, 16);
 
    return tc;
 }

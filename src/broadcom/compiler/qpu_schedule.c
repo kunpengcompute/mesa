@@ -97,7 +97,7 @@ add_dep(struct schedule_state *state,
         bool write)
 {
         bool write_after_read = !write && state->dir == R;
-        void *edge_data = (void *)(uintptr_t)write_after_read;
+        uintptr_t edge_data = write_after_read;
 
         if (!before || !after)
                 return;
@@ -492,7 +492,8 @@ struct choose_scoreboard {
         int last_thrsw_tick;
         int last_branch_tick;
         int last_setmsf_tick;
-        bool tlb_locked;
+        bool first_thrsw_emitted;
+        bool last_thrsw_emitted;
         bool fixup_ldvary;
         int ldvary_count;
 };
@@ -576,10 +577,26 @@ writes_too_soon_after_write(const struct v3d_device_info *devinfo,
 }
 
 static bool
-pixel_scoreboard_too_soon(struct choose_scoreboard *scoreboard,
+scoreboard_is_locked(struct choose_scoreboard *scoreboard,
+                     bool lock_scoreboard_on_first_thrsw)
+{
+        if (lock_scoreboard_on_first_thrsw) {
+                return scoreboard->first_thrsw_emitted &&
+                       scoreboard->tick - scoreboard->last_thrsw_tick >= 3;
+        }
+
+        return scoreboard->last_thrsw_emitted &&
+               scoreboard->tick - scoreboard->last_thrsw_tick >= 3;
+}
+
+static bool
+pixel_scoreboard_too_soon(struct v3d_compile *c,
+                          struct choose_scoreboard *scoreboard,
                           const struct v3d_qpu_instr *inst)
 {
-        return (scoreboard->tick == 0 && qpu_inst_is_tlb(inst));
+        return qpu_inst_is_tlb(inst) &&
+               !scoreboard_is_locked(scoreboard,
+                                     c->lock_scoreboard_on_first_thrsw);
 }
 
 static bool
@@ -648,48 +665,56 @@ get_instruction_priority(const struct v3d_device_info *devinfo,
         return baseline_score;
 }
 
-static bool
-qpu_magic_waddr_is_periph(const struct v3d_device_info *devinfo,
-                          enum v3d_qpu_waddr waddr)
-{
-        return (v3d_qpu_magic_waddr_is_tmu(devinfo, waddr) ||
-                v3d_qpu_magic_waddr_is_sfu(waddr) ||
-                v3d_qpu_magic_waddr_is_tlb(waddr) ||
-                v3d_qpu_magic_waddr_is_vpm(waddr) ||
-                v3d_qpu_magic_waddr_is_tsy(waddr));
-}
+enum {
+        V3D_PERIPHERAL_VPM_READ           = (1 << 0),
+        V3D_PERIPHERAL_VPM_WRITE          = (1 << 1),
+        V3D_PERIPHERAL_VPM_WAIT           = (1 << 2),
+        V3D_PERIPHERAL_SFU                = (1 << 3),
+        V3D_PERIPHERAL_TMU_WRITE          = (1 << 4),
+        V3D_PERIPHERAL_TMU_READ           = (1 << 5),
+        V3D_PERIPHERAL_TMU_WAIT           = (1 << 6),
+        V3D_PERIPHERAL_TMU_WRTMUC_SIG     = (1 << 7),
+        V3D_PERIPHERAL_TSY                = (1 << 8),
+        V3D_PERIPHERAL_TLB                = (1 << 9),
+};
 
-static bool
-qpu_accesses_peripheral(const struct v3d_device_info *devinfo,
-                        const struct v3d_qpu_instr *inst)
+static uint32_t
+qpu_peripherals(const struct v3d_device_info *devinfo,
+                const struct v3d_qpu_instr *inst)
 {
-        if (v3d_qpu_uses_vpm(inst))
-                return true;
+        uint32_t result = 0;
+        if (v3d_qpu_reads_vpm(inst))
+                result |= V3D_PERIPHERAL_VPM_READ;
+        if (v3d_qpu_writes_vpm(inst))
+                result |= V3D_PERIPHERAL_VPM_WRITE;
+        if (v3d_qpu_waits_vpm(inst))
+                result |= V3D_PERIPHERAL_VPM_WAIT;
+
+        if (v3d_qpu_writes_tmu(devinfo, inst))
+                result |= V3D_PERIPHERAL_TMU_WRITE;
+        if (inst->sig.ldtmu)
+                result |= V3D_PERIPHERAL_TMU_READ;
+        if (inst->sig.wrtmuc)
+                result |= V3D_PERIPHERAL_TMU_WRTMUC_SIG;
+
         if (v3d_qpu_uses_sfu(inst))
-                return true;
+                result |= V3D_PERIPHERAL_SFU;
+
+        if (v3d_qpu_uses_tlb(inst))
+                result |= V3D_PERIPHERAL_TLB;
 
         if (inst->type == V3D_QPU_INSTR_TYPE_ALU) {
                 if (inst->alu.add.op != V3D_QPU_A_NOP &&
                     inst->alu.add.magic_write &&
-                    qpu_magic_waddr_is_periph(devinfo, inst->alu.add.waddr)) {
-                        return true;
+                    v3d_qpu_magic_waddr_is_tsy(inst->alu.add.waddr)) {
+                        result |= V3D_PERIPHERAL_TSY;
                 }
 
                 if (inst->alu.add.op == V3D_QPU_A_TMUWT)
-                        return true;
-
-                if (inst->alu.mul.op != V3D_QPU_M_NOP &&
-                    inst->alu.mul.magic_write &&
-                    qpu_magic_waddr_is_periph(devinfo, inst->alu.mul.waddr)) {
-                        return true;
-                }
+                        result |= V3D_PERIPHERAL_TMU_WAIT;
         }
 
-        return (inst->sig.ldvpm ||
-                inst->sig.ldtmu ||
-                inst->sig.ldtlb ||
-                inst->sig.ldtlbu ||
-                inst->sig.wrtmuc);
+        return result;
 }
 
 static bool
@@ -697,26 +722,38 @@ qpu_compatible_peripheral_access(const struct v3d_device_info *devinfo,
                                  const struct v3d_qpu_instr *a,
                                  const struct v3d_qpu_instr *b)
 {
-        const bool a_uses_peripheral = qpu_accesses_peripheral(devinfo, a);
-        const bool b_uses_peripheral = qpu_accesses_peripheral(devinfo, b);
+        const uint32_t a_peripherals = qpu_peripherals(devinfo, a);
+        const uint32_t b_peripherals = qpu_peripherals(devinfo, b);
 
         /* We can always do one peripheral access per instruction. */
-        if (!a_uses_peripheral || !b_uses_peripheral)
+        if (util_bitcount(a_peripherals) + util_bitcount(b_peripherals) <= 1)
                 return true;
 
         if (devinfo->ver < 41)
                 return false;
 
-        /* V3D 4.1 and later allow TMU read along with a VPM read or write, and
-         * WRTMUC with a TMU magic register write (other than tmuc).
+        /* V3D 4.1+ allow WRTMUC signal with TMU register write (other than
+         * tmuc).
          */
-        if ((a->sig.ldtmu && v3d_qpu_reads_or_writes_vpm(b)) ||
-            (b->sig.ldtmu && v3d_qpu_reads_or_writes_vpm(a))) {
-                return true;
+        if (a_peripherals == V3D_PERIPHERAL_TMU_WRTMUC_SIG &&
+            b_peripherals == V3D_PERIPHERAL_TMU_WRITE) {
+                return v3d_qpu_writes_tmu_not_tmuc(devinfo, b);
         }
 
-        if ((a->sig.wrtmuc && v3d_qpu_writes_tmu_not_tmuc(devinfo, b)) ||
-            (b->sig.wrtmuc && v3d_qpu_writes_tmu_not_tmuc(devinfo, a))) {
+        if (a_peripherals == V3D_PERIPHERAL_TMU_WRITE &&
+            b_peripherals == V3D_PERIPHERAL_TMU_WRTMUC_SIG) {
+                return v3d_qpu_writes_tmu_not_tmuc(devinfo, a);
+        }
+
+        /* V3D 4.1+ allows TMU read with VPM read/write. */
+        if (a_peripherals == V3D_PERIPHERAL_TMU_READ &&
+            (b_peripherals == V3D_PERIPHERAL_VPM_READ ||
+             b_peripherals == V3D_PERIPHERAL_VPM_WRITE)) {
+                return true;
+        }
+        if (b_peripherals == V3D_PERIPHERAL_TMU_READ &&
+            (a_peripherals == V3D_PERIPHERAL_VPM_READ ||
+             a_peripherals == V3D_PERIPHERAL_VPM_WRITE)) {
                 return true;
         }
 
@@ -821,7 +858,7 @@ qpu_merge_raddrs(struct v3d_qpu_instr *result,
                 if (mul_instr->alu.mul.a == V3D_QPU_MUX_A)
                         result->alu.mul.a = V3D_QPU_MUX_B;
                 if (mul_instr->alu.mul.b == V3D_QPU_MUX_A &&
-                    v3d_qpu_add_op_num_src(mul_instr->alu.mul.op) > 1) {
+                    v3d_qpu_mul_op_num_src(mul_instr->alu.mul.op) > 1) {
                         result->alu.mul.b = V3D_QPU_MUX_B;
                 }
         }
@@ -868,9 +905,16 @@ qpu_convert_add_to_mul(struct v3d_qpu_instr *inst)
         inst->flags.mc = inst->flags.ac;
         inst->flags.mpf = inst->flags.apf;
         inst->flags.muf = inst->flags.auf;
-        inst->flags.ac = V3D_QPU_PF_NONE;
+        inst->flags.ac = V3D_QPU_COND_NONE;
         inst->flags.apf = V3D_QPU_PF_NONE;
-        inst->flags.auf = V3D_QPU_PF_NONE;
+        inst->flags.auf = V3D_QPU_UF_NONE;
+
+        inst->alu.mul.output_pack = inst->alu.add.output_pack;
+        inst->alu.mul.a_unpack = inst->alu.add.a_unpack;
+        inst->alu.mul.b_unpack = inst->alu.add.b_unpack;
+        inst->alu.add.output_pack = V3D_QPU_PACK_NONE;
+        inst->alu.add.a_unpack = V3D_QPU_UNPACK_NONE;
+        inst->alu.add.b_unpack = V3D_QPU_UNPACK_NONE;
 }
 
 static bool
@@ -1053,12 +1097,12 @@ retry:
                 if (writes_too_soon_after_write(c->devinfo, scoreboard, n->inst))
                         continue;
 
-                /* "A scoreboard wait must not occur in the first two
-                 *  instructions of a fragment shader. This is either the
-                 *  explicit Wait for Scoreboard signal or an implicit wait
-                 *  with the first tile-buffer read or write instruction."
+                /* "Before doing a TLB access a scoreboard wait must have been
+                 *  done. This happens either on the first or last thread
+                 *  switch, depending on a setting (scb_wait_on_first_thrsw) in
+                 *  the shader state."
                  */
-                if (pixel_scoreboard_too_soon(scoreboard, inst))
+                if (pixel_scoreboard_too_soon(c, scoreboard, inst))
                         continue;
 
                 /* ldunif and ldvary both write r5, but ldunif does so a tick
@@ -1131,12 +1175,10 @@ retry:
                                 continue;
                         }
 
-                        /* Don't merge in something that will lock the TLB.
-                         * Hopwefully what we have in inst will release some
-                         * other instructions, allowing us to delay the
-                         * TLB-locking instruction until later.
+                        /* Don't merge TLB instructions before we have acquired
+                         * the scoreboard lock.
                          */
-                        if (!scoreboard->tlb_locked && qpu_inst_is_tlb(inst))
+                        if (pixel_scoreboard_too_soon(c, scoreboard, inst))
                                 continue;
 
                         /* When we succesfully pair up an ldvary we then try
@@ -1273,9 +1315,6 @@ update_scoreboard_for_chosen(struct choose_scoreboard *scoreboard,
 
         if (inst->sig.ldvary)
                 scoreboard->last_ldvary_tick = scoreboard->tick;
-
-        if (qpu_inst_is_tlb(inst))
-                scoreboard->tlb_locked = true;
 }
 
 static void
@@ -1464,16 +1503,13 @@ qpu_inst_valid_in_thrend_slot(struct v3d_compile *c,
 {
         const struct v3d_qpu_instr *inst = &qinst->qpu;
 
-        /* Only TLB Z writes are prohibited in the last slot, but we don't
-         * have those flagged so prohibit all TLB ops for now.
-         */
-        if (slot == 2 && qpu_inst_is_tlb(inst))
+        if (slot == 2 && qinst->is_tlb_z_write)
                 return false;
 
         if (slot > 0 && qinst->uniform != ~0)
                 return false;
 
-        if (v3d_qpu_uses_vpm(inst))
+        if (v3d_qpu_waits_vpm(inst))
                 return false;
 
         if (inst->sig.ldvary)
@@ -1487,6 +1523,11 @@ qpu_inst_valid_in_thrend_slot(struct v3d_compile *c,
                 /* No writing physical registers at the end. */
                 if (!inst->alu.add.magic_write ||
                     !inst->alu.mul.magic_write) {
+                        return false;
+                }
+
+                if (v3d_qpu_sig_writes_address(c->devinfo, &inst->sig) &&
+                    !inst->sig_magic) {
                         return false;
                 }
 
@@ -1648,6 +1689,14 @@ qpu_inst_after_thrsw_valid_in_delay_slot(struct v3d_compile *c,
         if (v3d_qpu_writes_flags(&qinst->qpu))
                 return false;
 
+        /* TSY sync ops materialize at the point of the next thread switch,
+         * therefore, if we have a TSY sync right after a thread switch, we
+         * cannot place it in its delay slots, or we would be moving the sync
+         * to the thrsw before it instead.
+         */
+        if (qinst->qpu.alu.add.op == V3D_QPU_A_BARRIERID)
+                return false;
+
         return true;
 }
 
@@ -1714,25 +1763,56 @@ emit_thrsw(struct v3d_compile *c,
 
         /* Find how far back into previous instructions we can put the THRSW. */
         int slots_filled = 0;
+        int invalid_sig_count = 0;
+        bool last_thrsw_after_invalid_ok = false;
         struct qinst *merge_inst = NULL;
         vir_for_each_inst_rev(prev_inst, block) {
-                struct v3d_qpu_sig sig = prev_inst->qpu.sig;
-                sig.thrsw = true;
-                uint32_t packed_sig;
-
-                if (!v3d_qpu_sig_pack(c->devinfo, &sig, &packed_sig))
-                        break;
-
                 if (!valid_thrsw_sequence(c, scoreboard,
                                           prev_inst, slots_filled + 1,
                                           is_thrend)) {
                         break;
                 }
 
+                struct v3d_qpu_sig sig = prev_inst->qpu.sig;
+                sig.thrsw = true;
+                uint32_t packed_sig;
+                if (!v3d_qpu_sig_pack(c->devinfo, &sig, &packed_sig)) {
+                        /* If we can't merge the thrsw here because of signal
+                         * incompatibility, keep going, we might be able to
+                         * merge it in an earlier instruction.
+                         */
+                        invalid_sig_count++;
+                        goto cont_block;
+                }
+
+                /* For last thrsw we need 2 consecutive slots that are
+                 * thrsw compatible, so if we have previously jumped over
+                 * an incompatible signal, flag that we have found the first
+                 * valid slot here and keep going.
+                 */
+                if (inst->is_last_thrsw && invalid_sig_count > 0 &&
+                    !last_thrsw_after_invalid_ok) {
+                        last_thrsw_after_invalid_ok = true;
+                        invalid_sig_count++;
+                        goto cont_block;
+                }
+
+                last_thrsw_after_invalid_ok = false;
+                invalid_sig_count = 0;
                 merge_inst = prev_inst;
+
+cont_block:
                 if (++slots_filled == 3)
                         break;
         }
+
+        /* If we jumped over a signal incompatibility and did not manage to
+         * merge the thrsw in the end, we need to adjust slots filled to match
+         * the last valid merge point.
+         */
+        assert(invalid_sig_count == 0 || slots_filled >= invalid_sig_count);
+        if (invalid_sig_count > 0)
+                slots_filled -= invalid_sig_count;
 
         bool needs_free = false;
         if (merge_inst) {
@@ -1747,6 +1827,8 @@ emit_thrsw(struct v3d_compile *c,
                 merge_inst = inst;
         }
 
+        scoreboard->first_thrsw_emitted = true;
+
         /* If we're emitting the last THRSW (other than program end), then
          * signal that to the HW by emitting two THRSWs in a row.
          */
@@ -1758,6 +1840,7 @@ emit_thrsw(struct v3d_compile *c,
                 struct qinst *second_inst =
                         (struct qinst *)merge_inst->link.next;
                 second_inst->qpu.sig.thrsw = true;
+                scoreboard->last_thrsw_emitted = true;
         }
 
         /* Make sure the thread end executes within the program lifespan */
@@ -1981,6 +2064,17 @@ fixup_pipelined_ldvary(struct v3d_compile *c,
         if (alu_reads_register(inst, false, ldvary_magic, ldvary_index))
                 return false;
 
+        /* The implicit ldvary destination may not be written to by a signal
+         * in the instruction following ldvary. Since we are planning to move
+         * ldvary to the previous instruction, this means we need to check if
+         * the current instruction has any other signal that could create this
+         * conflict. The only other signal that can write to the implicit
+         * ldvary destination that is compatible with ldvary in the same
+         * instruction is ldunif.
+         */
+        if (inst->sig.ldunif)
+                return false;
+
         /* The previous instruction can't write to the same destination as the
          * ldvary.
          */
@@ -2004,6 +2098,12 @@ fixup_pipelined_ldvary(struct v3d_compile *c,
 
         /* The previous instruction cannot have a conflicting signal */
         if (v3d_qpu_sig_writes_address(c->devinfo, &prev->qpu.sig))
+                return false;
+
+        uint32_t sig;
+        struct v3d_qpu_sig new_sig = prev->qpu.sig;
+        new_sig.ldvary = true;
+        if (!v3d_qpu_sig_pack(c->devinfo, &new_sig, &sig))
                 return false;
 
         /* The previous instruction cannot use flags since ldvary uses the

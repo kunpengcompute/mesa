@@ -16,25 +16,17 @@ max_line_length = 78
 [{Makefile*,*.mk}]
 indent_style = tab
 
-[{*.py,SCons*}]
+[*.py]
 indent_style = space
 indent_size = 4
-
-[*.pl]
-indent_style = space
-indent_size = 4
-
-[*.m4]
-indent_style = space
-indent_size = 2
 
 [*.yml]
 indent_style = space
 indent_size = 2
 
-[*.html]
+[*.rst]
 indent_style = space
-indent_size = 2
+indent_size = 3
 
 [*.patch]
 trim_trailing_whitespace = false

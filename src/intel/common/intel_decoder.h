@@ -159,6 +159,7 @@ struct intel_type {
       INTEL_TYPE_UFIXED,
       INTEL_TYPE_SFIXED,
       INTEL_TYPE_MBO,
+      INTEL_TYPE_MBZ,
       INTEL_TYPE_ENUM
    } kind;
 
@@ -252,6 +253,7 @@ struct intel_batch_decode_ctx {
    enum drm_i915_gem_engine_class engine;
 
    int n_batch_buffer_start;
+   uint64_t acthd;
 };
 
 void intel_batch_decode_ctx_init(struct intel_batch_decode_ctx *ctx,

@@ -41,6 +41,7 @@
 
 #include "egl_dri2.h"
 #include "loader.h"
+#include "kopper_interface.h"
 #include "util/debug.h"
 
 static __DRIimage*
@@ -193,16 +194,36 @@ device_flush_front_buffer(__DRIdrawable *driDrawable, void *loaderPrivate)
 {
 }
 
+static unsigned
+device_get_capability(void *loaderPrivate, enum dri_loader_cap cap)
+{
+   /* Note: loaderPrivate is _EGLDisplay* */
+   switch (cap) {
+   case DRI_LOADER_CAP_FP16:
+      return 1;
+   default:
+      return 0;
+   }
+}
+
 static const __DRIimageLoaderExtension image_loader_extension = {
-   .base             = { __DRI_IMAGE_LOADER, 1 },
+   .base             = { __DRI_IMAGE_LOADER, 2 },
    .getBuffers       = device_image_get_buffers,
    .flushFrontBuffer = device_flush_front_buffer,
+   .getCapability    = device_get_capability,
+};
+
+static const __DRIkopperLoaderExtension kopper_loader_extension = {
+    .base = { __DRI_KOPPER_LOADER, 1 },
+
+    .SetSurfaceCreateInfo   = NULL,
 };
 
 static const __DRIextension *image_loader_extensions[] = {
    &image_loader_extension.base,
    &image_lookup_extension.base,
    &use_invalidate.base,
+   &kopper_loader_extension.base,
    NULL,
 };
 
@@ -210,6 +231,7 @@ static const __DRIextension *swrast_loader_extensions[] = {
    &swrast_pbuffer_loader_extension.base,
    &image_lookup_extension.base,
    &use_invalidate.base,
+   &kopper_loader_extension.base,
    NULL,
 };
 
@@ -300,7 +322,7 @@ device_probe_device_sw(_EGLDisplay *disp)
    struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 
    dri2_dpy->fd = -1;
-   dri2_dpy->driver_name = strdup("swrast");
+   dri2_dpy->driver_name = strdup(disp->Options.Zink ? "zink" : "swrast");
    if (!dri2_dpy->driver_name)
       return false;
 

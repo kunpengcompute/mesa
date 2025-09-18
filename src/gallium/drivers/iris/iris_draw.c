@@ -38,6 +38,7 @@
 #include "util/u_upload_mgr.h"
 #include "intel/compiler/brw_compiler.h"
 #include "intel/compiler/brw_eu_defines.h"
+#include "compiler/shader_info.h"
 #include "iris_context.h"
 #include "iris_defines.h"
 
@@ -65,6 +66,7 @@ iris_update_draw_info(struct iris_context *ice,
                       const struct pipe_draw_info *info)
 {
    struct iris_screen *screen = (struct iris_screen *)ice->ctx.screen;
+   const struct intel_device_info *devinfo = &screen->devinfo;
    const struct brw_compiler *compiler = screen->compiler;
 
    if (ice->state.prim_mode != info->mode) {
@@ -81,8 +83,8 @@ iris_update_draw_info(struct iris_context *ice,
    }
 
    if (info->mode == PIPE_PRIM_PATCHES &&
-       ice->state.vertices_per_patch != info->vertices_per_patch) {
-      ice->state.vertices_per_patch = info->vertices_per_patch;
+       ice->state.vertices_per_patch != ice->state.patch_vertices) {
+      ice->state.vertices_per_patch = ice->state.patch_vertices;
       ice->state.dirty |= IRIS_DIRTY_VF_TOPOLOGY;
 
       /* 8_PATCH TCS needs this for key->input_vertices */
@@ -105,8 +107,11 @@ iris_update_draw_info(struct iris_context *ice,
    if (ice->state.primitive_restart != info->primitive_restart ||
        ice->state.cut_index != cut_index) {
       ice->state.dirty |= IRIS_DIRTY_VF;
-      ice->state.primitive_restart = info->primitive_restart;
       ice->state.cut_index = cut_index;
+      ice->state.dirty |=
+         ((ice->state.primitive_restart != info->primitive_restart) &&
+          devinfo->verx10 >= 125) ? IRIS_DIRTY_VFG : 0;
+      ice->state.primitive_restart = info->primitive_restart;
    }
 }
 
@@ -144,7 +149,7 @@ iris_update_draw_parameters(struct iris_context *ice,
             ice->draw.params.baseinstance = info->start_instance;
             ice->draw.params_valid = true;
 
-            u_upload_data(ice->ctx.stream_uploader, 0,
+            u_upload_data(ice->ctx.const_uploader, 0,
                           sizeof(ice->draw.params), 4, &ice->draw.params,
                           &draw_params->offset, &draw_params->res);
          }
@@ -162,7 +167,7 @@ iris_update_draw_parameters(struct iris_context *ice,
          ice->draw.derived_params.drawid = drawid_offset;
          ice->draw.derived_params.is_indexed_draw = is_indexed_draw;
 
-         u_upload_data(ice->ctx.stream_uploader, 0,
+         u_upload_data(ice->ctx.const_uploader, 0,
                        sizeof(ice->draw.derived_params), 4,
                        &ice->draw.derived_params,
                        &derived_params->offset, &derived_params->res);
@@ -187,10 +192,19 @@ iris_indirect_draw_vbo(struct iris_context *ice,
    struct pipe_draw_info info = *dinfo;
    struct pipe_draw_indirect_info indirect = *dindirect;
 
-   if (indirect.indirect_draw_count &&
-       ice->state.predicate == IRIS_PREDICATE_STATE_USE_BIT) {
-      /* Upload MI_PREDICATE_RESULT to GPR15.*/
-      batch->screen->vtbl.load_register_reg64(batch, CS_GPR(15), MI_PREDICATE_RESULT);
+   iris_emit_buffer_barrier_for(batch, iris_resource_bo(indirect.buffer),
+                                IRIS_DOMAIN_VF_READ);
+
+   if (indirect.indirect_draw_count) {
+      struct iris_bo *draw_count_bo =
+         iris_resource_bo(indirect.indirect_draw_count);
+      iris_emit_buffer_barrier_for(batch, draw_count_bo,
+                                   IRIS_DOMAIN_OTHER_READ);
+
+      if (ice->state.predicate == IRIS_PREDICATE_STATE_USE_BIT) {
+         /* Upload MI_PREDICATE_RESULT to GPR15.*/
+         batch->screen->vtbl.load_register_reg64(batch, CS_GPR(15), MI_PREDICATE_RESULT);
+      }
    }
 
    const uint64_t orig_dirty = ice->state.dirty;
@@ -262,7 +276,7 @@ iris_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info,
    if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
       return;
 
-   if (INTEL_DEBUG & DEBUG_REEMIT) {
+   if (INTEL_DEBUG(DEBUG_REEMIT)) {
       ice->state.dirty |= IRIS_ALL_DIRTY_FOR_RENDER;
       ice->state.stage_dirty |= IRIS_ALL_STAGE_DIRTY_FOR_RENDER;
    }
@@ -284,9 +298,14 @@ iris_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *info,
       iris_predraw_resolve_framebuffer(ice, batch, draw_aux_buffer_disabled);
    }
 
+   if (ice->state.dirty & IRIS_DIRTY_RENDER_MISC_BUFFER_FLUSHES) {
+      for (gl_shader_stage stage = 0; stage < MESA_SHADER_COMPUTE; stage++)
+         iris_predraw_flush_buffers(ice, batch, stage);
+   }
+
    iris_binder_reserve_3d(ice);
 
-   batch->screen->vtbl.update_surface_base_address(batch, &ice->state.binder);
+   batch->screen->vtbl.update_binder_address(batch, &ice->state.binder);
 
    iris_handle_always_flush_cache(batch);
 
@@ -349,7 +368,7 @@ iris_update_grid_size_resource(struct iris_context *ice,
    state_ref->offset +=
       iris_bo_offset_from_base_address(iris_resource_bo(state_ref->res));
    isl_buffer_fill_state(&screen->isl_dev, surf_map,
-                         .address = grid_ref->offset + grid_bo->gtt_offset,
+                         .address = grid_ref->offset + grid_bo->address,
                          .size_B = sizeof(grid->grid),
                          .format = ISL_FORMAT_RAW,
                          .stride_B = 1,
@@ -368,13 +387,16 @@ iris_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *grid)
    if (ice->state.predicate == IRIS_PREDICATE_STATE_DONT_RENDER)
       return;
 
-   if (INTEL_DEBUG & DEBUG_REEMIT) {
+   if (INTEL_DEBUG(DEBUG_REEMIT)) {
       ice->state.dirty |= IRIS_ALL_DIRTY_FOR_COMPUTE;
       ice->state.stage_dirty |= IRIS_ALL_STAGE_DIRTY_FOR_COMPUTE;
    }
 
    if (ice->state.dirty & IRIS_DIRTY_COMPUTE_RESOLVES_AND_FLUSHES)
       iris_predraw_resolve_inputs(ice, batch, NULL, MESA_SHADER_COMPUTE, false);
+
+   if (ice->state.dirty & IRIS_DIRTY_COMPUTE_MISC_BUFFER_FLUSHES)
+      iris_predraw_flush_buffers(ice, batch, MESA_SHADER_COMPUTE);
 
    iris_batch_maybe_flush(batch, 1500);
 
@@ -389,7 +411,7 @@ iris_launch_grid(struct pipe_context *ctx, const struct pipe_grid_info *grid)
    iris_update_grid_size_resource(ice, grid);
 
    iris_binder_reserve_compute(ice);
-   batch->screen->vtbl.update_surface_base_address(batch, &ice->state.binder);
+   batch->screen->vtbl.update_binder_address(batch, &ice->state.binder);
 
    if (ice->state.compute_predicate) {
       batch->screen->vtbl.load_register_mem64(batch, MI_PREDICATE_RESULT,

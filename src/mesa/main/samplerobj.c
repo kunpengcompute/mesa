@@ -39,7 +39,19 @@
 #include "main/samplerobj.h"
 #include "main/texturebindless.h"
 #include "util/u_memory.h"
+#include "api_exec_decl.h"
 
+/* Take advantage of how the enums are defined. */
+const enum pipe_tex_wrap wrap_to_gallium_table[32] = {
+   [GL_REPEAT & 0x1f] = PIPE_TEX_WRAP_REPEAT,
+   [GL_CLAMP & 0x1f] = PIPE_TEX_WRAP_CLAMP,
+   [GL_CLAMP_TO_EDGE & 0x1f] = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+   [GL_CLAMP_TO_BORDER & 0x1f] = PIPE_TEX_WRAP_CLAMP_TO_BORDER,
+   [GL_MIRRORED_REPEAT & 0x1f] = PIPE_TEX_WRAP_MIRROR_REPEAT,
+   [GL_MIRROR_CLAMP_EXT & 0x1f] = PIPE_TEX_WRAP_MIRROR_CLAMP,
+   [GL_MIRROR_CLAMP_TO_EDGE & 0x1f] = PIPE_TEX_WRAP_MIRROR_CLAMP_TO_EDGE,
+   [GL_MIRROR_CLAMP_TO_BORDER_EXT & 0x1f] = PIPE_TEX_WRAP_MIRROR_CLAMP_TO_BORDER,
+};
 
 struct gl_sampler_object *
 _mesa_lookup_samplerobj(struct gl_context *ctx, GLuint name)
@@ -63,9 +75,8 @@ delete_sampler_object(struct gl_context *ctx,
                       struct gl_sampler_object *sampObj)
 {
    _mesa_delete_sampler_handles(ctx, sampObj);
-   simple_mtx_destroy(&sampObj->Mutex);
    free(sampObj->Label);
-   free(sampObj);
+   FREE(sampObj);
 }
 
 /**
@@ -80,31 +91,22 @@ _mesa_reference_sampler_object_(struct gl_context *ctx,
 
    if (*ptr) {
       /* Unreference the old sampler */
-      GLboolean deleteFlag = GL_FALSE;
       struct gl_sampler_object *oldSamp = *ptr;
 
-      simple_mtx_lock(&oldSamp->Mutex);
       assert(oldSamp->RefCount > 0);
-      oldSamp->RefCount--;
-      deleteFlag = (oldSamp->RefCount == 0);
-      simple_mtx_unlock(&oldSamp->Mutex);
 
-      if (deleteFlag)
+      if (p_atomic_dec_zero(&oldSamp->RefCount))
          delete_sampler_object(ctx, oldSamp);
-
-      *ptr = NULL;
    }
-   assert(!*ptr);
 
    if (samp) {
       /* reference new sampler */
-      simple_mtx_lock(&samp->Mutex);
       assert(samp->RefCount > 0);
 
-      samp->RefCount++;
-      *ptr = samp;
-      simple_mtx_unlock(&samp->Mutex);
+      p_atomic_inc(&samp->RefCount);
    }
+
+   *ptr = samp;
 }
 
 
@@ -114,37 +116,48 @@ _mesa_reference_sampler_object_(struct gl_context *ctx,
 static void
 _mesa_init_sampler_object(struct gl_sampler_object *sampObj, GLuint name)
 {
-   simple_mtx_init(&sampObj->Mutex, mtx_plain);
    sampObj->Name = name;
    sampObj->RefCount = 1;
    sampObj->Attrib.WrapS = GL_REPEAT;
    sampObj->Attrib.WrapT = GL_REPEAT;
    sampObj->Attrib.WrapR = GL_REPEAT;
+   sampObj->Attrib.state.wrap_s = PIPE_TEX_WRAP_REPEAT;
+   sampObj->Attrib.state.wrap_t = PIPE_TEX_WRAP_REPEAT;
+   sampObj->Attrib.state.wrap_r = PIPE_TEX_WRAP_REPEAT;
    sampObj->Attrib.MinFilter = GL_NEAREST_MIPMAP_LINEAR;
    sampObj->Attrib.MagFilter = GL_LINEAR;
-   sampObj->Attrib.BorderColor.f[0] = 0.0;
-   sampObj->Attrib.BorderColor.f[1] = 0.0;
-   sampObj->Attrib.BorderColor.f[2] = 0.0;
-   sampObj->Attrib.BorderColor.f[3] = 0.0;
+   sampObj->Attrib.state.min_img_filter = PIPE_TEX_FILTER_NEAREST;
+   sampObj->Attrib.state.min_mip_filter = PIPE_TEX_MIPFILTER_LINEAR;
+   sampObj->Attrib.state.mag_img_filter = PIPE_TEX_FILTER_LINEAR;
+   sampObj->Attrib.state.border_color.f[0] = 0;
+   sampObj->Attrib.state.border_color.f[1] = 0;
+   sampObj->Attrib.state.border_color.f[2] = 0;
+   sampObj->Attrib.state.border_color.f[3] = 0;
+   _mesa_update_is_border_color_nonzero(sampObj);
    sampObj->Attrib.MinLod = -1000.0F;
    sampObj->Attrib.MaxLod = 1000.0F;
+   sampObj->Attrib.state.min_lod = 0; /* Gallium doesn't allow negative numbers */
+   sampObj->Attrib.state.max_lod = 1000;
    sampObj->Attrib.LodBias = 0.0F;
+   sampObj->Attrib.state.lod_bias = 0;
    sampObj->Attrib.MaxAnisotropy = 1.0F;
+   sampObj->Attrib.state.max_anisotropy = 0; /* Gallium uses 0 instead of 1. */
    sampObj->Attrib.CompareMode = GL_NONE;
    sampObj->Attrib.CompareFunc = GL_LEQUAL;
+   sampObj->Attrib.state.compare_mode = PIPE_TEX_COMPARE_NONE;
+   sampObj->Attrib.state.compare_func = PIPE_FUNC_LEQUAL;
    sampObj->Attrib.sRGBDecode = GL_DECODE_EXT;
    sampObj->Attrib.CubeMapSeamless = GL_FALSE;
+   sampObj->Attrib.state.seamless_cube_map = false;
    sampObj->Attrib.ReductionMode = GL_WEIGHTED_AVERAGE_EXT;
+   sampObj->Attrib.state.reduction_mode = PIPE_TEX_REDUCTION_WEIGHTED_AVERAGE;
    sampObj->HandleAllocated = GL_FALSE;
 
    /* GL_ARB_bindless_texture */
    _mesa_init_sampler_handles(sampObj);
 }
 
-/**
- * Fallback for ctx->Driver.NewSamplerObject();
- */
-struct gl_sampler_object *
+static struct gl_sampler_object *
 _mesa_new_sampler_object(struct gl_context *ctx, GLuint name)
 {
    struct gl_sampler_object *sampObj = CALLOC_STRUCT(gl_sampler_object);
@@ -171,7 +184,7 @@ create_samplers(struct gl_context *ctx, GLsizei count, GLuint *samplers,
    for (i = 0; i < count; i++) {
       struct gl_sampler_object *sampObj;
 
-      sampObj = ctx->Driver.NewSamplerObject(ctx, samplers[i]);
+      sampObj = _mesa_new_sampler_object(ctx, samplers[i]);
       if (!sampObj) {
          _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", caller);
@@ -492,9 +505,8 @@ validate_texture_wrap_mode(struct gl_context *ctx, GLenum wrap)
    case GL_CLAMP_TO_EDGE:
    case GL_REPEAT:
    case GL_MIRRORED_REPEAT:
-      return GL_TRUE;
    case GL_CLAMP_TO_BORDER:
-      return e->ARB_texture_border_clamp;
+      return GL_TRUE;
    case GL_MIRROR_CLAMP_EXT:
       return e->ATI_texture_mirror_once || e->EXT_texture_mirror_clamp;
    case GL_MIRROR_CLAMP_TO_EDGE_EXT:
@@ -514,23 +526,6 @@ static inline void
 flush(struct gl_context *ctx)
 {
    FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT, GL_TEXTURE_BIT);
-}
-
-void
-_mesa_set_sampler_wrap(struct gl_context *ctx, struct gl_sampler_object *samp,
-                       GLenum s, GLenum t, GLenum r)
-{
-   assert(validate_texture_wrap_mode(ctx, s));
-   assert(validate_texture_wrap_mode(ctx, t));
-   assert(validate_texture_wrap_mode(ctx, r));
-
-   if (samp->Attrib.WrapS == s && samp->Attrib.WrapT == t && samp->Attrib.WrapR == r)
-      return;
-
-   flush(ctx);
-   samp->Attrib.WrapS = s;
-   samp->Attrib.WrapT = t;
-   samp->Attrib.WrapR = r;
 }
 
 #define INVALID_PARAM 0x100
@@ -554,6 +549,8 @@ set_sampler_wrap_s(struct gl_context *ctx, struct gl_sampler_object *samp,
       if (is_wrap_gl_clamp(samp->Attrib.WrapS) != is_wrap_gl_clamp(param))
          ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
       samp->Attrib.WrapS = param;
+      samp->Attrib.state.wrap_s = wrap_to_gallium(param);
+      _mesa_lower_gl_clamp(ctx, samp);
       return GL_TRUE;
    }
    return INVALID_PARAM;
@@ -571,6 +568,8 @@ set_sampler_wrap_t(struct gl_context *ctx, struct gl_sampler_object *samp,
       if (is_wrap_gl_clamp(samp->Attrib.WrapT) != is_wrap_gl_clamp(param))
          ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
       samp->Attrib.WrapT = param;
+      samp->Attrib.state.wrap_t = wrap_to_gallium(param);
+      _mesa_lower_gl_clamp(ctx, samp);
       return GL_TRUE;
    }
    return INVALID_PARAM;
@@ -588,31 +587,11 @@ set_sampler_wrap_r(struct gl_context *ctx, struct gl_sampler_object *samp,
       if (is_wrap_gl_clamp(samp->Attrib.WrapR) != is_wrap_gl_clamp(param))
          ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
       samp->Attrib.WrapR = param;
+      samp->Attrib.state.wrap_r = wrap_to_gallium(param);
+      _mesa_lower_gl_clamp(ctx, samp);
       return GL_TRUE;
    }
    return INVALID_PARAM;
-}
-
-void
-_mesa_set_sampler_filters(struct gl_context *ctx,
-                          struct gl_sampler_object *samp,
-                          GLenum min_filter, GLenum mag_filter)
-{
-   assert(min_filter == GL_NEAREST ||
-          min_filter == GL_LINEAR ||
-          min_filter == GL_NEAREST_MIPMAP_NEAREST ||
-          min_filter == GL_LINEAR_MIPMAP_NEAREST ||
-          min_filter == GL_NEAREST_MIPMAP_LINEAR ||
-          min_filter == GL_LINEAR_MIPMAP_LINEAR);
-   assert(mag_filter == GL_NEAREST ||
-          mag_filter == GL_LINEAR);
-
-   if (samp->Attrib.MinFilter == min_filter && samp->Attrib.MagFilter == mag_filter)
-      return;
-
-   flush(ctx);
-   samp->Attrib.MinFilter = min_filter;
-   samp->Attrib.MagFilter = mag_filter;
 }
 
 static GLuint
@@ -631,6 +610,9 @@ set_sampler_min_filter(struct gl_context *ctx, struct gl_sampler_object *samp,
    case GL_LINEAR_MIPMAP_LINEAR:
       flush(ctx);
       samp->Attrib.MinFilter = param;
+      samp->Attrib.state.min_img_filter = filter_to_gallium(param);
+      samp->Attrib.state.min_mip_filter = mipfilter_to_gallium(param);
+      _mesa_lower_gl_clamp(ctx, samp);
       return GL_TRUE;
    default:
       return INVALID_PARAM;
@@ -650,6 +632,8 @@ set_sampler_mag_filter(struct gl_context *ctx, struct gl_sampler_object *samp,
    case GL_LINEAR:
       flush(ctx);
       samp->Attrib.MagFilter = param;
+      samp->Attrib.state.mag_img_filter = filter_to_gallium(param);
+      _mesa_lower_gl_clamp(ctx, samp);
       return GL_TRUE;
    default:
       return INVALID_PARAM;
@@ -666,6 +650,7 @@ set_sampler_lod_bias(struct gl_context *ctx, struct gl_sampler_object *samp,
 
    flush(ctx);
    samp->Attrib.LodBias = param;
+   samp->Attrib.state.lod_bias = util_quantize_lod_bias(param);
    return GL_TRUE;
 }
 
@@ -676,10 +661,8 @@ set_sampler_border_colorf(struct gl_context *ctx,
                           const GLfloat params[4])
 {
    flush(ctx);
-   samp->Attrib.BorderColor.f[RCOMP] = params[0];
-   samp->Attrib.BorderColor.f[GCOMP] = params[1];
-   samp->Attrib.BorderColor.f[BCOMP] = params[2];
-   samp->Attrib.BorderColor.f[ACOMP] = params[3];
+   memcpy(samp->Attrib.state.border_color.f, params, 4 * sizeof(float));
+   _mesa_update_is_border_color_nonzero(samp);
    return GL_TRUE;
 }
 
@@ -690,10 +673,8 @@ set_sampler_border_colori(struct gl_context *ctx,
                           const GLint params[4])
 {
    flush(ctx);
-   samp->Attrib.BorderColor.i[RCOMP] = params[0];
-   samp->Attrib.BorderColor.i[GCOMP] = params[1];
-   samp->Attrib.BorderColor.i[BCOMP] = params[2];
-   samp->Attrib.BorderColor.i[ACOMP] = params[3];
+   memcpy(samp->Attrib.state.border_color.i, params, 4 * sizeof(float));
+   _mesa_update_is_border_color_nonzero(samp);
    return GL_TRUE;
 }
 
@@ -704,10 +685,8 @@ set_sampler_border_colorui(struct gl_context *ctx,
                            const GLuint params[4])
 {
    flush(ctx);
-   samp->Attrib.BorderColor.ui[RCOMP] = params[0];
-   samp->Attrib.BorderColor.ui[GCOMP] = params[1];
-   samp->Attrib.BorderColor.ui[BCOMP] = params[2];
-   samp->Attrib.BorderColor.ui[ACOMP] = params[3];
+   memcpy(samp->Attrib.state.border_color.ui, params, 4 * sizeof(float));
+   _mesa_update_is_border_color_nonzero(samp);
    return GL_TRUE;
 }
 
@@ -721,6 +700,8 @@ set_sampler_min_lod(struct gl_context *ctx, struct gl_sampler_object *samp,
 
    flush(ctx);
    samp->Attrib.MinLod = param;
+   samp->Attrib.state.min_lod = MAX2(param, 0.0f); /* only positive */
+
    return GL_TRUE;
 }
 
@@ -734,6 +715,7 @@ set_sampler_max_lod(struct gl_context *ctx, struct gl_sampler_object *samp,
 
    flush(ctx);
    samp->Attrib.MaxLod = param;
+   samp->Attrib.state.max_lod = param;
    return GL_TRUE;
 }
 
@@ -788,6 +770,7 @@ set_sampler_compare_func(struct gl_context *ctx,
    case GL_NEVER:
       flush(ctx);
       samp->Attrib.CompareFunc = param;
+      samp->Attrib.state.compare_func = func_to_gallium(param);
       return GL_TRUE;
    default:
       return INVALID_PARAM;
@@ -811,6 +794,9 @@ set_sampler_max_anisotropy(struct gl_context *ctx,
    flush(ctx);
    /* clamp to max, that's what NVIDIA does */
    samp->Attrib.MaxAnisotropy = MIN2(param, ctx->Const.MaxTextureMaxAnisotropy);
+   /* gallium sets 0 for 1 */
+   samp->Attrib.state.max_anisotropy = samp->Attrib.MaxAnisotropy == 1 ?
+                                          0 : samp->Attrib.MaxAnisotropy;
    return GL_TRUE;
 }
 
@@ -831,17 +817,8 @@ set_sampler_cube_map_seamless(struct gl_context *ctx,
 
    flush(ctx);
    samp->Attrib.CubeMapSeamless = param;
+   samp->Attrib.state.seamless_cube_map = param;
    return GL_TRUE;
-}
-
-void
-_mesa_set_sampler_srgb_decode(struct gl_context *ctx,
-                              struct gl_sampler_object *samp, GLenum param)
-{
-   assert(param == GL_DECODE_EXT || param == GL_SKIP_DECODE_EXT);
-
-   flush(ctx);
-   samp->Attrib.sRGBDecode = param;
 }
 
 static GLuint
@@ -889,6 +866,7 @@ set_sampler_reduction_mode(struct gl_context *ctx,
 
    flush(ctx);
    samp->Attrib.ReductionMode = param;
+   samp->Attrib.state.reduction_mode = reduction_to_gallium(param);
    return GL_TRUE;
 }
 
@@ -1513,12 +1491,10 @@ _mesa_GetSamplerParameteriv(GLuint sampler, GLenum pname, GLint *params)
       *params = lroundf(sampObj->Attrib.MaxAnisotropy);
       break;
    case GL_TEXTURE_BORDER_COLOR:
-      if (!ctx->Extensions.ARB_texture_border_clamp)
-         goto invalid_pname;
-      params[0] = FLOAT_TO_INT(sampObj->Attrib.BorderColor.f[0]);
-      params[1] = FLOAT_TO_INT(sampObj->Attrib.BorderColor.f[1]);
-      params[2] = FLOAT_TO_INT(sampObj->Attrib.BorderColor.f[2]);
-      params[3] = FLOAT_TO_INT(sampObj->Attrib.BorderColor.f[3]);
+      params[0] = FLOAT_TO_INT(sampObj->Attrib.state.border_color.f[0]);
+      params[1] = FLOAT_TO_INT(sampObj->Attrib.state.border_color.f[1]);
+      params[2] = FLOAT_TO_INT(sampObj->Attrib.state.border_color.f[2]);
+      params[3] = FLOAT_TO_INT(sampObj->Attrib.state.border_color.f[3]);
       break;
    case GL_TEXTURE_CUBE_MAP_SEAMLESS:
       if (!ctx->Extensions.AMD_seamless_cubemap_per_texture)
@@ -1593,10 +1569,10 @@ _mesa_GetSamplerParameterfv(GLuint sampler, GLenum pname, GLfloat *params)
       *params = sampObj->Attrib.MaxAnisotropy;
       break;
    case GL_TEXTURE_BORDER_COLOR:
-      params[0] = sampObj->Attrib.BorderColor.f[0];
-      params[1] = sampObj->Attrib.BorderColor.f[1];
-      params[2] = sampObj->Attrib.BorderColor.f[2];
-      params[3] = sampObj->Attrib.BorderColor.f[3];
+      params[0] = sampObj->Attrib.state.border_color.f[0];
+      params[1] = sampObj->Attrib.state.border_color.f[1];
+      params[2] = sampObj->Attrib.state.border_color.f[2];
+      params[3] = sampObj->Attrib.state.border_color.f[3];
       break;
    case GL_TEXTURE_CUBE_MAP_SEAMLESS:
       if (!ctx->Extensions.AMD_seamless_cubemap_per_texture)
@@ -1671,10 +1647,10 @@ _mesa_GetSamplerParameterIiv(GLuint sampler, GLenum pname, GLint *params)
       *params = (GLint) sampObj->Attrib.MaxAnisotropy;
       break;
    case GL_TEXTURE_BORDER_COLOR:
-      params[0] = sampObj->Attrib.BorderColor.i[0];
-      params[1] = sampObj->Attrib.BorderColor.i[1];
-      params[2] = sampObj->Attrib.BorderColor.i[2];
-      params[3] = sampObj->Attrib.BorderColor.i[3];
+      params[0] = sampObj->Attrib.state.border_color.i[0];
+      params[1] = sampObj->Attrib.state.border_color.i[1];
+      params[2] = sampObj->Attrib.state.border_color.i[2];
+      params[3] = sampObj->Attrib.state.border_color.i[3];
       break;
    case GL_TEXTURE_CUBE_MAP_SEAMLESS:
       if (!ctx->Extensions.AMD_seamless_cubemap_per_texture)
@@ -1749,10 +1725,10 @@ _mesa_GetSamplerParameterIuiv(GLuint sampler, GLenum pname, GLuint *params)
       *params = (GLuint) sampObj->Attrib.MaxAnisotropy;
       break;
    case GL_TEXTURE_BORDER_COLOR:
-      params[0] = sampObj->Attrib.BorderColor.ui[0];
-      params[1] = sampObj->Attrib.BorderColor.ui[1];
-      params[2] = sampObj->Attrib.BorderColor.ui[2];
-      params[3] = sampObj->Attrib.BorderColor.ui[3];
+      params[0] = sampObj->Attrib.state.border_color.ui[0];
+      params[1] = sampObj->Attrib.state.border_color.ui[1];
+      params[2] = sampObj->Attrib.state.border_color.ui[2];
+      params[3] = sampObj->Attrib.state.border_color.ui[3];
       break;
    case GL_TEXTURE_CUBE_MAP_SEAMLESS:
       if (!ctx->Extensions.AMD_seamless_cubemap_per_texture)
@@ -1778,11 +1754,4 @@ _mesa_GetSamplerParameterIuiv(GLuint sampler, GLenum pname, GLuint *params)
 invalid_pname:
    _mesa_error(ctx, GL_INVALID_ENUM, "glGetSamplerParameterIuiv(pname=%s)",
                _mesa_enum_to_string(pname));
-}
-
-
-void
-_mesa_init_sampler_object_functions(struct dd_function_table *driver)
-{
-   driver->NewSamplerObject = _mesa_new_sampler_object;
 }

@@ -268,6 +268,16 @@ FreeScreenConfigs(struct glx_display * priv)
    priv->screens = NULL;
 }
 
+#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
+static void
+free_zombie_glx_drawable(struct set_entry *entry)
+{
+   __GLXDRIdrawable *pdraw = (__GLXDRIdrawable *)entry->key;
+
+   pdraw->destroyDrawable(pdraw);
+}
+#endif
+
 static void
 glx_display_free(struct glx_display *priv)
 {
@@ -278,6 +288,11 @@ glx_display_free(struct glx_display *priv)
       gc->vtable->destroy(gc);
       __glXSetCurrentContextNull();
    }
+
+   /* Needs to be done before free screen. */
+#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
+   _mesa_set_destroy(priv->zombieGLXDrawable, free_zombie_glx_drawable);
+#endif
 
    FreeScreenConfigs(priv);
 
@@ -612,26 +627,20 @@ __glXInitializeVisualConfigFromTags(struct glx_config * config, int count,
          if (fbconfig_style_tags)
             bp++;
          break;
+      case GLX_FLOAT_COMPONENTS_NV:
+         config->floatComponentsNV = *bp++;
+         break;
       case None:
          i = count;
          break;
       default: {
             long int tagvalue = *bp++;
-            DebugMessageF("WARNING: unknown GLX tag from server: "
+            DebugMessageF("WARNING: unknown fbconfig attribute from server: "
                           "tag 0x%lx value 0x%lx\n", tag, tagvalue);
             break;
          }
       }
    }
-
-   /* The GLX_ARB_fbconfig_float spec says:
-    *
-    *     "Note that floating point rendering is only supported for
-    *     GLXPbuffer drawables."
-    */
-   if (config->renderType &
-       (GLX_RGBA_FLOAT_BIT_ARB|GLX_RGBA_UNSIGNED_FLOAT_BIT_EXT))
-      config->drawableType &= GLX_PBUFFER_BIT;
 }
 
 static struct glx_config *
@@ -861,6 +870,7 @@ AllocAndFetchScreenConfigs(Display * dpy, struct glx_display * priv)
  _X_HIDDEN struct glx_display *
 __glXInitialize(Display * dpy)
 {
+   XExtCodes *codes;
    struct glx_display *dpyPriv, *d;
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
    Bool glx_direct, glx_accel;
@@ -883,8 +893,13 @@ __glXInitialize(Display * dpy)
    if (!dpyPriv)
       return NULL;
 
-   dpyPriv->codes = *XInitExtension(dpy, __glXExtensionName);
+   codes = XInitExtension(dpy, __glXExtensionName);
+   if (!codes) {
+      free(dpyPriv);
+      return NULL;
+   }
 
+   dpyPriv->codes = *codes;
    dpyPriv->dpy = dpy;
 
    /* This GLX implementation requires X_GLXQueryExtensionsString
@@ -911,8 +926,13 @@ __glXInitialize(Display * dpy)
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
    glx_direct = !env_var_as_boolean("LIBGL_ALWAYS_INDIRECT", false);
    glx_accel = !env_var_as_boolean("LIBGL_ALWAYS_SOFTWARE", false);
+   Bool zink;
+   const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
+   zink = env && !strcmp(env, "zink");
 
    dpyPriv->drawHash = __glxHashCreate();
+
+   dpyPriv->zombieGLXDrawable = _mesa_pointer_set_create(NULL);
 
 #ifndef GLX_USE_APPLEGL
    /* Set the logger before the *CreateDisplay functions. */
@@ -925,7 +945,7 @@ __glXInitialize(Display * dpy)
     ** (e.g., those called in AllocAndFetchScreenConfigs).
     */
 #if defined(GLX_USE_DRM)
-   if (glx_direct && glx_accel) {
+   if (glx_direct && glx_accel && !zink) {
 #if defined(HAVE_DRI3)
       if (!env_var_as_boolean("LIBGL_DRI3_DISABLE", false))
          dpyPriv->dri3Display = dri3_create_display(dpy);
@@ -935,7 +955,7 @@ __glXInitialize(Display * dpy)
    }
 #endif /* GLX_USE_DRM */
    if (glx_direct)
-      dpyPriv->driswDisplay = driswCreateDisplay(dpy);
+      dpyPriv->driswDisplay = driswCreateDisplay(dpy, zink);
 #endif /* GLX_DIRECT_RENDERING && !GLX_USE_APPLEGL */
 
 #ifdef GLX_USE_APPLEGL

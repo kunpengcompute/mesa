@@ -1,5 +1,5 @@
 /*
- * Copyright © 2021 Raspberry Pi
+ * Copyright © 2021 Raspberry Pi Ltd
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -29,11 +29,18 @@
  */
 uint32_t
 v3d_csd_choose_workgroups_per_supergroup(struct v3d_device_info *devinfo,
+                                         bool has_subgroups,
                                          bool has_tsy_barrier,
                                          uint32_t threads,
                                          uint32_t num_wgs,
                                          uint32_t wg_size)
 {
+   /* FIXME: subgroups may restrict supergroup packing. For now, we disable it
+    * completely if the shader uses subgroups.
+    */
+   if (has_subgroups)
+           return 1;
+
    /* Compute maximum number of batches in a supergroup for this workgroup size.
     * Each batch is 16 elements, and we can have up to 16 work groups in a
     * supergroup:
@@ -78,4 +85,40 @@ v3d_csd_choose_workgroups_per_supergroup(struct v3d_device_info *devinfo,
    }
 
    return best_wgs_per_sg;
+}
+
+void
+v3d_choose_tile_size(uint32_t color_attachment_count, uint32_t max_color_bpp,
+                     bool msaa, bool double_buffer,
+                     uint32_t *width, uint32_t *height)
+{
+   static const uint8_t tile_sizes[] = {
+      64, 64,
+      64, 32,
+      32, 32,
+      32, 16,
+      16, 16,
+      16,  8,
+       8,  8
+   };
+
+   uint32_t idx = 0;
+   if (color_attachment_count > 2)
+      idx += 2;
+   else if (color_attachment_count > 1)
+      idx += 1;
+
+   /* MSAA and double-buffer are mutually exclusive */
+   assert(!msaa || !double_buffer);
+   if (msaa)
+      idx += 2;
+   else if (double_buffer)
+      idx += 1;
+
+   idx += max_color_bpp;
+
+   assert(idx < ARRAY_SIZE(tile_sizes) / 2);
+
+   *width = tile_sizes[idx * 2];
+   *height = tile_sizes[idx * 2 + 1];
 }

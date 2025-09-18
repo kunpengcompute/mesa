@@ -858,7 +858,8 @@ analyze_expression(const nir_alu_instr *instr, unsigned src,
       break;
    }
 
-   case nir_op_fmul: {
+   case nir_op_fmul:
+   case nir_op_fmulz: {
       const struct ssa_result_range left =
          analyze_expression(alu, 0, ht, nir_alu_src_type(alu, 0));
       const struct ssa_result_range right =
@@ -878,14 +879,19 @@ analyze_expression(const nir_alu_instr *instr, unsigned src,
       } else
          r.range = fmul_table[left.range][right.range];
 
-      /* Mulitpliation produces NaN for X * NaN and for 0 * ±Inf.  If both
-       * operands are numbers and either both are finite or one is finite and
-       * the other cannot be zero, then the result must be a number.
-       */
-      r.is_a_number = (left.is_a_number && right.is_a_number) &&
-         ((left.is_finite && right.is_finite) ||
-          (!is_not_zero(left.range) && right.is_finite) ||
-          (left.is_finite && !is_not_zero(right.range)));
+      if (alu->op == nir_op_fmul) {
+         /* Mulitpliation produces NaN for X * NaN and for 0 * ±Inf.  If both
+          * operands are numbers and either both are finite or one is finite and
+          * the other cannot be zero, then the result must be a number.
+          */
+         r.is_a_number = (left.is_a_number && right.is_a_number) &&
+            ((left.is_finite && right.is_finite) ||
+             (!is_not_zero(left.range) && right.is_finite) ||
+             (left.is_finite && !is_not_zero(right.range)));
+      } else {
+         /* nir_op_fmulz: unlike nir_op_fmul, 0 * ±Inf is a number. */
+         r.is_a_number = left.is_a_number && right.is_a_number;
+      }
 
       break;
    }
@@ -1217,8 +1223,8 @@ search_phi_bcsel(nir_ssa_scalar scalar, nir_ssa_scalar *buf, unsigned buf_size, 
          unsigned total_added = 0;
          nir_foreach_phi_src(src, phi) {
             num_sources_left--;
-            unsigned added = search_phi_bcsel(
-               (nir_ssa_scalar){src->src.ssa, 0}, buf + total_added, buf_size - num_sources_left, visited);
+            unsigned added = search_phi_bcsel(nir_get_ssa_scalar(src->src.ssa, 0),
+               buf + total_added, buf_size - num_sources_left, visited);
             assert(added <= buf_size);
             buf_size -= added;
             total_added += added;
@@ -1256,9 +1262,9 @@ lookup_input(nir_shader *shader, unsigned driver_location)
 static const nir_unsigned_upper_bound_config default_ub_config = {
    .min_subgroup_size = 1u,
    .max_subgroup_size = UINT16_MAX,
-   .max_work_group_invocations = UINT16_MAX,
-   .max_work_group_count = {UINT16_MAX, UINT16_MAX, UINT16_MAX},
-   .max_work_group_size = {UINT16_MAX, UINT16_MAX, UINT16_MAX},
+   .max_workgroup_invocations = UINT16_MAX,
+   .max_workgroup_count = {UINT16_MAX, UINT16_MAX, UINT16_MAX},
+   .max_workgroup_size = {UINT16_MAX, UINT16_MAX, UINT16_MAX},
    .vertex_attrib_max = {
       UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
       UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX,
@@ -1292,34 +1298,41 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(scalar.def->parent_instr);
       switch (intrin->intrinsic) {
       case nir_intrinsic_load_local_invocation_index:
-         if (shader->info.stage != MESA_SHADER_COMPUTE ||
-             shader->info.cs.local_size_variable) {
-            res = config->max_work_group_invocations - 1;
+         /* The local invocation index is used under the hood by RADV for
+          * some non-compute-like shaders (eg. LS and NGG). These technically
+          * run in workgroups on the HW, even though this fact is not exposed
+          * by the API.
+          * They can safely use the same code path here as variable sized
+          * compute-like shader stages.
+          */
+         if (!gl_shader_stage_uses_workgroup(shader->info.stage) ||
+             shader->info.workgroup_size_variable) {
+            res = config->max_workgroup_invocations - 1;
          } else {
-            res = (shader->info.cs.local_size[0] *
-                   shader->info.cs.local_size[1] *
-                   shader->info.cs.local_size[2]) - 1u;
+            res = (shader->info.workgroup_size[0] *
+                   shader->info.workgroup_size[1] *
+                   shader->info.workgroup_size[2]) - 1u;
          }
          break;
       case nir_intrinsic_load_local_invocation_id:
-         if (shader->info.cs.local_size_variable)
-            res = config->max_work_group_size[scalar.comp] - 1u;
+         if (shader->info.workgroup_size_variable)
+            res = config->max_workgroup_size[scalar.comp] - 1u;
          else
-            res = shader->info.cs.local_size[scalar.comp] - 1u;
+            res = shader->info.workgroup_size[scalar.comp] - 1u;
          break;
-      case nir_intrinsic_load_work_group_id:
-         res = config->max_work_group_count[scalar.comp] - 1u;
+      case nir_intrinsic_load_workgroup_id:
+         res = config->max_workgroup_count[scalar.comp] - 1u;
          break;
-      case nir_intrinsic_load_num_work_groups:
-         res = config->max_work_group_count[scalar.comp];
+      case nir_intrinsic_load_num_workgroups:
+         res = config->max_workgroup_count[scalar.comp];
          break;
       case nir_intrinsic_load_global_invocation_id:
-         if (shader->info.cs.local_size_variable) {
-            res = mul_clamp(config->max_work_group_size[scalar.comp],
-                            config->max_work_group_count[scalar.comp]) - 1u;
+         if (shader->info.workgroup_size_variable) {
+            res = mul_clamp(config->max_workgroup_size[scalar.comp],
+                            config->max_workgroup_count[scalar.comp]) - 1u;
          } else {
-            res = (shader->info.cs.local_size[scalar.comp] *
-                   config->max_work_group_count[scalar.comp]) - 1u;
+            res = (shader->info.workgroup_size[scalar.comp] *
+                   config->max_workgroup_count[scalar.comp]) - 1u;
          }
          break;
       case nir_intrinsic_load_invocation_id:
@@ -1330,21 +1343,31 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
          break;
       case nir_intrinsic_load_subgroup_invocation:
       case nir_intrinsic_first_invocation:
-      case nir_intrinsic_mbcnt_amd:
          res = config->max_subgroup_size - 1;
          break;
+      case nir_intrinsic_mbcnt_amd: {
+         uint32_t src0 = config->max_subgroup_size - 1;
+         uint32_t src1 = nir_unsigned_upper_bound(shader, range_ht, nir_get_ssa_scalar(intrin->src[1].ssa, 0), config);
+
+         if (src0 + src1 < src0)
+            res = max; /* overflow */
+         else
+            res = src0 + src1;
+         break;
+      }
       case nir_intrinsic_load_subgroup_size:
          res = config->max_subgroup_size;
          break;
       case nir_intrinsic_load_subgroup_id:
       case nir_intrinsic_load_num_subgroups: {
-         uint32_t work_group_size = config->max_work_group_invocations;
-         if (!shader->info.cs.local_size_variable) {
-            work_group_size = shader->info.cs.local_size[0] *
-                              shader->info.cs.local_size[1] *
-                              shader->info.cs.local_size[2];
+         uint32_t workgroup_size = config->max_workgroup_invocations;
+         if (gl_shader_stage_uses_workgroup(shader->info.stage) &&
+             !shader->info.workgroup_size_variable) {
+            workgroup_size = shader->info.workgroup_size[0] *
+                             shader->info.workgroup_size[1] *
+                             shader->info.workgroup_size[2];
          }
-         res = (work_group_size + config->min_subgroup_size - 1) / config->min_subgroup_size;
+         res = DIV_ROUND_UP(workgroup_size, config->min_subgroup_size);
          if (intrin->intrinsic == nir_intrinsic_load_subgroup_id)
             res--;
          break;
@@ -1365,7 +1388,7 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       case nir_intrinsic_exclusive_scan: {
          nir_op op = nir_intrinsic_reduction_op(intrin);
          if (op == nir_op_umin || op == nir_op_umax || op == nir_op_imin || op == nir_op_imax)
-            res = nir_unsigned_upper_bound(shader, range_ht, (nir_ssa_scalar){intrin->src[0].ssa, 0}, config);
+            res = nir_unsigned_upper_bound(shader, range_ht, nir_get_ssa_scalar(intrin->src[0].ssa, 0), config);
          break;
       }
       case nir_intrinsic_read_first_invocation:
@@ -1380,18 +1403,18 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       case nir_intrinsic_quad_swap_diagonal:
       case nir_intrinsic_quad_swizzle_amd:
       case nir_intrinsic_masked_swizzle_amd:
-         res = nir_unsigned_upper_bound(shader, range_ht, (nir_ssa_scalar){intrin->src[0].ssa, 0}, config);
+         res = nir_unsigned_upper_bound(shader, range_ht, nir_get_ssa_scalar(intrin->src[0].ssa, 0), config);
          break;
       case nir_intrinsic_write_invocation_amd: {
-         uint32_t src0 = nir_unsigned_upper_bound(shader, range_ht, (nir_ssa_scalar){intrin->src[0].ssa, 0}, config);
-         uint32_t src1 = nir_unsigned_upper_bound(shader, range_ht, (nir_ssa_scalar){intrin->src[1].ssa, 0}, config);
+         uint32_t src0 = nir_unsigned_upper_bound(shader, range_ht, nir_get_ssa_scalar(intrin->src[0].ssa, 0), config);
+         uint32_t src1 = nir_unsigned_upper_bound(shader, range_ht, nir_get_ssa_scalar(intrin->src[1].ssa, 0), config);
          res = MAX2(src0, src1);
          break;
       }
       case nir_intrinsic_load_tess_rel_patch_id_amd:
       case nir_intrinsic_load_tcs_num_patches_amd:
          /* Very generous maximum: TCS/TES executed by largest possible workgroup */
-         res = config->max_work_group_invocations / MAX2(shader->info.tess.tcs_vertices_out, 1u);
+         res = config->max_workgroup_invocations / MAX2(shader->info.tess.tcs_vertices_out, 1u);
          break;
       default:
          break;
@@ -1402,16 +1425,10 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
    }
 
    if (scalar.def->parent_instr->type == nir_instr_type_phi) {
-      bool cyclic = false;
-      nir_foreach_phi_src(src, nir_instr_as_phi(scalar.def->parent_instr)) {
-         if (nir_block_dominates(scalar.def->parent_instr->block, src->pred)) {
-            cyclic = true;
-            break;
-         }
-      }
+      nir_cf_node *prev = nir_cf_node_prev(&scalar.def->parent_instr->block->cf_node);
 
       uint32_t res = 0;
-      if (cyclic) {
+      if (!prev || prev->type == nir_cf_node_block) {
          _mesa_hash_table_insert(range_ht, key, (void*)(uintptr_t)max);
 
          struct set *visited = _mesa_pointer_set_create(NULL);
@@ -1424,7 +1441,7 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       } else {
          nir_foreach_phi_src(src, nir_instr_as_phi(scalar.def->parent_instr)) {
             res = MAX2(res, nir_unsigned_upper_bound(
-               shader, range_ht, (nir_ssa_scalar){src->src.ssa, 0}, config));
+               shader, range_ht, nir_get_ssa_scalar(src->src.ssa, 0), config));
          }
       }
 
@@ -1454,8 +1471,22 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
       case nir_op_b32csel:
       case nir_op_ubfe:
       case nir_op_bfm:
-      case nir_op_f2u32:
       case nir_op_fmul:
+      case nir_op_fmulz:
+      case nir_op_extract_u8:
+      case nir_op_extract_i8:
+      case nir_op_extract_u16:
+      case nir_op_extract_i16:
+         break;
+      case nir_op_u2u1:
+      case nir_op_u2u8:
+      case nir_op_u2u16:
+      case nir_op_u2u32:
+      case nir_op_f2u32:
+         if (nir_ssa_scalar_chase_alu_src(scalar, 0).def->bit_size > 32) {
+            /* If src is >32 bits, return max */
+            return max;
+         }
          break;
       default:
          return max;
@@ -1560,6 +1591,7 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
          }
          break;
       case nir_op_fmul:
+      case nir_op_fmulz:
          /* infinity/NaN starts at 0x7f800000u, negative numbers at 0x80000000 */
          if (src0 < 0x7f800000u && src1 < 0x7f800000u) {
             float src0_f, src1_f;
@@ -1569,6 +1601,27 @@ nir_unsigned_upper_bound(nir_shader *shader, struct hash_table *range_ht,
             float max_f = ceilf(src0_f) * ceilf(src1_f);
             memcpy(&res, &max_f, 4);
          }
+         break;
+      case nir_op_u2u1:
+      case nir_op_u2u8:
+      case nir_op_u2u16:
+      case nir_op_u2u32:
+         res = MIN2(src0, max);
+         break;
+      case nir_op_sad_u8x4:
+         res = src2 + 4 * 255;
+         break;
+      case nir_op_extract_u8:
+         res = MIN2(src0, UINT8_MAX);
+         break;
+      case nir_op_extract_i8:
+         res = (src0 >= 0x80) ? max : MIN2(src0, INT8_MAX);
+         break;
+      case nir_op_extract_u16:
+         res = MIN2(src0, UINT16_MAX);
+         break;
+      case nir_op_extract_i16:
+         res = (src0 >= 0x8000) ? max : MIN2(src0, INT16_MAX);
          break;
       default:
          res = max;
@@ -1625,7 +1678,7 @@ nir_addition_might_overflow(nir_shader *shader, struct hash_table *range_ht,
 }
 
 static uint64_t
-ssa_def_bits_used(nir_ssa_def *def, int recur)
+ssa_def_bits_used(const nir_ssa_def *def, int recur)
 {
    uint64_t bits_used = 0;
    uint64_t all_bits = BITFIELD64_MASK(def->bit_size);
@@ -1818,7 +1871,7 @@ ssa_def_bits_used(nir_ssa_def *def, int recur)
 }
 
 uint64_t
-nir_ssa_def_bits_used(nir_ssa_def *def)
+nir_ssa_def_bits_used(const nir_ssa_def *def)
 {
    return ssa_def_bits_used(def, 2);
 }

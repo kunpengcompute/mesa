@@ -81,13 +81,8 @@ struct u_log_context;
 #define DBG_COMPUTE		(1 << 9)
 /* gap */
 #define DBG_VM			(1 << 11)
-#define DBG_NO_IR		(1 << 12)
-#define DBG_NO_TGSI		(1 << 13)
-#define DBG_NO_ASM		(1 << 14)
 #define DBG_PREOPT_IR		(1 << 15)
 #define DBG_CHECK_IR		(1 << 16)
-#define DBG_NO_OPT_VARIANT	(1 << 17)
-#define DBG_FS_CORRECT_DERIVS_AFTER_KILL (1 << 18)
 /* gaps */
 #define DBG_TEST_DMA		(1 << 20)
 /* Bits 21-31 are reserved for the r600g driver. */
@@ -99,12 +94,10 @@ struct u_log_context;
 #define DBG_NO_TILING		(1ull << 36)
 #define DBG_SWITCH_ON_EOP	(1ull << 37)
 #define DBG_FORCE_DMA		(1ull << 38)
-#define DBG_PRECOMPILE		(1ull << 39)
 #define DBG_INFO		(1ull << 40)
 #define DBG_NO_WC		(1ull << 41)
 #define DBG_CHECK_VM		(1ull << 42)
 /* gap */
-#define DBG_UNSAFE_MATH		(1ull << 49)
 #define DBG_TEST_VMFAULT_CP	(1ull << 51)
 #define DBG_TEST_VMFAULT_SDMA	(1ull << 52)
 #define DBG_TEST_VMFAULT_SHADER	(1ull << 53)
@@ -167,6 +160,7 @@ struct r600_resource {
 	/* Whether this resource is referenced by bindless handles. */
 	bool				texture_handle_allocated;
 	bool				image_handle_allocated;
+	bool                            compute_global_bo;
 
 	/*
 	 * EG/Cayman only - for RAT operations hw need an immediate buffer
@@ -571,7 +565,7 @@ struct r600_common_context {
 	float				sample_locations_8x[8][2];
 	float				sample_locations_16x[16][2];
 
-	struct pipe_debug_callback	debug;
+	struct util_debug_callback	debug;
 	struct pipe_device_reset_callback device_reset_callback;
 	struct u_log_context		*log;
 
@@ -627,7 +621,7 @@ struct r600_common_context {
 /* r600_buffer_common.c */
 bool r600_rings_is_buffer_referenced(struct r600_common_context *ctx,
 				     struct pb_buffer *buf,
-				     enum radeon_bo_usage usage);
+				     unsigned usage);
 void *r600_buffer_map_sync_with_rings(struct r600_common_context *ctx,
                                       struct r600_resource *resource,
                                       unsigned usage);
@@ -640,6 +634,10 @@ void r600_init_resource_fields(struct r600_common_screen *rscreen,
 			       uint64_t size, unsigned alignment);
 bool r600_alloc_resource(struct r600_common_screen *rscreen,
 			 struct r600_resource *res);
+void r600_buffer_destroy(struct pipe_screen *screen, struct pipe_resource *buf);
+void r600_buffer_flush_region(struct pipe_context *ctx,
+			      struct pipe_transfer *transfer,
+			      const struct pipe_box *rel_box);
 struct pipe_resource *r600_buffer_create(struct pipe_screen *screen,
 					 const struct pipe_resource *templ,
 					 unsigned alignment);
@@ -658,6 +656,14 @@ r600_invalidate_resource(struct pipe_context *ctx,
 void r600_replace_buffer_storage(struct pipe_context *ctx,
 				 struct pipe_resource *dst,
 				 struct pipe_resource *src);
+void *r600_buffer_transfer_map(struct pipe_context *ctx,
+                               struct pipe_resource *resource,
+                               unsigned level,
+                               unsigned usage,
+                               const struct pipe_box *box,
+                               struct pipe_transfer **ptransfer);
+void r600_buffer_transfer_unmap(struct pipe_context *ctx,
+				struct pipe_transfer *transfer);
 
 /* r600_common_pipe.c */
 void r600_gfx_write_event_eop(struct r600_common_context *ctx,
@@ -739,6 +745,7 @@ bool r600_prepare_for_dma_blit(struct r600_common_context *rctx,
 				struct r600_texture *rsrc,
 				unsigned src_level,
 				const struct pipe_box *src_box);
+void r600_texture_destroy(struct pipe_screen *screen, struct pipe_resource *ptex);
 void r600_texture_get_fmask_info(struct r600_common_screen *rscreen,
 				 struct r600_texture *rtex,
 				 unsigned nr_samples,
@@ -769,6 +776,14 @@ void r600_init_context_texture_functions(struct r600_common_context *rctx);
 void eg_resource_alloc_immed(struct r600_common_screen *rscreen,
 			     struct r600_resource *res,
 			     unsigned immed_size);
+void *r600_texture_transfer_map(struct pipe_context *ctx,
+			       struct pipe_resource *texture,
+			       unsigned level,
+			       unsigned usage,
+			       const struct pipe_box *box,
+			       struct pipe_transfer **ptransfer);
+void r600_texture_transfer_unmap(struct pipe_context *ctx,
+				struct pipe_transfer* transfer);
 
 /* r600_viewport.c */
 void evergreen_apply_scissor_bug_workaround(struct r600_common_context *rctx,
@@ -878,7 +893,7 @@ static inline unsigned r600_wavefront_size(enum radeon_family family)
 	}
 }
 
-static inline enum radeon_bo_priority
+static inline unsigned
 r600_get_sampler_view_priority(struct r600_resource *res)
 {
 	if (res->b.b.target == PIPE_BUFFER)

@@ -205,6 +205,12 @@ vl_video_buffer_destroy(struct pipe_video_buffer *buffer)
       pipe_sampler_view_reference(&buf->sampler_view_planes[i], NULL);
       pipe_sampler_view_reference(&buf->sampler_view_components[i], NULL);
       pipe_resource_reference(&buf->resources[i], NULL);
+
+      if (buf->resourceflag == 0) {
+         pipe_resource_reference(&buf->resources[i], NULL);
+      } else {
+         buf->resources[i] = NULL;
+      }
    }
 
    for (i = 0; i < VL_MAX_SURFACES; ++i)
@@ -219,6 +225,7 @@ static struct pipe_sampler_view **
 vl_video_buffer_sampler_view_planes(struct pipe_video_buffer *buffer)
 {
    struct vl_video_buffer *buf = (struct vl_video_buffer *)buffer;
+   unsigned num_planes = util_format_get_num_planes(buffer->buffer_format);
    struct pipe_sampler_view sv_templ;
    struct pipe_context *pipe;
    unsigned i;
@@ -227,7 +234,7 @@ vl_video_buffer_sampler_view_planes(struct pipe_video_buffer *buffer)
 
    pipe = buf->base.context;
 
-   for (i = 0; i < buf->num_planes; ++i ) {
+   for (i = 0; i < num_planes; ++i ) {
       if (!buf->sampler_view_planes[i]) {
          memset(&sv_templ, 0, sizeof(sv_templ));
          u_sampler_view_default_template(&sv_templ, buf->resources[i], buf->resources[i]->format);
@@ -244,7 +251,7 @@ vl_video_buffer_sampler_view_planes(struct pipe_video_buffer *buffer)
    return buf->sampler_view_planes;
 
 error:
-   for (i = 0; i < buf->num_planes; ++i )
+   for (i = 0; i < num_planes; ++i )
       pipe_sampler_view_reference(&buf->sampler_view_planes[i], NULL);
 
    return NULL;
@@ -460,6 +467,7 @@ vl_video_buffer_create_ex2(struct pipe_context *pipe,
          buffer->num_planes++;
    }
 
+   buffer->resourceflag = 0;
    return &buffer->base;
 }
 
@@ -508,4 +516,11 @@ vl_video_buffer_create_as_resource(struct pipe_context *pipe,
    vidtemplate.width = templ.width0;
    vidtemplate.height = templ.height0 * array_size;
    return vl_video_buffer_create_ex2(pipe, &vidtemplate, resources);
+}
+
+void
+vl_video_setresourceflag(struct pipe_video_buffer *buffer)
+{
+   struct vl_video_buffer *newbuffer = (struct vl_video_buffer *)buffer;
+   newbuffer->resourceflag = 1;
 }

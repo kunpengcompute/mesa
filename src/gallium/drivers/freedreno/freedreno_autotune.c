@@ -50,6 +50,8 @@ get_history(struct fd_autotune *at, struct fd_batch *batch)
 {
    struct fd_batch_history *history;
 
+   /* draw batches should still have their key at this point. */
+   assert(batch->key || batch->nondraw);
    if (!batch->key)
       return NULL;
 
@@ -157,7 +159,7 @@ fallback_use_bypass(struct fd_batch *batch)
 
    /* Fallback logic if we have no historical data about the rendertarget: */
    if (batch->cleared || batch->gmem_reason ||
-       ((batch->num_draws > 5) && !batch->blit) || (pfb->samples > 1)) {
+       (batch->num_draws > 5) || (pfb->samples > 1)) {
       return false;
    }
 
@@ -221,7 +223,7 @@ fd_autotune_use_bypass(struct fd_autotune *at, struct fd_batch *batch)
       /* Low sample count could mean there was only a clear.. or there was
        * a clear plus draws that touch no or few samples
        */
-      if (avg_samples < 500.0)
+      if (avg_samples < 500.0f)
          return true;
 
       /* Cost-per-sample is an estimate for the average number of reads+
@@ -236,7 +238,7 @@ fd_autotune_use_bypass(struct fd_autotune *at, struct fd_batch *batch)
           batch->hash, batch->num_draws, total_samples, avg_samples,
           sample_cost, total_draw_cost);
 
-      if (total_draw_cost < 3000.0)
+      if (total_draw_cost < 3000.0f)
          return true;
    }
 

@@ -219,6 +219,8 @@ vlVaDeriveImage(VADriverContextP ctx, VASurfaceID surface, VAImage *image)
    const char *proc = util_get_process_name();
    const char *derive_interlaced_allowlist[] = {
          "vlc",
+         "h264encode",
+         "hevcencode"
    };
 
    if (!ctx)
@@ -422,6 +424,45 @@ vlVaSetImagePalette(VADriverContextP ctx, VAImageID image, unsigned char *palett
    return VA_STATUS_ERROR_UNIMPLEMENTED;
 }
 
+static inline void u_copy_nv12_to_yv12_simd(void *const *destination_data,
+                                            uint32_t const *destination_pitches,
+                                            int src_plane, int src_field,
+                                            int src_stride, int num_fields,
+                                            uint8_t const *src,
+                                            int width, int height)
+{
+   int x, y;
+   unsigned u_stride = destination_pitches[2] * num_fields;
+   unsigned v_stride = destination_pitches[1] * num_fields;
+   uint8_t *u_dst = (uint8_t *)destination_data[2] + destination_pitches[2] * src_field;
+   uint8_t *v_dst = (uint8_t *)destination_data[1] + destination_pitches[1] * src_field;
+#if defined(__aarch64__)
+   int clc_width = width / 16 * 16;
+   nv12_to_yv12_arm64(src, src_stride, u_dst, u_stride, v_dst, v_stride, clc_width, height);
+   if (clc_width < width) {
+      for (y = 0; y < height; y++) {
+         for (x = clc_width; x < width; x++) {
+            u_dst[x] = src[2 * x];
+            v_dst[x] = src[2 * x + 1];
+         }
+         u_dst += u_stride;
+         v_dst += v_stride;
+         src += src_stride;
+      }
+   }
+#else
+   for (y = 0; y < height; y++) {
+      for (x = 0; x < width; x++) {
+         u_dst[x] = src[2 * x];
+         v_dst[x] = src[2 * x + 1];
+      }
+      u_dst += u_stride;
+      v_dst += v_stride;
+      src += src_stride;
+   }
+#endif
+}
+
 VAStatus
 vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
              unsigned int width, unsigned int height, VAImageID image)
@@ -540,7 +581,7 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
          struct pipe_box box = {box_x, box_y, j, box_w, box_h, 1};
          struct pipe_transfer *transfer;
          uint8_t *map;
-         map = drv->pipe->transfer_map(drv->pipe, views[i]->texture, 0,
+         map = drv->pipe->texture_map(drv->pipe, views[i]->texture, 0,
                   PIPE_MAP_READ, &box, &transfer);
          if (!map) {
             mtx_unlock(&drv->mutex);
@@ -548,7 +589,7 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
          }
 
          if (i == 1 && convert) {
-            u_copy_nv12_to_yv12(data, pitches, i, j,
+            u_copy_nv12_to_yv12_simd(data, pitches, i, j,
                transfer->stride, views[i]->texture->array_size,
                map, box.width, box.height);
          } else {
@@ -557,7 +598,7 @@ vlVaGetImage(VADriverContextP ctx, VASurfaceID surface, int x, int y,
                pitches[i] * views[i]->texture->array_size, 0, 0,
                box.width, box.height, map, transfer->stride, 0, 0);
          }
-         pipe_transfer_unmap(drv->pipe, transfer);
+         pipe_texture_unmap(drv->pipe, transfer);
       }
    }
    mtx_unlock(&drv->mutex);
@@ -675,7 +716,7 @@ vlVaPutImage(VADriverContextP ctx, VASurfaceID surface, VAImageID image,
             struct pipe_transfer *transfer = NULL;
             uint8_t *map = NULL;
 
-            map = drv->pipe->transfer_map(drv->pipe,
+            map = drv->pipe->texture_map(drv->pipe,
                                           tex,
                                           0,
                                           PIPE_MAP_WRITE |
@@ -689,7 +730,7 @@ vlVaPutImage(VADriverContextP ctx, VASurfaceID surface, VAImageID image,
             u_copy_nv12_from_yv12((const void * const*) data, pitches, i, j,
                                   transfer->stride, tex->array_size,
                                   map, dst_box.width, dst_box.height);
-            pipe_transfer_unmap(drv->pipe, transfer);
+            pipe_texture_unmap(drv->pipe, transfer);
          } else {
             drv->pipe->texture_subdata(drv->pipe, tex, 0,
                                        PIPE_MAP_WRITE, &dst_box,

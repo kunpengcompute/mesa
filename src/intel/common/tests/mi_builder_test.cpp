@@ -194,7 +194,8 @@ mi_builder_test::SetUp()
                             (void *)&getparam), 0) << strerror(errno);
 
          ASSERT_TRUE(intel_get_device_info_from_pci_id(device_id, &devinfo));
-         if (devinfo.ver != GFX_VER || devinfo.is_haswell != (GFX_VERx10 == 75)) {
+         if (devinfo.ver != GFX_VER ||
+             (devinfo.platform == INTEL_PLATFORM_HSW) != (GFX_VERx10 == 75)) {
             close(fd);
             fd = -1;
             continue;
@@ -958,7 +959,7 @@ TEST_F(mi_builder_test, store_if)
 #if GFX_VERx10 >= 125
 
 /*
- * Indirect load/store tests.  Only available on GFX 12.5+
+ * Indirect load/store tests.  Only available on XE_HP+
  */
 
 TEST_F(mi_builder_test, load_mem64_offset)
@@ -1018,7 +1019,7 @@ TEST_F(mi_builder_test, store_mem64_offset)
 }
 
 /*
- * Control-flow tests.  Only available on GFX 12.5+
+ * Control-flow tests.  Only available on XE_HP+
  */
 
 TEST_F(mi_builder_test, goto)

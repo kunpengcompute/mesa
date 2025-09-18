@@ -57,6 +57,21 @@ lookup_bo(struct hash_table *tbl, uint32_t key)
    return bo;
 }
 
+static void
+bo_init_common(struct fd_bo *bo, struct fd_device *dev)
+{
+   /* Backend should have initialized these: */
+   assert(bo->size);
+   assert(bo->handle);
+
+   bo->dev = dev;
+   bo->iova = bo->funcs->iova(bo);
+   bo->reloc_flags = FD_RELOC_FLAGS_INIT;
+
+   p_atomic_set(&bo->refcnt, 1);
+   list_inithead(&bo->list);
+}
+
 /* allocate a new buffer object, call w/ table_lock held */
 static struct fd_bo *
 bo_from_handle(struct fd_device *dev, uint32_t size, uint32_t handle)
@@ -73,16 +88,12 @@ bo_from_handle(struct fd_device *dev, uint32_t size, uint32_t handle)
       drmIoctl(dev->fd, DRM_IOCTL_GEM_CLOSE, &req);
       return NULL;
    }
-   bo->dev = dev;
-   bo->size = size;
-   bo->handle = handle;
-   bo->iova = bo->funcs->iova(bo);
-   bo->flags = FD_RELOC_FLAGS_INIT;
 
-   p_atomic_set(&bo->refcnt, 1);
-   list_inithead(&bo->list);
+   bo_init_common(bo, dev);
+
    /* add ourself into the handle table: */
    _mesa_hash_table_insert(dev->handle_table, &bo->handle, bo);
+
    return bo;
 }
 
@@ -91,21 +102,27 @@ bo_new(struct fd_device *dev, uint32_t size, uint32_t flags,
        struct fd_bo_cache *cache)
 {
    struct fd_bo *bo = NULL;
-   uint32_t handle;
-   int ret;
+
+   /* demote cached-coherent to WC if not supported: */
+   if ((flags & FD_BO_CACHED_COHERENT) && !dev->has_cached_coherent)
+      flags &= ~FD_BO_CACHED_COHERENT;
 
    bo = fd_bo_cache_alloc(cache, &size, flags);
    if (bo)
       return bo;
 
-   ret = dev->funcs->bo_new_handle(dev, size, flags, &handle);
-   if (ret)
+   bo = dev->funcs->bo_new(dev, size, flags);
+   if (!bo)
       return NULL;
 
+   bo_init_common(bo, dev);
+
    simple_mtx_lock(&table_lock);
-   bo = bo_from_handle(dev, size, handle);
+   /* add ourself into the handle table: */
+   _mesa_hash_table_insert(dev->handle_table, &bo->handle, bo);
    simple_mtx_unlock(&table_lock);
 
+   bo->alloc_flags = flags;
    bo->max_fences = 1;
    bo->fences = &bo->_inline_fence;
 
@@ -137,11 +154,11 @@ _fd_bo_set_name(struct fd_bo *bo, const char *fmt, va_list ap)
 struct fd_bo *
 fd_bo_new_ring(struct fd_device *dev, uint32_t size)
 {
-   uint32_t flags = FD_BO_GPUREADONLY;
+   uint32_t flags = FD_BO_GPUREADONLY | FD_BO_CACHED_COHERENT;
    struct fd_bo *bo = bo_new(dev, size, flags, &dev->ring_cache);
    if (bo) {
       bo->bo_reuse = RING_CACHE;
-      bo->flags |= FD_RELOC_DUMP;
+      bo->reloc_flags |= FD_RELOC_DUMP;
       fd_bo_set_name(bo, "cmdstream");
    }
    return bo;
@@ -239,7 +256,7 @@ out_unlock:
 void
 fd_bo_mark_for_dump(struct fd_bo *bo)
 {
-   bo->flags |= FD_RELOC_DUMP;
+   bo->reloc_flags |= FD_RELOC_DUMP;
 }
 
 uint64_t
@@ -315,7 +332,8 @@ cleanup_fences(struct fd_bo *bo, bool expired)
       if (expired && fd_fence_before(f->pipe->control->fence, f->fence))
          continue;
 
-      fd_pipe_del_locked(f->pipe);
+      struct fd_pipe *pipe = f->pipe;
+
       bo->nr_fences--;
 
       if (bo->nr_fences > 0) {
@@ -323,6 +341,8 @@ cleanup_fences(struct fd_bo *bo, bool expired)
          bo->fences[i] = bo->fences[bo->nr_fences];
          i--;
       }
+
+      fd_pipe_del_locked(pipe);
    }
 }
 
@@ -408,7 +428,8 @@ fd_bo_dmabuf(struct fd_bo *bo)
 {
    int ret, prime_fd;
 
-   ret = drmPrimeHandleToFD(bo->dev->fd, bo->handle, DRM_CLOEXEC, &prime_fd);
+   ret = drmPrimeHandleToFD(bo->dev->fd, bo->handle, DRM_CLOEXEC | DRM_RDWR,
+                            &prime_fd);
    if (ret) {
       ERROR_MSG("failed to get dmabuf fd: %d", ret);
       return ret;
@@ -427,8 +448,14 @@ fd_bo_size(struct fd_bo *bo)
    return bo->size;
 }
 
-void *
-fd_bo_map(struct fd_bo *bo)
+bool
+fd_bo_is_cached(struct fd_bo *bo)
+{
+   return !!(bo->alloc_flags & FD_BO_CACHED_COHERENT);
+}
+
+static void *
+bo_map(struct fd_bo *bo)
 {
    if (!bo->map) {
       uint64_t offset;
@@ -449,18 +476,41 @@ fd_bo_map(struct fd_bo *bo)
    return bo->map;
 }
 
+void *
+fd_bo_map(struct fd_bo *bo)
+{
+   /* don't allow mmap'ing something allocated with FD_BO_NOMAP
+    * for sanity
+    */
+   if (bo->alloc_flags & FD_BO_NOMAP)
+      return NULL;
+
+   return bo_map(bo);
+}
+
+void
+fd_bo_upload(struct fd_bo *bo, void *src, unsigned len)
+{
+   if (bo->funcs->upload) {
+      bo->funcs->upload(bo, src, len);
+      return;
+   }
+
+   memcpy(bo_map(bo), src, len);
+}
+
 /* a bit odd to take the pipe as an arg, but it's a, umm, quirk of kgsl.. */
 int
 fd_bo_cpu_prep(struct fd_bo *bo, struct fd_pipe *pipe, uint32_t op)
 {
+   simple_mtx_lock(&table_lock);
+   enum fd_bo_state state = fd_bo_state(bo);
+   simple_mtx_unlock(&table_lock);
+
+   if (state == FD_BO_STATE_IDLE)
+      return 0;
+
    if (op & (FD_BO_PREP_NOSYNC | FD_BO_PREP_FLUSH)) {
-      simple_mtx_lock(&table_lock);
-      enum fd_bo_state state = fd_bo_state(bo);
-      simple_mtx_unlock(&table_lock);
-
-      if (state == FD_BO_STATE_IDLE)
-         return 0;
-
       if (op & FD_BO_PREP_FLUSH)
          bo_flush(bo);
 

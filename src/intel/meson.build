@@ -28,6 +28,7 @@ subdir('isl')
 subdir('common')
 subdir('compiler')
 subdir('perf')
+subdir('ds')
 if with_intel_tools
   subdir('tools')
 endif

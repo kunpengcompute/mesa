@@ -207,11 +207,6 @@ struct st_visual
    enum pipe_format depth_stencil_format;
    enum pipe_format accum_format;
    unsigned samples;
-
-   /**
-    * Desired render buffer.
-    */
-   enum st_attachment_type render_buffer;
 };
 
 
@@ -223,6 +218,7 @@ struct st_config_options
    bool disable_blend_func_extended;
    bool disable_glsl_line_continuations;
    bool disable_arb_gpu_shader5;
+   bool force_compat_shaders;
    bool force_glsl_extensions_warn;
    unsigned force_glsl_version;
    bool allow_extra_pp_tokens;
@@ -232,18 +228,25 @@ struct st_config_options
    bool allow_glsl_relaxed_es;
    bool allow_glsl_builtin_variable_redeclaration;
    bool allow_higher_compat_version;
+   bool allow_glsl_compat_shaders;
+   bool glsl_ignore_write_to_readonly_var;
    bool glsl_zero_init;
    bool vs_position_always_invariant;
+   bool vs_position_always_precise;
    bool force_glsl_abs_sqrt;
    bool allow_glsl_cross_stage_interpolation_mismatch;
+   bool do_dce_before_clip_cull_analysis;
    bool allow_draw_out_of_order;
-   bool allow_incorrect_primitive_id;
+   bool glthread_nop_check_framebuffer_status;
    bool ignore_map_unsynchronized;
    bool force_integer_tex_nearest;
    bool force_gl_names_reuse;
+   bool force_gl_map_buffer_synchronized;
    bool transcode_etc;
    bool transcode_astc;
    char *force_gl_vendor;
+   char *force_gl_renderer;
+   char *mesa_extension_override;
    unsigned char config_options_sha1[20];
 };
 
@@ -475,6 +478,12 @@ struct st_manager
    bool (*get_egl_image)(struct st_manager *smapi,
                          void *egl_image,
                          struct st_egl_image *out);
+
+   /**
+    * Validate EGLImage passed to get_egl_image.
+    */
+   bool (*validate_egl_image)(struct st_manager *smapi,
+                              void *egl_image);
 
    /**
     * Query an manager param.

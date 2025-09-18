@@ -28,9 +28,12 @@
 #include <windows.h>
 
 #include "glapi/glapi.h"
+#include "util/debug.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_driconf.h"
+#include "util/driconf.h"
 #include "pipe/p_screen.h"
 
 #include "stw_device.h"
@@ -92,10 +95,26 @@ init_screen(const struct stw_winsys *stw_winsys, HDC hdc)
 
    stw_dev->smapi->screen = screen;
    stw_dev->screen = screen;
+   stw_dev->zink = !memcmp(screen->get_name(screen), "zink", 4);
 
    stw_dev->max_2d_length = screen->get_param(screen,
                                               PIPE_CAP_MAX_TEXTURE_2D_SIZE);
    return true;
+}
+
+static void
+init_options()
+{
+   const driOptionDescription gallium_driconf[] = {
+      #include "pipe-loader/driinfo_gallium.h"
+   };
+
+   const char *driver_name = stw_dev->stw_winsys->get_name ? stw_dev->stw_winsys->get_name() : NULL;
+   driParseOptionInfo(&stw_dev->option_info, gallium_driconf, ARRAY_SIZE(gallium_driconf));
+   driParseConfigFiles(&stw_dev->option_cache, &stw_dev->option_info, 0,
+      driver_name ? driver_name : "", NULL, NULL, NULL, 0, NULL, 0);
+   
+   u_driconf_fill_st_options(&stw_dev->st_options, &stw_dev->option_cache);
 }
 
 boolean
@@ -103,7 +122,8 @@ stw_init(const struct stw_winsys *stw_winsys)
 {
    static struct stw_device stw_dev_storage;
 
-   debug_disable_error_message_boxes();
+   if (env_var_as_boolean("WGL_DISABLE_ERROR_DIALOGS", false))
+      debug_disable_win32_error_dialogs();
 
    assert(!stw_dev);
 
@@ -161,11 +181,18 @@ stw_init_screen(HDC hdc)
          LeaveCriticalSection(&stw_dev->screen_mutex);
          return false;
       }
+      init_options();
       stw_pixelformat_init();
    }
 
    LeaveCriticalSection(&stw_dev->screen_mutex);
    return stw_dev->screen != NULL;
+}
+
+struct stw_device *
+stw_get_device(void)
+{
+   return stw_dev;
 }
 
 boolean
@@ -205,6 +232,12 @@ stw_cleanup(void)
       return;
    }
 
+   free(stw_dev->st_options.force_gl_vendor);
+   free(stw_dev->st_options.force_gl_renderer);
+   free(stw_dev->st_options.mesa_extension_override);
+   driDestroyOptionCache(&stw_dev->option_cache);
+   driDestroyOptionInfo(&stw_dev->option_info);
+
    handle_table_destroy(stw_dev->ctx_table);
 
    stw_framebuffer_cleanup();
@@ -227,6 +260,8 @@ stw_cleanup(void)
 #endif
 
    stw_tls_cleanup();
+
+   util_dynarray_fini(&stw_dev->pixelformats);
 
    stw_dev = NULL;
 }

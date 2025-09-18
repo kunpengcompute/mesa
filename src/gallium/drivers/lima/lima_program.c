@@ -59,6 +59,10 @@ static const nir_shader_compiler_options vs_nir_options = {
    .lower_rotate = true,
    .lower_sincos = true,
    .lower_fceil = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
+   .force_indirect_unrolling = (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
+   .lower_varying_from_uniform = true,
 };
 
 static const nir_shader_compiler_options fs_nir_options = {
@@ -74,8 +78,12 @@ static const nir_shader_compiler_options fs_nir_options = {
    .lower_rotate = true,
    .lower_fdot = true,
    .lower_fdph = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
    .lower_bitops = true,
    .lower_vector_cmp = true,
+   .force_indirect_unrolling = (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
+   .lower_varying_from_uniform = true,
 };
 
 const void *
@@ -116,7 +124,7 @@ lima_program_optimize_vs_nir(struct nir_shader *s)
 
       NIR_PASS_V(s, nir_lower_vars_to_ssa);
       NIR_PASS(progress, s, nir_lower_alu_to_scalar, NULL, NULL);
-      NIR_PASS(progress, s, nir_lower_phis_to_scalar);
+      NIR_PASS(progress, s, nir_lower_phis_to_scalar, false);
       NIR_PASS(progress, s, nir_copy_prop);
       NIR_PASS(progress, s, nir_opt_remove_phis);
       NIR_PASS(progress, s, nir_opt_dce);
@@ -127,10 +135,7 @@ lima_program_optimize_vs_nir(struct nir_shader *s)
       NIR_PASS(progress, s, lima_nir_lower_ftrunc);
       NIR_PASS(progress, s, nir_opt_constant_folding);
       NIR_PASS(progress, s, nir_opt_undef);
-      NIR_PASS(progress, s, nir_opt_loop_unroll,
-               nir_var_shader_in |
-               nir_var_shader_out |
-               nir_var_function_temp);
+      NIR_PASS(progress, s, nir_opt_loop_unroll);
    } while (progress);
 
    NIR_PASS_V(s, nir_lower_int_to_float);
@@ -140,6 +145,7 @@ lima_program_optimize_vs_nir(struct nir_shader *s)
 
    NIR_PASS_V(s, nir_copy_prop);
    NIR_PASS_V(s, nir_opt_dce);
+   NIR_PASS_V(s, lima_nir_split_loads);
    NIR_PASS_V(s, nir_lower_locals_to_regs);
    NIR_PASS_V(s, nir_convert_from_ssa, true);
    NIR_PASS_V(s, nir_remove_dead_variables, nir_var_function_temp, NULL);
@@ -212,6 +218,7 @@ lima_program_optimize_fs_nir(struct nir_shader *s,
 	      nir_var_shader_in | nir_var_shader_out, type_size, 0);
    NIR_PASS_V(s, nir_lower_regs_to_ssa);
    NIR_PASS_V(s, nir_lower_tex, tex_options);
+   NIR_PASS_V(s, lima_nir_lower_txp);
 
    do {
       progress = false;
@@ -232,10 +239,7 @@ lima_program_optimize_fs_nir(struct nir_shader *s,
       NIR_PASS(progress, s, nir_opt_algebraic);
       NIR_PASS(progress, s, nir_opt_constant_folding);
       NIR_PASS(progress, s, nir_opt_undef);
-      NIR_PASS(progress, s, nir_opt_loop_unroll,
-               nir_var_shader_in |
-               nir_var_shader_out |
-               nir_var_function_temp);
+      NIR_PASS(progress, s, nir_opt_loop_unroll);
       NIR_PASS(progress, s, lima_nir_split_load_input);
    } while (progress);
 
@@ -282,7 +286,6 @@ lima_fs_compile_shader(struct lima_context *ctx,
    nir_shader *nir = nir_shader_clone(fs, ufs->base.ir.nir);
 
    struct nir_lower_tex_options tex_options = {
-      .lower_txp = ~0u,
       .swizzle_result = ~0u,
    };
 
@@ -590,15 +593,19 @@ lima_update_fs_state(struct lima_context *ctx)
    memcpy(key->nir_sha1, ctx->uncomp_fs->nir_sha1,
           sizeof(ctx->uncomp_fs->nir_sha1));
 
+   uint8_t identity[4] = { PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y,
+                           PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W };
    for (int i = 0; i < lima_tex->num_textures; i++) {
       struct lima_sampler_view *sampler = lima_sampler_view(lima_tex->textures[i]);
+      if (!sampler) {
+         memcpy(key->tex[i].swizzle, identity, 4);
+         continue;
+      }
       for (int j = 0; j < 4; j++)
          key->tex[i].swizzle[j] = sampler->swizzle[j];
    }
 
    /* Fill rest with identity swizzle */
-   uint8_t identity[4] = { PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y,
-                           PIPE_SWIZZLE_Z, PIPE_SWIZZLE_W };
    for (int i = lima_tex->num_textures; i < ARRAY_SIZE(key->tex); i++)
       memcpy(key->tex[i].swizzle, identity, 4);
 

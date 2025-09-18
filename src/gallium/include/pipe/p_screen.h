@@ -58,9 +58,23 @@ struct pipe_surface;
 struct pipe_transfer;
 struct pipe_box;
 struct pipe_memory_info;
+struct pipe_vertex_buffer;
+struct pipe_vertex_element;
+struct pipe_vertex_state;
 struct disk_cache;
 struct driOptionCache;
 struct u_transfer_helper;
+struct pipe_screen;
+
+typedef struct pipe_vertex_state *
+   (*pipe_create_vertex_state_func)(struct pipe_screen *screen,
+                                    struct pipe_vertex_buffer *buffer,
+                                    const struct pipe_vertex_element *elements,
+                                    unsigned num_elements,
+                                    struct pipe_resource *indexbuf,
+                                    uint32_t full_velem_mask);
+typedef void (*pipe_vertex_state_destroy_func)(struct pipe_screen *screen,
+                                               struct pipe_vertex_state *);
 
 /**
  * Gallium screen/adapter context.  Basically everything
@@ -166,6 +180,19 @@ struct pipe_screen {
 					   void *priv, unsigned flags);
 
    /**
+    * Check if the given image copy will be faster on compute
+    * \param cpu If true, this is checking against CPU fallback,
+    *            otherwise the copy will be on GFX
+    */
+   bool (*is_compute_copy_faster)( struct pipe_screen *,
+                                   enum pipe_format src_format,
+                                   enum pipe_format dst_format,
+                                   unsigned width,
+                                   unsigned height,
+                                   unsigned depth,
+                                   bool cpu );
+
+   /**
     * Check if the given pipe_format is supported as a texture or
     * drawing surface.
     * \param bindings  bitmask of PIPE_BIND_*
@@ -199,6 +226,10 @@ struct pipe_screen {
     */
    struct pipe_resource * (*resource_create)(struct pipe_screen *,
 					     const struct pipe_resource *templat);
+
+   struct pipe_resource * (*resource_create_drawable)(struct pipe_screen *,
+                                                      const struct pipe_resource *tmpl,
+                                                      const void *loader_private);
 
    struct pipe_resource * (*resource_create_front)(struct pipe_screen *,
                                                    const struct pipe_resource *templat,
@@ -521,10 +552,10 @@ struct pipe_screen {
     * gallium frontends should call this before passing shaders to drivers,
     * and ideally also before shader caching.
     *
-    * \param optimize  Whether the input shader hasn't been optimized and
-    *                  should be.
+    * The driver may return a non-NULL string to trigger GLSL link failure and
+    * logging of that message in the GLSL linker log.
     */
-   void (*finalize_nir)(struct pipe_screen *screen, void *nir, bool optimize);
+   char *(*finalize_nir)(struct pipe_screen *screen, void *nir);
 
    /*Separated memory/resource allocations interfaces for Vulkan */
 
@@ -548,9 +579,30 @@ struct pipe_screen {
                        struct pipe_memory_allocation *);
 
    /**
+    * Allocate fd-based memory to be bound to resources.
+    */
+   struct pipe_memory_allocation *(*allocate_memory_fd)(struct pipe_screen *screen,
+                                                        uint64_t size,
+                                                        int *fd);
+
+   /**
+    * Import memory from an fd-handle.
+    */
+   bool (*import_memory_fd)(struct pipe_screen *screen,
+                            int fd,
+                            struct pipe_memory_allocation **pmem,
+                            uint64_t *size);
+
+   /**
+    * Free previously allocated fd-based memory.
+    */
+   void (*free_memory_fd)(struct pipe_screen *screen,
+                          struct pipe_memory_allocation *pmem);
+
+   /**
     * Bind memory to a resource.
     */
-   void (*resource_bind_backing)(struct pipe_screen *screen,
+   bool (*resource_bind_backing)(struct pipe_screen *screen,
                                  struct pipe_resource *pt,
                                  struct pipe_memory_allocation *pmem,
                                  uint64_t offset);
@@ -604,6 +656,30 @@ struct pipe_screen {
    unsigned int (*get_dmabuf_modifier_planes)(struct pipe_screen *screen,
                                               uint64_t modifier,
                                               enum pipe_format format);
+
+   /**
+    * Get supported page sizes for sparse texture.
+    *
+    * \p size is the array size of \p x, \p y and \p z.
+    *
+    * \p offset sets an offset into the possible format page size array,
+    *  used to pick a specific xyz size combination.
+    *
+    * \return Number of supported page sizes, 0 means not support.
+    */
+   int (*get_sparse_texture_virtual_page_size)(struct pipe_screen *screen,
+                                               enum pipe_texture_target target,
+                                               bool multi_sample,
+                                               enum pipe_format format,
+                                               unsigned offset, unsigned size,
+                                               int *x, int *y, int *z);
+
+   /**
+    * Vertex state CSO functions for precomputing vertex and index buffer
+    * states for display lists.
+    */
+   pipe_create_vertex_state_func create_vertex_state;
+   pipe_vertex_state_destroy_func vertex_state_destroy;
 };
 
 
@@ -611,7 +687,8 @@ struct pipe_screen {
  * Global configuration options for screen creation.
  */
 struct pipe_screen_config {
-   const struct driOptionCache *options;
+   struct driOptionCache *options;
+   const struct driOptionCache *options_info;
 };
 
 

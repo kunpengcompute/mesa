@@ -36,6 +36,8 @@
 #error This file is included by means other than anv_private.h
 #endif
 
+struct intel_sample_positions;
+
 extern const uint32_t genX(vk_to_intel_cullmode)[];
 
 extern const uint32_t genX(vk_to_intel_front_face)[];
@@ -46,15 +48,22 @@ extern const uint32_t genX(vk_to_intel_compare_op)[];
 
 extern const uint32_t genX(vk_to_intel_stencil_op)[];
 
+extern const uint32_t genX(vk_to_intel_logic_op)[];
+
 void genX(init_physical_device_state)(struct anv_physical_device *device);
 
 VkResult genX(init_device_state)(struct anv_device *device);
+
+void genX(init_cps_device_state)(struct anv_device *device);
 
 void genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer);
 
 void genX(cmd_buffer_apply_pipe_flushes)(struct anv_cmd_buffer *cmd_buffer);
 
 void genX(cmd_buffer_emit_gfx7_depth_flush)(struct anv_cmd_buffer *cmd_buffer);
+
+void genX(cmd_buffer_emit_gfx12_depth_wa)(struct anv_cmd_buffer *cmd_buffer,
+                                          const struct isl_surf *surf);
 
 void genX(cmd_buffer_set_binding_for_gfx8_vb_flush)(struct anv_cmd_buffer *cmd_buffer,
                                                     int vb_index,
@@ -70,6 +79,22 @@ void genX(cmd_buffer_emit_hashing_mode)(struct anv_cmd_buffer *cmd_buffer,
 
 void genX(flush_pipeline_select_3d)(struct anv_cmd_buffer *cmd_buffer);
 void genX(flush_pipeline_select_gpgpu)(struct anv_cmd_buffer *cmd_buffer);
+
+enum anv_pipe_bits
+genX(emit_apply_pipe_flushes)(struct anv_batch *batch,
+                              struct anv_device *device,
+                              uint32_t current_pipeline,
+                              enum anv_pipe_bits bits);
+
+void genX(emit_so_memcpy_init)(struct anv_memcpy_state *state,
+                               struct anv_device *device,
+                               struct anv_batch *batch);
+
+void genX(emit_so_memcpy_fini)(struct anv_memcpy_state *state);
+
+void genX(emit_so_memcpy)(struct anv_memcpy_state *state,
+                          struct anv_address dst, struct anv_address src,
+                          uint32_t size);
 
 void genX(emit_l3_config)(struct anv_batch *batch,
                           const struct anv_device *device,
@@ -96,6 +121,8 @@ void genX(cmd_buffer_mark_image_written)(struct anv_cmd_buffer *cmd_buffer,
 
 void genX(cmd_emit_conditional_render_predicate)(struct anv_cmd_buffer *cmd_buffer);
 
+struct anv_state genX(cmd_buffer_ray_query_globals)(struct anv_cmd_buffer *cmd_buffer);
+
 void
 genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
                      const struct intel_l3_config *l3_config,
@@ -104,14 +131,13 @@ genX(emit_urb_setup)(struct anv_device *device, struct anv_batch *batch,
                      enum intel_urb_deref_block_size *deref_block_size);
 
 void genX(emit_multisample)(struct anv_batch *batch, uint32_t samples,
-                            const VkSampleLocationEXT *locations);
+                            const struct intel_sample_position *positions);
 
-void genX(emit_sample_pattern)(struct anv_batch *batch, uint32_t samples,
-                               const VkSampleLocationEXT *locations);
+void genX(emit_sample_pattern)(struct anv_batch *batch,
+                               const struct anv_dynamic_state *dynamic_state);
 
 void genX(emit_shading_rate)(struct anv_batch *batch,
                              const struct anv_graphics_pipeline *pipeline,
-                             struct anv_state cps_states,
                              struct anv_dynamic_state *dynamic_state);
 
 void genX(cmd_buffer_so_memcpy)(struct anv_cmd_buffer *cmd_buffer,
@@ -122,5 +148,21 @@ void genX(blorp_exec)(struct blorp_batch *batch,
                       const struct blorp_params *params);
 
 void genX(cmd_emit_timestamp)(struct anv_batch *batch,
-                              struct anv_bo *bo,
-                              uint32_t offset);
+                              struct anv_device *device,
+                              struct anv_address addr,
+                              bool end_of_pipe);
+
+void
+genX(rasterization_mode)(VkPolygonMode raster_mode,
+                         VkLineRasterizationModeEXT line_mode,
+                         float line_width,
+                         uint32_t *api_mode,
+                         bool *msaa_rasterization_enable);
+
+uint32_t
+genX(ms_rasterization_mode)(struct anv_graphics_pipeline *pipeline,
+                            VkPolygonMode raster_mode);
+
+VkPolygonMode
+genX(raster_polygon_mode)(struct anv_graphics_pipeline *pipeline,
+                          VkPrimitiveTopology primitive_topology);

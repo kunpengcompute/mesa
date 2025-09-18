@@ -33,7 +33,9 @@
 #include "extensions.h"
 #include "get.h"
 #include "macros.h"
+#include "multisample.h"
 #include "mtypes.h"
+#include "queryobj.h"
 #include "spirv_extensions.h"
 #include "state.h"
 #include "texcompress.h"
@@ -42,6 +44,9 @@
 #include "samplerobj.h"
 #include "stencil.h"
 #include "version.h"
+
+#include "state_tracker/st_context.h"
+#include "api_exec_decl.h"
 
 /* This is a table driven implemetation of the glGet*v() functions.
  * The basic idea is that most getters just look up an int somewhere
@@ -407,6 +412,12 @@ static const int extra_ARB_shader_atomic_counters_and_geometry_shader[] = {
    EXTRA_END
 };
 
+static const int extra_ARB_shader_atomic_counters_es31[] = {
+   EXT(ARB_shader_atomic_counters),
+   EXTRA_API_ES31,
+   EXTRA_END
+};
+
 static const int extra_ARB_shader_image_load_store_and_geometry_shader[] = {
    EXTRA_EXT_SHADER_IMAGE_GS,
    EXTRA_END
@@ -419,6 +430,12 @@ static const int extra_ARB_shader_atomic_counters_and_tessellation[] = {
 
 static const int extra_ARB_shader_image_load_store_and_tessellation[] = {
    EXTRA_EXT_SHADER_IMAGE_TESS,
+   EXTRA_END
+};
+
+static const int extra_ARB_shader_image_load_store_es31[] = {
+   EXT(ARB_shader_image_load_store),
+   EXTRA_API_ES31,
    EXTRA_END
 };
 
@@ -494,7 +511,19 @@ static const int extra_INTEL_conservative_rasterization[] = {
    EXTRA_END
 };
 
-EXTRA_EXT(ARB_texture_cube_map);
+static const int extra_ARB_timer_query_or_EXT_disjoint_timer_query[] = {
+   EXT(ARB_timer_query),
+   EXT(EXT_disjoint_timer_query),
+   EXTRA_END
+};
+
+static const int extra_ARB_framebuffer_object_or_EXT_framebuffer_multisample_or_EXT_multisampled_render_to_texture[] = {
+   EXT(ARB_framebuffer_object),
+   EXT(EXT_framebuffer_multisample),
+   EXT(EXT_multisampled_render_to_texture),
+   EXTRA_END
+};
+
 EXTRA_EXT(EXT_texture_array);
 EXTRA_EXT(NV_fog_distance);
 EXTRA_EXT(EXT_texture_filter_anisotropic);
@@ -507,7 +536,6 @@ EXTRA_EXT(ATI_fragment_shader);
 EXTRA_EXT(EXT_provoking_vertex);
 EXTRA_EXT(ARB_fragment_shader);
 EXTRA_EXT(ARB_fragment_program);
-EXTRA_EXT2(ARB_framebuffer_object, EXT_framebuffer_multisample);
 EXTRA_EXT(ARB_seamless_cube_map);
 EXTRA_EXT(ARB_sync);
 EXTRA_EXT(ARB_vertex_shader);
@@ -522,12 +550,10 @@ EXTRA_EXT(EXT_framebuffer_sRGB);
 EXTRA_EXT(OES_EGL_image_external);
 EXTRA_EXT(ARB_blend_func_extended);
 EXTRA_EXT(ARB_uniform_buffer_object);
-EXTRA_EXT(ARB_timer_query);
 EXTRA_EXT2(ARB_texture_cube_map_array, OES_texture_cube_map_array);
 EXTRA_EXT(ARB_texture_buffer_range);
 EXTRA_EXT(ARB_texture_multisample);
 EXTRA_EXT(ARB_texture_gather);
-EXTRA_EXT(ARB_shader_atomic_counters);
 EXTRA_EXT(ARB_draw_indirect);
 EXTRA_EXT(ARB_shader_image_load_store);
 EXTRA_EXT(ARB_query_buffer_object);
@@ -556,6 +582,7 @@ EXTRA_EXT(ARB_sample_locations);
 EXTRA_EXT(AMD_framebuffer_multisample_advanced);
 EXTRA_EXT(ARB_spirv_extensions);
 EXTRA_EXT(NV_viewport_swizzle);
+EXTRA_EXT(ARB_sparse_texture);
 
 static const int
 extra_ARB_color_buffer_float_or_glcore[] = {
@@ -1109,7 +1136,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
          v->value_float = ctx->Color.AlphaRefUnclamped;
       break;
    case GL_MAX_VERTEX_UNIFORM_VECTORS:
-      v->value_int = ctx->Const.Program[MESA_SHADER_VERTEX].MaxUniformComponents / 4;
+      v->value_int = 256; // 修复原神角色加载异常问题
       break;
 
    case GL_MAX_FRAGMENT_UNIFORM_VECTORS:
@@ -1160,12 +1187,7 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
    /* GL_ARB_timer_query */
    case GL_TIMESTAMP:
-      if (ctx->Driver.GetTimestamp) {
-         v->value_int64 = ctx->Driver.GetTimestamp(ctx);
-      }
-      else {
-         _mesa_problem(ctx, "driver doesn't implement GetTimestamp");
-      }
+      v->value_int64 = _mesa_get_timestamp(ctx);
       break;
    /* GL_KHR_DEBUG */
    case GL_DEBUG_OUTPUT:
@@ -1225,9 +1247,11 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
    case GL_GPU_MEMORY_INFO_EVICTION_COUNT_NVX:
    case GL_GPU_MEMORY_INFO_EVICTED_MEMORY_NVX:
       {
-         struct gl_memory_info info;
+         struct pipe_memory_info info;
+         struct pipe_screen *screen = ctx->pipe->screen;
 
-         ctx->Driver.QueryMemoryInfo(ctx, &info);
+         assert(screen->query_memory_info);
+         screen->query_memory_info(screen, &info);
 
          if (d->pname == GL_GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX)
             v->value_int = info.total_device_memory;
@@ -1300,8 +1324,8 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
             break;
          }
 
-         ctx->Driver.GetProgrammableSampleCaps(ctx, ctx->DrawBuffer,
-                                               &bits, &width, &height);
+         _mesa_GetProgrammableSampleCaps(ctx, ctx->DrawBuffer,
+                                         &bits, &width, &height);
 
          if (d->pname == GL_SAMPLE_LOCATION_PIXEL_GRID_WIDTH_ARB)
             v->value_uint = width;
@@ -1465,8 +1489,9 @@ check_extra(struct gl_context *ctx, const char *func, const struct value_desc *d
          break;
       case EXTRA_EXT_SHADER_IMAGE_GS:
          api_check = GL_TRUE;
-         if (ctx->Extensions.ARB_shader_image_load_store &&
-            _mesa_has_geometry_shaders(ctx))
+         if ((ctx->Extensions.ARB_shader_image_load_store ||
+              _mesa_is_gles31(ctx)) &&
+             _mesa_has_geometry_shaders(ctx))
             api_found = GL_TRUE;
          break;
       case EXTRA_EXT_ATOMICS_TESS:
@@ -1959,7 +1984,10 @@ _mesa_GetIntegerv(GLenum pname, GLint *params)
    GLmatrix *m;
    int shift, i;
    void *p;
-
+   if (pname == GL_MAX_VERTEX_UNIFORM_COMPONENTS) {
+      *params = 1024; // 修复原神角色渲染异常问题
+      return;
+   }
    d = find_value("glGetIntegerv", pname, &p, &v);
    switch (d->type) {
    case TYPE_INVALID:
@@ -2423,8 +2451,7 @@ tex_binding_to_index(const struct gl_context *ctx, GLenum binding)
    case GL_TEXTURE_BINDING_3D:
       return ctx->API != API_OPENGLES ? TEXTURE_3D_INDEX : -1;
    case GL_TEXTURE_BINDING_CUBE_MAP:
-      return ctx->Extensions.ARB_texture_cube_map
-         ? TEXTURE_CUBE_INDEX : -1;
+      return TEXTURE_CUBE_INDEX;
    case GL_TEXTURE_BINDING_RECTANGLE:
       return _mesa_is_desktop_gl(ctx) && ctx->Extensions.NV_texture_rectangle
          ? TEXTURE_RECT_INDEX : -1;
@@ -2617,7 +2644,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
 
    /* ARB_shader_storage_buffer_object */
    case GL_SHADER_STORAGE_BUFFER_BINDING:
-      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxShaderStorageBufferBindings)
          goto invalid_value;
@@ -2626,7 +2653,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_SHADER_STORAGE_BUFFER_START:
-      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxShaderStorageBufferBindings)
          goto invalid_value;
@@ -2635,7 +2662,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_SHADER_STORAGE_BUFFER_SIZE:
-      if (!ctx->Extensions.ARB_shader_storage_buffer_object)
+      if (!ctx->Extensions.ARB_shader_storage_buffer_object && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxShaderStorageBufferBindings)
          goto invalid_value;
@@ -2653,7 +2680,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_ATOMIC_COUNTER_BUFFER_BINDING:
-      if (!ctx->Extensions.ARB_shader_atomic_counters)
+      if (!ctx->Extensions.ARB_shader_atomic_counters && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxAtomicBufferBindings)
          goto invalid_value;
@@ -2662,7 +2689,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_ATOMIC_COUNTER_BUFFER_START:
-      if (!ctx->Extensions.ARB_shader_atomic_counters)
+      if (!ctx->Extensions.ARB_shader_atomic_counters && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxAtomicBufferBindings)
          goto invalid_value;
@@ -2671,7 +2698,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT64;
 
    case GL_ATOMIC_COUNTER_BUFFER_SIZE:
-      if (!ctx->Extensions.ARB_shader_atomic_counters)
+      if (!ctx->Extensions.ARB_shader_atomic_counters && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxAtomicBufferBindings)
          goto invalid_value;
@@ -2717,7 +2744,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
    case GL_IMAGE_BINDING_NAME: {
       struct gl_texture_object *t;
 
-      if (!ctx->Extensions.ARB_shader_image_load_store)
+      if (!ctx->Extensions.ARB_shader_image_load_store && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxImageUnits)
          goto invalid_value;
@@ -2728,7 +2755,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
    }
 
    case GL_IMAGE_BINDING_LEVEL:
-      if (!ctx->Extensions.ARB_shader_image_load_store)
+      if (!ctx->Extensions.ARB_shader_image_load_store && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxImageUnits)
          goto invalid_value;
@@ -2737,7 +2764,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_IMAGE_BINDING_LAYERED:
-      if (!ctx->Extensions.ARB_shader_image_load_store)
+      if (!ctx->Extensions.ARB_shader_image_load_store && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxImageUnits)
          goto invalid_value;
@@ -2746,7 +2773,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_IMAGE_BINDING_LAYER:
-      if (!ctx->Extensions.ARB_shader_image_load_store)
+      if (!ctx->Extensions.ARB_shader_image_load_store && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxImageUnits)
          goto invalid_value;
@@ -2755,7 +2782,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_IMAGE_BINDING_ACCESS:
-      if (!ctx->Extensions.ARB_shader_image_load_store)
+      if (!ctx->Extensions.ARB_shader_image_load_store && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxImageUnits)
          goto invalid_value;
@@ -2764,7 +2791,7 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       return TYPE_INT;
 
    case GL_IMAGE_BINDING_FORMAT:
-      if (!ctx->Extensions.ARB_shader_image_load_store)
+      if (!ctx->Extensions.ARB_shader_image_load_store && !_mesa_is_gles31(ctx))
          goto invalid_enum;
       if (index >= ctx->Const.MaxImageUnits)
          goto invalid_value;

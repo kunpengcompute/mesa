@@ -212,6 +212,9 @@ mir_lower_special_reads(compiler_context *ctx)
                         mark_node_class(texr, ins->src[2]);
                         mark_node_class(texw, ins->dest);
                         break;
+
+                default:
+                        break;
                 }
         }
 
@@ -347,6 +350,44 @@ mir_compute_interference(
 
         mir_foreach_block(ctx, _blk) {
                 midgard_block *blk = (midgard_block *) _blk;
+
+                /* The scalar and vector units run in parallel. We need to make
+                 * sure they don't write to same portion of the register file
+                 * otherwise the result is undefined. Add interferences to
+                 * avoid this situation.
+                 */
+                util_dynarray_foreach(&blk->bundles, midgard_bundle, bundle) {
+                        midgard_instruction *instrs[2][4];
+                        unsigned instr_count[2] = { 0, 0 };
+
+                        for (unsigned i = 0; i < bundle->instruction_count; i++) {
+                                if (bundle->instructions[i]->unit == UNIT_VMUL ||
+                                    bundle->instructions[i]->unit == UNIT_SADD)
+                                        instrs[0][instr_count[0]++] = bundle->instructions[i];
+                                else
+                                        instrs[1][instr_count[1]++] = bundle->instructions[i];
+                        }
+
+                        for (unsigned i = 0; i < ARRAY_SIZE(instr_count); i++) {
+                                for (unsigned j = 0; j < instr_count[i]; j++) {
+                                        midgard_instruction *ins_a = instrs[i][j];
+
+                                        if (ins_a->dest >= ctx->temp_count) continue;
+
+                                        for (unsigned k = j + 1; k < instr_count[i]; k++) {
+                                                midgard_instruction *ins_b = instrs[i][k];
+
+                                                if (ins_b->dest >= ctx->temp_count) continue;
+
+                                                lcra_add_node_interference(l, ins_b->dest,
+                                                                           mir_bytemask(ins_b),
+                                                                           ins_a->dest,
+                                                                           mir_bytemask(ins_a));
+                                        }
+                                }
+                        }
+                }
+
                 uint16_t *live = mem_dup(_blk->live_out, ctx->temp_count * sizeof(uint16_t));
 
                 mir_foreach_instr_in_block_rev(blk, ins) {
@@ -356,11 +397,27 @@ mir_compute_interference(
                         unsigned dest = ins->dest;
 
                         if (dest < ctx->temp_count) {
-                                for (unsigned i = 0; i < ctx->temp_count; ++i)
+                                for (unsigned i = 0; i < ctx->temp_count; ++i) {
                                         if (live[i]) {
                                                 unsigned mask = mir_bytemask(ins);
                                                 lcra_add_node_interference(l, dest, mask, i, live[i]);
                                         }
+                                }
+                        }
+
+                        /* Add blend shader interference: blend shaders might
+                         * clobber r0-r3. */
+                        if (ins->compact_branch && ins->writeout) {
+                                for (unsigned i = 0; i < ctx->temp_count; ++i) {
+                                        if (!live[i])
+                                                continue;
+
+                                        for (unsigned j = 0; j < 4; j++) {
+                                                lcra_add_node_interference(l, ctx->temp_count + j,
+                                                                0xFFFF,
+                                                                i, live[i]);
+                                        }
+                                }
                         }
 
                         /* Update live_in */
@@ -402,11 +459,11 @@ allocate_registers(compiler_context *ctx, bool *spilled)
         if (!ctx->temp_count)
                 return NULL;
 
-        /* Initialize LCRA. Allocate an extra node at the end for a precoloured
-         * r1 for interference */
+        /* Initialize LCRA. Allocate extra node at the end for r1-r3 for
+         * interference */
 
-        struct lcra_state *l = lcra_alloc_equations(ctx->temp_count + 1, 5);
-        unsigned node_r1 = ctx->temp_count;
+        struct lcra_state *l = lcra_alloc_equations(ctx->temp_count + 4, 5);
+        unsigned node_r1 = ctx->temp_count + 1;
 
         /* Starts of classes, in bytes */
         l->class_start[REG_CLASS_WORK]  = 16 * 0;
@@ -447,7 +504,7 @@ allocate_registers(compiler_context *ctx, bool *spilled)
                                 unsigned s = ins->src[v];
 
                                 if (s < ctx->temp_count)
-                                        min_alignment[s] = 3;
+                                        min_alignment[s] = MAX2(3, min_alignment[s]);
                         }
                 }
 
@@ -457,7 +514,7 @@ allocate_registers(compiler_context *ctx, bool *spilled)
                                 unsigned size = nir_alu_type_get_type_size(ins->src_types[v]);
 
                                 if (s < ctx->temp_count)
-                                        min_alignment[s] = (size == 64) ? 3 : 2;
+                                        min_alignment[s] = MAX2((size == 64) ? 3 : 2, min_alignment[s]);
                         }
                 }
 
@@ -480,13 +537,14 @@ allocate_registers(compiler_context *ctx, bool *spilled)
                 found_class[dest] = MAX2(found_class[dest], bytes);
 
                 min_alignment[dest] =
-                        (size == 16) ? 1 : /* (1 << 1) = 2-byte */
-                        (size == 32) ? 2 : /* (1 << 2) = 4-byte */
-                        (size == 64) ? 3 : /* (1 << 3) = 8-byte */
-                        3; /* 8-bit todo */
+                        MAX2(min_alignment[dest],
+                             (size == 16) ? 1 : /* (1 << 1) = 2-byte */
+                             (size == 32) ? 2 : /* (1 << 2) = 4-byte */
+                             (size == 64) ? 3 : /* (1 << 3) = 8-byte */
+                             3); /* 8-bit todo */
 
                 /* We can't cross xy/zw boundaries. TODO: vec8 can */
-                if (size == 16)
+                if (size == 16 && min_alignment[dest] != 4)
                         min_bound[dest] = 8;
 
                 mir_foreach_src(ins, s) {
@@ -597,7 +655,8 @@ allocate_registers(compiler_context *ctx, bool *spilled)
          * the following segment. We model this as interference.
          */
 
-        l->solutions[node_r1] = (16 * 1);
+        for (unsigned i = 0; i < 4; ++i)
+                l->solutions[ctx->temp_count + i] = (16 * i);
 
         mir_foreach_block(ctx, _blk) {
                 midgard_block *blk = (midgard_block *) _blk;
@@ -723,7 +782,7 @@ install_registers_instr(
                         struct phys_reg dst = index_to_reg(ctx, l, ins->dest, dest_shift);
 
                         ins->dest = SSA_FIXED_REGISTER(dst.reg);
-                        offset_swizzle(ins->swizzle[0], 0, 2, 2, dst.offset);
+                        offset_swizzle(ins->swizzle[0], 0, 2, dest_shift, dst.offset);
                         mir_set_bytemask(ins, mir_bytemask(ins) << dst.offset);
                 }
 
@@ -842,6 +901,19 @@ mir_spill_register(
         /* Allocate TLS slot (maybe) */
         unsigned spill_slot = !is_special ? (*spill_count)++ : 0;
 
+        /* For special reads, figure out how many bytes we need */
+        unsigned read_bytemask = 0;
+
+        /* If multiple instructions write to this destination, we'll have to
+         * fill from TLS before writing */
+        unsigned write_count = 0;
+
+        mir_foreach_instr_global_safe(ctx, ins) {
+                read_bytemask |= mir_bytemask_of_read_components(ins, spill_node);
+                if (ins->dest == spill_node)
+                        ++write_count;
+        }
+
         /* For TLS, replace all stores to the spilled node. For
          * special reads, just keep as-is; the class will be demoted
          * implicitly. For special writes, spill to a work register */
@@ -850,12 +922,15 @@ mir_spill_register(
                 if (is_special_w)
                         spill_slot = spill_index++;
 
+                unsigned last_id = ~0;
+                unsigned last_fill = ~0;
+                unsigned last_spill_index = ~0;
+                midgard_instruction *last_spill = NULL;
+
                 mir_foreach_block(ctx, _block) {
                 midgard_block *block = (midgard_block *) _block;
                 mir_foreach_instr_in_block_safe(block, ins) {
                         if (ins->dest != spill_node) continue;
-
-                        midgard_instruction st;
 
                         /* Note: it's important to match the mask of the spill
                          * with the mask of the instruction whose destination
@@ -864,32 +939,80 @@ mir_spill_register(
                          */
 
                         if (is_special_w) {
-                                st = v_mov(spill_node, spill_slot);
+                                midgard_instruction st = v_mov(spill_node, spill_slot);
                                 st.no_spill |= (1 << spill_class);
                                 st.mask = ins->mask;
                                 st.dest_type = st.src_types[1] = ins->dest_type;
+
+                                /* Hint: don't rewrite this node */
+                                st.hint = true;
+
+                                mir_insert_instruction_after_scheduled(ctx, block, ins, st);
                         } else {
-                                ins->dest = spill_index++;
+                                unsigned bundle = ins->bundle_id;
+                                unsigned dest = (bundle == last_id)? last_spill_index : spill_index++;
+
+                                unsigned bytemask = mir_bytemask(ins);
+                                unsigned write_mask = mir_from_bytemask(mir_round_bytemask_up(
+                                                                           bytemask, 32), 32);
+
+                                if (write_count > 1 && bytemask != 0xFFFF && bundle != last_fill) {
+                                        midgard_instruction read =
+                                                v_load_store_scratch(dest, spill_slot, false, 0xF);
+                                        mir_insert_instruction_before_scheduled(ctx, block, ins, read);
+                                        write_mask = 0xF;
+                                        last_fill = bundle;
+                                }
+
+                                ins->dest = dest;
                                 ins->no_spill |= (1 << spill_class);
-                                st = v_load_store_scratch(ins->dest, spill_slot, true, ins->mask);
+
+                                bool move = false;
+
+                                /* In the same bundle, reads of the destination
+                                 * of the spilt instruction need to be direct */
+                                midgard_instruction *it = ins;
+                                while ((it = list_first_entry(&it->link, midgard_instruction, link))
+                                       && (it->bundle_id == bundle)) {
+
+                                        if (!mir_has_arg(it, spill_node)) continue;
+
+                                        mir_rewrite_index_src_single(it, spill_node, dest);
+
+                                        /* The spilt instruction will write to
+                                         * a work register for `it` to read but
+                                         * the spill needs an LD/ST register */
+                                        move = true;
+                                }
+
+                                if (move)
+                                        dest = spill_index++;
+
+                                if (last_id == bundle) {
+                                        last_spill->mask |= write_mask;
+                                        u_foreach_bit(c, write_mask)
+                                                last_spill->swizzle[0][c] = c;
+                                } else {
+                                        midgard_instruction st =
+                                                v_load_store_scratch(dest, spill_slot, true, write_mask);
+                                        last_spill = mir_insert_instruction_after_scheduled(ctx, block, ins, st);
+                                }
+
+                                if (move) {
+                                        midgard_instruction mv = v_mov(ins->dest, dest);
+                                        mv.no_spill |= (1 << spill_class);
+
+                                        mir_insert_instruction_after_scheduled(ctx, block, ins, mv);
+                                }
+
+                                last_id = bundle;
+                                last_spill_index = ins->dest;
                         }
-
-                        /* Hint: don't rewrite this node */
-                        st.hint = true;
-
-                        mir_insert_instruction_after_scheduled(ctx, block, ins, st);
 
                         if (!is_special)
                                 ctx->spills++;
                 }
                 }
-        }
-
-        /* For special reads, figure out how many bytes we need */
-        unsigned read_bytemask = 0;
-
-        mir_foreach_instr_global_safe(ctx, ins) {
-                read_bytemask |= mir_bytemask_of_read_components(ins, spill_node);
         }
 
         /* Insert a load from TLS before the first consecutive
@@ -978,6 +1101,8 @@ mir_demote_uniforms(compiler_context *ctx, unsigned new_cutoff)
                                 unsigned temp = make_compiler_temp(ctx);
                                 unsigned idx = (23 - SSA_REG_FROM_FIXED(ins->src[i])) * 4;
                                 assert(idx < ctx->info->push.count);
+
+                                ctx->ubo_mask |= BITSET_BIT(ctx->info->push.words[idx].ubo);
 
                                 midgard_instruction ld = {
                                         .type = TAG_LOAD_STORE_4,

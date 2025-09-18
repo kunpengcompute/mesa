@@ -44,7 +44,7 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
           struct fd4_emit *emit, unsigned index_offset) assert_dt
 {
    const struct pipe_draw_info *info = emit->info;
-   enum pc_di_primtype primtype = ctx->primtypes[info->mode];
+   enum pc_di_primtype primtype = ctx->screen->primtypes[info->mode];
 
    fd4_emit_state(ctx, ring, emit);
 
@@ -83,7 +83,7 @@ fd4_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
       .debug = &ctx->debug,
       .vtx = &ctx->vtx,
       .info = info,
-		.drawid_offset = drawid_offset,
+      .drawid_offset = drawid_offset,
       .indirect = indirect,
       .draw = draw,
       .key = {
@@ -101,6 +101,18 @@ fd4_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
       .sprite_coord_enable = ctx->rasterizer->sprite_coord_enable,
       .sprite_coord_mode = ctx->rasterizer->sprite_coord_mode,
    };
+
+   /* Check if we actually need the tg4 workarounds */
+   if (ir3_get_shader_info(emit.key.vs)->uses_texture_gather) {
+      emit.key.key.has_per_samp = true;
+      memcpy(emit.key.key.vsampler_swizzles, fd4_ctx->vsampler_swizzles,
+            sizeof(emit.key.key.vsampler_swizzles));
+   }
+   if (ir3_get_shader_info(emit.key.fs)->uses_texture_gather) {
+      emit.key.key.has_per_samp = true;
+      memcpy(emit.key.key.fsampler_swizzles, fd4_ctx->fsampler_swizzles,
+            sizeof(emit.key.key.fsampler_swizzles));
+   }
 
    if (info->mode != PIPE_PRIM_MAX && !indirect && !info->primitive_restart &&
        !u_trim_pipe_prim(info->mode, (unsigned *)&draw->count))

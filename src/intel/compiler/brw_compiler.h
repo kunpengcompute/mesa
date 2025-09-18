@@ -25,10 +25,11 @@
 #define BRW_COMPILER_H
 
 #include <stdio.h>
+#include "c11/threads.h"
 #include "dev/intel_device_info.h"
-#include "main/macros.h"
-#include "main/mtypes.h"
+#include "main/config.h"
 #include "util/ralloc.h"
+#include "util/u_math.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,11 +38,18 @@ extern "C" {
 struct ra_regs;
 struct nir_shader;
 struct brw_program;
+struct shader_info;
 
+struct nir_shader_compiler_options;
 typedef struct nir_shader nir_shader;
 
 struct brw_compiler {
    const struct intel_device_info *devinfo;
+
+   /* This lock must be taken if the compiler is to be modified in any way,
+    * including adding something to the ralloc child list.
+    */
+   mtx_t mutex;
 
    struct {
       struct ra_regs *regs;
@@ -50,13 +58,7 @@ struct brw_compiler {
        * Array of the ra classes for the unaligned contiguous register
        * block sizes used.
        */
-      int *classes;
-
-      /**
-       * Mapping for register-allocated objects in *regs to the first
-       * GRF for that object.
-       */
-      uint8_t *ra_reg_to_grf;
+      struct ra_class **classes;
    } vec4_reg_set;
 
    struct {
@@ -66,37 +68,21 @@ struct brw_compiler {
        * Array of the ra classes for the unaligned contiguous register
        * block sizes used, indexed by register size.
        */
-      int classes[16];
-
-      /**
-       * Mapping from classes to ra_reg ranges.  Each of the per-size
-       * classes corresponds to a range of ra_reg nodes.  This array stores
-       * those ranges in the form of first ra_reg in each class and the
-       * total number of ra_reg elements in the last array element.  This
-       * way the range of the i'th class is given by:
-       * [ class_to_ra_reg_range[i], class_to_ra_reg_range[i+1] )
-       */
-      int class_to_ra_reg_range[17];
-
-      /**
-       * Mapping for register-allocated objects in *regs to the first
-       * GRF for that object.
-       */
-      uint8_t *ra_reg_to_grf;
+      struct ra_class *classes[16];
 
       /**
        * ra class for the aligned barycentrics we use for PLN, which doesn't
        * appear in *classes.
        */
-      int aligned_bary_class;
+      struct ra_class *aligned_bary_class;
    } fs_reg_sets[3];
 
-   void (*shader_debug_log)(void *, const char *str, ...) PRINTFLIKE(2, 3);
-   void (*shader_perf_log)(void *, const char *str, ...) PRINTFLIKE(2, 3);
+   void (*shader_debug_log)(void *, unsigned *id, const char *str, ...) PRINTFLIKE(3, 4);
+   void (*shader_perf_log)(void *, unsigned *id, const char *str, ...) PRINTFLIKE(3, 4);
 
    bool scalar_stage[MESA_ALL_SHADER_STAGES];
    bool use_tcs_8_patch;
-   struct gl_shader_compiler_options glsl_compiler_options[MESA_ALL_SHADER_STAGES];
+   struct nir_shader_compiler_options *nir_options[MESA_ALL_SHADER_STAGES];
 
    /**
     * Apply workarounds for SIN and COS output range problems.
@@ -111,22 +97,10 @@ struct brw_compiler {
    bool constant_buffer_0_is_relative;
 
    /**
-    * Whether or not the driver supports pull constants.  If not, the compiler
-    * will attempt to push everything.
-    */
-   bool supports_pull_constants;
-
-   /**
     * Whether or not the driver supports NIR shader constants.  This controls
     * whether nir_opt_large_constants will be run.
     */
    bool supports_shader_constants;
-
-   /**
-    * Whether or not the driver wants uniform params to be compacted by the
-    * back-end compiler.
-    */
-   bool compact_params;
 
    /**
     * Whether or not the driver wants variable group size to be lowered by the
@@ -141,7 +115,19 @@ struct brw_compiler {
     * constant or data cache, UBOs must use VK_FORMAT_RAW.
     */
    bool indirect_ubos_use_sampler;
+
+   struct nir_shader *clc_shader;
 };
+
+#define brw_shader_debug_log(compiler, data, fmt, ... ) do {    \
+   static unsigned id = 0;                                      \
+   compiler->shader_debug_log(data, &id, fmt, ##__VA_ARGS__);   \
+} while (0)
+
+#define brw_shader_perf_log(compiler, data, fmt, ... ) do {     \
+   static unsigned id = 0;                                      \
+   compiler->shader_perf_log(data, &id, fmt, ##__VA_ARGS__);    \
+} while (0)
 
 /**
  * We use a constant subgroup size of 32.  It really only needs to be a
@@ -157,6 +143,12 @@ brw_shader_stage_is_bindless(gl_shader_stage stage)
 {
    return stage >= MESA_SHADER_RAYGEN &&
           stage <= MESA_SHADER_CALLABLE;
+}
+
+static inline bool
+brw_shader_stage_requires_bindless_resources(gl_shader_stage stage)
+{
+   return brw_shader_stage_is_bindless(stage) || gl_shader_stage_is_mesh(stage);
 }
 
 /**
@@ -254,10 +246,8 @@ struct brw_base_prog_key {
    unsigned program_string_id;
 
    enum brw_subgroup_size_type subgroup_size_type;
-
-   struct brw_sampler_prog_key_data tex;
-
    bool robust_buffer_access;
+   struct brw_sampler_prog_key_data tex;
 };
 
 /**
@@ -345,6 +335,7 @@ struct brw_vs_prog_key {
     * the VUE, even if they aren't written by the vertex shader.
     */
    uint8_t point_coord_replace;
+   unsigned clamp_pointsize:1;
 };
 
 /** The program key for Tessellation Control Shaders. */
@@ -352,7 +343,7 @@ struct brw_tcs_prog_key
 {
    struct brw_base_prog_key base;
 
-   GLenum tes_primitive_mode;
+   enum tess_primitive_mode _tes_primitive_mode;
 
    unsigned input_vertices;
 
@@ -384,6 +375,7 @@ struct brw_tes_prog_key
     * clip distances.
     */
    unsigned nr_userclip_plane_consts:4;
+   unsigned clamp_pointsize:1;
 };
 
 /** The program key for Geometry Shaders. */
@@ -399,6 +391,17 @@ struct brw_gs_prog_key
     * clip distances.
     */
    unsigned nr_userclip_plane_consts:4;
+   unsigned clamp_pointsize:1;
+};
+
+struct brw_task_prog_key
+{
+   struct brw_base_prog_key base;
+};
+
+struct brw_mesh_prog_key
+{
+   struct brw_base_prog_key base;
 };
 
 enum brw_sf_primitive {
@@ -493,14 +496,14 @@ struct brw_wm_prog_key {
    bool stats_wm:1;
    bool flat_shade:1;
    unsigned nr_color_regions:5;
+   bool emit_alpha_test:1;
+   enum compare_func alpha_test_func:3; /* < For Gfx4/5 MRT alpha test */
    bool alpha_test_replicate_alpha:1;
    bool alpha_to_coverage:1;
    bool clamp_fragment_color:1;
    bool persample_interp:1;
    bool multisample_fbo:1;
-   bool frag_coord_adds_sample_pos:1;
    enum brw_wm_aa_enable line_aa:2;
-   bool high_quality_derivatives:1;
    bool force_dual_color_blend:1;
    bool coherent_fb_fetch:1;
    bool ignore_sample_mask_out:1;
@@ -508,7 +511,6 @@ struct brw_wm_prog_key {
 
    uint8_t color_outputs_valid;
    uint64_t input_slots_valid;
-   GLenum alpha_test_func;          /* < For Gfx4/5 MRT alpha test */
    float alpha_test_ref;
 };
 
@@ -561,6 +563,8 @@ union brw_any_prog_key {
    struct brw_wm_prog_key wm;
    struct brw_cs_prog_key cs;
    struct brw_bs_prog_key bs;
+   struct brw_task_prog_key task;
+   struct brw_mesh_prog_key mesh;
 };
 
 /*
@@ -612,14 +616,6 @@ struct brw_image_param {
  * Binding table index for the first gfx6 SOL binding.
  */
 #define BRW_GFX6_SOL_BINDING_START 0
-
-/**
- * Stride in bytes between shader_time entries.
- *
- * We separate entries by a cacheline to reduce traffic between EUs writing to
- * different entries.
- */
-#define BRW_SHADER_TIME_STRIDE 64
 
 struct brw_ubo_range
 {
@@ -699,6 +695,21 @@ enum brw_param_builtin {
 #define BRW_PARAM_BUILTIN_CLIP_PLANE_COMP(param) \
    (((param) - BRW_PARAM_BUILTIN_CLIP_PLANE_0_X) & 0x3)
 
+enum brw_shader_reloc_id {
+   BRW_SHADER_RELOC_CONST_DATA_ADDR_LOW,
+   BRW_SHADER_RELOC_CONST_DATA_ADDR_HIGH,
+   BRW_SHADER_RELOC_SHADER_START_OFFSET,
+   BRW_SHADER_RELOC_RESUME_SBT_ADDR_LOW,
+   BRW_SHADER_RELOC_RESUME_SBT_ADDR_HIGH,
+};
+
+enum brw_shader_reloc_type {
+   /** An arbitrary 32-bit value */
+   BRW_SHADER_RELOC_TYPE_U32,
+   /** A MOV instruction with an immediate source */
+   BRW_SHADER_RELOC_TYPE_MOV_IMM,
+};
+
 /** Represents a code relocation
  *
  * Relocatable constants are immediates in the code which we want to be able
@@ -708,12 +719,18 @@ struct brw_shader_reloc {
    /** The 32-bit ID of the relocatable constant */
    uint32_t id;
 
-   /** The offset in the shader to the relocatable instruction
+   /** Type of this relocation */
+   enum brw_shader_reloc_type type;
+
+   /** The offset in the shader to the relocated value
     *
-    * This is the offset to the instruction rather than the immediate value
-    * itself.  This allows us to do some sanity checking while we relocate.
+    * For MOV_IMM relocs, this is an offset to the MOV instruction.  This
+    * allows us to do some sanity checking while we update the value.
     */
    uint32_t offset;
+
+   /** Value to be added to the relocated value before it is written */
+   uint32_t delta;
 };
 
 /** A value to write to a relocation */
@@ -726,28 +743,9 @@ struct brw_shader_reloc_value {
 };
 
 struct brw_stage_prog_data {
-   struct {
-      /** size of our binding table. */
-      uint32_t size_bytes;
-
-      /** @{
-       * surface indices for the various groups of surfaces
-       */
-      uint32_t pull_constants_start;
-      uint32_t texture_start;
-      uint32_t gather_texture_start;
-      uint32_t ubo_start;
-      uint32_t ssbo_start;
-      uint32_t image_start;
-      uint32_t shader_time_start;
-      uint32_t plane_start[3];
-      /** @} */
-   } binding_table;
-
    struct brw_ubo_range ubo_ranges[4];
 
-   GLuint nr_params;       /**< number of float params/constants */
-   GLuint nr_pull_params;
+   unsigned nr_params;       /**< number of float params/constants */
 
    gl_shader_stage stage;
 
@@ -779,6 +777,9 @@ struct brw_stage_prog_data {
    /** Does this program pull from any UBO or other constant buffers? */
    bool has_ubo_pull;
 
+   /** How many ray queries objects in this shader. */
+   unsigned ray_queries;
+
    /**
     * Register where the thread expects to find input data from the URB
     * (typically uniforms, followed by vertex or fragment attributes).
@@ -794,7 +795,6 @@ struct brw_stage_prog_data {
     * above.
     */
    uint32_t *param;
-   uint32_t *pull_param;
 
    /* Whether shader uses atomic operations. */
    bool uses_atomic_load_store;
@@ -841,7 +841,8 @@ enum brw_pixel_shader_computed_depth_mode {
 struct brw_wm_prog_data {
    struct brw_stage_prog_data base;
 
-   GLuint num_varying_inputs;
+   unsigned num_per_primitive_inputs;
+   unsigned num_varying_inputs;
 
    uint8_t reg_blocks_8;
    uint8_t reg_blocks_16;
@@ -860,6 +861,7 @@ struct brw_wm_prog_data {
       /** @} */
    } binding_table;
 
+   uint8_t color_outputs_written;
    uint8_t computed_depth_mode;
    bool computed_stencil;
 
@@ -892,9 +894,16 @@ struct brw_wm_prog_data {
 
    /**
     * Mask of which interpolation modes are required by the fragment shader.
-    * Used in hardware setup on gfx6+.
+    * Those interpolations are delivered as part of the thread payload. Used
+    * in hardware setup on gfx6+.
     */
    uint32_t barycentric_interp_modes;
+
+   /**
+    * Whether nonperspective interpolation modes are used by the
+    * barycentric_interp_modes or fragment shader through interpolator messages.
+    */
+   bool uses_nonperspective_interp_modes;
 
    /**
     * Mask of which FS inputs are marked flat by the shader source.  This is
@@ -1038,6 +1047,7 @@ struct brw_cs_prog_data {
 
    bool uses_barrier;
    bool uses_num_work_groups;
+   bool uses_inline_data;
    bool uses_btd_stack_ids;
 
    struct {
@@ -1068,8 +1078,15 @@ brw_cs_prog_data_prog_offset(const struct brw_cs_prog_data *prog_data,
 
 struct brw_bs_prog_data {
    struct brw_stage_prog_data base;
+
+   /** SIMD size of the root shader */
    uint8_t simd_size;
-   uint32_t stack_size;
+
+   /** Maximum stack size of all shaders */
+   uint32_t max_stack_size;
+
+   /** Offset into the shader where the resume SBT is located */
+   uint32_t resume_sbt_offset;
 };
 
 struct brw_ff_gs_prog_data {
@@ -1189,7 +1206,7 @@ void brw_print_vue_map(FILE *fp, const struct brw_vue_map *vue_map,
 /**
  * Convert a VUE slot number into a byte offset within the VUE.
  */
-static inline GLuint brw_vue_slot_to_offset(GLuint slot)
+static inline unsigned brw_vue_slot_to_offset(unsigned slot)
 {
    return 16*slot;
 }
@@ -1198,8 +1215,8 @@ static inline GLuint brw_vue_slot_to_offset(GLuint slot)
  * Convert a vertex output (brw_varying_slot) into a byte offset within the
  * VUE.
  */
-static inline
-GLuint brw_varying_to_offset(const struct brw_vue_map *vue_map, GLuint varying)
+static inline unsigned
+brw_varying_to_offset(const struct brw_vue_map *vue_map, unsigned varying)
 {
    return brw_vue_slot_to_offset(vue_map->varying_to_slot[varying]);
 }
@@ -1264,8 +1281,8 @@ struct brw_vue_prog_data {
    /** Should the hardware deliver input VUE handles for URB pull loads? */
    bool include_vue_handles;
 
-   GLuint urb_read_length;
-   GLuint total_grf;
+   unsigned urb_read_length;
+   unsigned total_grf;
 
    uint32_t clip_distance_mask;
    uint32_t cull_distance_mask;
@@ -1274,7 +1291,7 @@ struct brw_vue_prog_data {
     * URB entry used for both input and output to the thread.  In the GS, this
     * is the size of the URB entry used for output.
     */
-   GLuint urb_entry_size;
+   unsigned urb_entry_size;
 
    enum shader_dispatch_mode dispatch_mode;
 };
@@ -1282,8 +1299,8 @@ struct brw_vue_prog_data {
 struct brw_vs_prog_data {
    struct brw_vue_prog_data base;
 
-   GLbitfield64 inputs_read;
-   GLbitfield64 double_inputs_read;
+   uint64_t inputs_read;
+   uint64_t double_inputs_read;
 
    unsigned nr_attribute_slots;
 
@@ -1317,6 +1334,7 @@ struct brw_tes_prog_data
    enum brw_tess_partitioning partitioning;
    enum brw_tess_output_topology output_topology;
    enum brw_tess_domain domain;
+   bool include_primitive_id;
 };
 
 struct brw_gs_prog_data
@@ -1359,12 +1377,12 @@ struct brw_gs_prog_data
     * Gfx6: Provoking vertex convention for odd-numbered triangles
     * in tristrips.
     */
-   GLuint pv_first:1;
+   unsigned pv_first:1;
 
    /**
     * Gfx6: Number of varyings that are output to transform feedback.
     */
-   GLuint num_transform_feedback_bindings:7; /* 0-BRW_MAX_SOL_BINDINGS */
+   unsigned num_transform_feedback_bindings:7; /* 0-BRW_MAX_SOL_BINDINGS */
 
    /**
     * Gfx6: Map from the index of a transform feedback binding table entry to the
@@ -1401,6 +1419,53 @@ struct brw_clip_prog_data {
    uint32_t total_grf;
 };
 
+struct brw_tue_map {
+   uint32_t size_dw;
+
+   uint32_t per_task_data_start_dw;
+};
+
+struct brw_mue_map {
+   int32_t start_dw[VARYING_SLOT_MAX];
+
+   uint32_t size_dw;
+
+   uint32_t max_primitives;
+   uint32_t per_primitive_start_dw;
+   uint32_t per_primitive_header_size_dw;
+   uint32_t per_primitive_data_size_dw;
+   uint32_t per_primitive_pitch_dw;
+
+   uint32_t max_vertices;
+   uint32_t per_vertex_start_dw;
+   uint32_t per_vertex_header_size_dw;
+   uint32_t per_vertex_data_size_dw;
+   uint32_t per_vertex_pitch_dw;
+};
+
+struct brw_task_prog_data {
+   struct brw_cs_prog_data base;
+   struct brw_tue_map map;
+   bool uses_drawid;
+};
+
+enum brw_mesh_index_format {
+   BRW_INDEX_FORMAT_U32,
+};
+
+struct brw_mesh_prog_data {
+   struct brw_cs_prog_data base;
+   struct brw_mue_map map;
+
+   uint32_t clip_distance_mask;
+   uint32_t cull_distance_mask;
+   uint16_t primitive_type;
+
+   enum brw_mesh_index_format index_format;
+
+   bool uses_drawid;
+};
+
 /* brw_any_prog_data is prog_data for any stage that maps to an API stage */
 union brw_any_prog_data {
    struct brw_stage_prog_data base;
@@ -1412,6 +1477,8 @@ union brw_any_prog_data {
    struct brw_wm_prog_data wm;
    struct brw_cs_prog_data cs;
    struct brw_bs_prog_data bs;
+   struct brw_task_prog_data task;
+   struct brw_mesh_prog_data mesh;
 };
 
 #define DEFINE_PROG_DATA_DOWNCAST(STAGE, CHECK)                            \
@@ -1435,13 +1502,16 @@ DEFINE_PROG_DATA_DOWNCAST(tcs, prog_data->stage == MESA_SHADER_TESS_CTRL)
 DEFINE_PROG_DATA_DOWNCAST(tes, prog_data->stage == MESA_SHADER_TESS_EVAL)
 DEFINE_PROG_DATA_DOWNCAST(gs,  prog_data->stage == MESA_SHADER_GEOMETRY)
 DEFINE_PROG_DATA_DOWNCAST(wm,  prog_data->stage == MESA_SHADER_FRAGMENT)
-DEFINE_PROG_DATA_DOWNCAST(cs,  prog_data->stage == MESA_SHADER_COMPUTE)
+DEFINE_PROG_DATA_DOWNCAST(cs,  gl_shader_stage_uses_workgroup(prog_data->stage))
 DEFINE_PROG_DATA_DOWNCAST(bs,  brw_shader_stage_is_bindless(prog_data->stage))
 
 DEFINE_PROG_DATA_DOWNCAST(vue, prog_data->stage == MESA_SHADER_VERTEX ||
                                prog_data->stage == MESA_SHADER_TESS_CTRL ||
                                prog_data->stage == MESA_SHADER_TESS_EVAL ||
                                prog_data->stage == MESA_SHADER_GEOMETRY)
+
+DEFINE_PROG_DATA_DOWNCAST(task, prog_data->stage == MESA_SHADER_TASK)
+DEFINE_PROG_DATA_DOWNCAST(mesh, prog_data->stage == MESA_SHADER_MESH)
 
 /* These are not really brw_stage_prog_data. */
 DEFINE_PROG_DATA_DOWNCAST(ff_gs, true)
@@ -1496,8 +1566,7 @@ struct brw_compile_vs_params {
    const struct brw_vs_prog_key *key;
    struct brw_vs_prog_data *prog_data;
 
-   bool shader_time;
-   int shader_time_index;
+   bool edgeflag_is_last; /* true for gallium */
 
    struct brw_compile_stats *stats;
 
@@ -1520,52 +1589,89 @@ brw_compile_vs(const struct brw_compiler *compiler,
                struct brw_compile_vs_params *params);
 
 /**
+ * Parameters for compiling a tessellation control shader.
+ *
+ * Some of these will be modified during the shader compilation.
+ */
+struct brw_compile_tcs_params {
+   nir_shader *nir;
+
+   const struct brw_tcs_prog_key *key;
+   struct brw_tcs_prog_data *prog_data;
+
+   struct brw_compile_stats *stats;
+
+   void *log_data;
+
+   char *error_str;
+};
+
+/**
  * Compile a tessellation control shader.
  *
- * Returns the final assembly and the program's size.
+ * Returns the final assembly and updates the parameters structure.
  */
 const unsigned *
 brw_compile_tcs(const struct brw_compiler *compiler,
-                void *log_data,
                 void *mem_ctx,
-                const struct brw_tcs_prog_key *key,
-                struct brw_tcs_prog_data *prog_data,
-                nir_shader *nir,
-                int shader_time_index,
-                struct brw_compile_stats *stats,
-                char **error_str);
+                struct brw_compile_tcs_params *params);
+
+/**
+ * Parameters for compiling a tessellation evaluation shader.
+ *
+ * Some of these will be modified during the shader compilation.
+ */
+struct brw_compile_tes_params {
+   nir_shader *nir;
+
+   const struct brw_tes_prog_key *key;
+   struct brw_tes_prog_data *prog_data;
+   const struct brw_vue_map *input_vue_map;
+
+   struct brw_compile_stats *stats;
+
+   void *log_data;
+
+   char *error_str;
+};
 
 /**
  * Compile a tessellation evaluation shader.
  *
- * Returns the final assembly and the program's size.
+ * Returns the final assembly and updates the parameters structure.
  */
 const unsigned *
-brw_compile_tes(const struct brw_compiler *compiler, void *log_data,
+brw_compile_tes(const struct brw_compiler *compiler,
                 void *mem_ctx,
-                const struct brw_tes_prog_key *key,
-                const struct brw_vue_map *input_vue_map,
-                struct brw_tes_prog_data *prog_data,
-                nir_shader *nir,
-                int shader_time_index,
-                struct brw_compile_stats *stats,
-                char **error_str);
+                struct brw_compile_tes_params *params);
 
 /**
- * Compile a vertex shader.
+ * Parameters for compiling a geometry shader.
  *
- * Returns the final assembly and the program's size.
+ * Some of these will be modified during the shader compilation.
+ */
+struct brw_compile_gs_params {
+   nir_shader *nir;
+
+   const struct brw_gs_prog_key *key;
+   struct brw_gs_prog_data *prog_data;
+
+   struct brw_compile_stats *stats;
+
+   void *log_data;
+
+   char *error_str;
+};
+
+/**
+ * Compile a geometry shader.
+ *
+ * Returns the final assembly and updates the parameters structure.
  */
 const unsigned *
-brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
+brw_compile_gs(const struct brw_compiler *compiler,
                void *mem_ctx,
-               const struct brw_gs_prog_key *key,
-               struct brw_gs_prog_data *prog_data,
-               nir_shader *nir,
-               struct gl_program *prog,
-               int shader_time_index,
-               struct brw_compile_stats *stats,
-               char **error_str);
+               struct brw_compile_gs_params *params);
 
 /**
  * Compile a strips and fans shader.
@@ -1599,6 +1705,41 @@ brw_compile_clip(const struct brw_compiler *compiler,
                  struct brw_vue_map *vue_map,
                  unsigned *final_assembly_size);
 
+struct brw_compile_task_params {
+   struct nir_shader *nir;
+
+   const struct brw_task_prog_key *key;
+   struct brw_task_prog_data *prog_data;
+
+   struct brw_compile_stats *stats;
+
+   char *error_str;
+   void *log_data;
+};
+
+const unsigned *
+brw_compile_task(const struct brw_compiler *compiler,
+                 void *mem_ctx,
+                 struct brw_compile_task_params *params);
+
+struct brw_compile_mesh_params {
+   struct nir_shader *nir;
+
+   const struct brw_mesh_prog_key *key;
+   struct brw_mesh_prog_data *prog_data;
+   const struct brw_tue_map *tue_map;
+
+   struct brw_compile_stats *stats;
+
+   char *error_str;
+   void *log_data;
+};
+
+const unsigned *
+brw_compile_mesh(const struct brw_compiler *compiler,
+                 void *mem_ctx,
+                 struct brw_compile_mesh_params *params);
+
 /**
  * Parameters for compiling a fragment shader.
  *
@@ -1609,12 +1750,9 @@ struct brw_compile_fs_params {
 
    const struct brw_wm_prog_key *key;
    struct brw_wm_prog_data *prog_data;
-   const struct brw_vue_map *vue_map;
 
-   bool shader_time;
-   int shader_time_index8;
-   int shader_time_index16;
-   int shader_time_index32;
+   const struct brw_vue_map *vue_map;
+   const struct brw_mue_map *mue_map;
 
    bool allow_spilling;
    bool use_rep_send;
@@ -1650,14 +1788,14 @@ struct brw_compile_cs_params {
    const struct brw_cs_prog_key *key;
    struct brw_cs_prog_data *prog_data;
 
-   bool shader_time;
-   int shader_time_index;
-
    struct brw_compile_stats *stats;
 
    void *log_data;
 
    char *error_str;
+
+   /* If unset, DEBUG_CS is used. */
+   uint64_t debug_flag;
 };
 
 /**
@@ -1671,18 +1809,35 @@ brw_compile_cs(const struct brw_compiler *compiler,
                struct brw_compile_cs_params *params);
 
 /**
- * Compile a Ray Tracing shader.
+ * Parameters for compiling a Bindless shader.
  *
- * Returns the final assembly and the program's size.
+ * Some of these will be modified during the shader compilation.
+ */
+struct brw_compile_bs_params {
+   nir_shader *nir;
+
+   const struct brw_bs_prog_key *key;
+   struct brw_bs_prog_data *prog_data;
+
+   unsigned num_resume_shaders;
+   struct nir_shader **resume_shaders;
+
+   struct brw_compile_stats *stats;
+
+   void *log_data;
+
+   char *error_str;
+};
+
+/**
+ * Compile a Bindless shader.
+ *
+ * Returns the final assembly and updates the parameters structure.
  */
 const unsigned *
-brw_compile_bs(const struct brw_compiler *compiler, void *log_data,
+brw_compile_bs(const struct brw_compiler *compiler,
                void *mem_ctx,
-               const struct brw_bs_prog_key *key,
-               struct brw_bs_prog_data *prog_data,
-               struct nir_shader *shader,
-               struct brw_compile_stats *stats,
-               char **error_str);
+               struct brw_compile_bs_params *params);
 
 /**
  * Compile a fixed function geometry shader.
@@ -1812,7 +1967,7 @@ brw_stage_has_packed_dispatch(ASSERTED const struct intel_device_info *devinfo,
        */
       const struct brw_wm_prog_data *wm_prog_data =
          (const struct brw_wm_prog_data *)prog_data;
-      return !wm_prog_data->persample_dispatch;
+      return devinfo->verx10 < 125 && !wm_prog_data->persample_dispatch;
    }
    case MESA_SHADER_COMPUTE:
       /* Compute shaders will be spawned with either a fully enabled dispatch
@@ -1849,7 +2004,7 @@ static inline int
 brw_compute_first_urb_slot_required(uint64_t inputs_read,
                                     const struct brw_vue_map *prev_stage_vue_map)
 {
-   if ((inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT)) == 0) {
+   if ((inputs_read & (VARYING_BIT_LAYER | VARYING_BIT_VIEWPORT | VARYING_BIT_PRIMITIVE_SHADING_RATE)) == 0) {
       for (int i = 0; i < prev_stage_vue_map->num_slots; i++) {
          int varying = prev_stage_vue_map->slot_to_varying[i];
          if (varying > 0 && (inputs_read & BITFIELD64_BIT(varying)) != 0)
@@ -1859,6 +2014,33 @@ brw_compute_first_urb_slot_required(uint64_t inputs_read,
 
    return 0;
 }
+
+/* From InlineData in 3DSTATE_TASK_SHADER_DATA and 3DSTATE_MESH_SHADER_DATA. */
+#define BRW_TASK_MESH_INLINE_DATA_SIZE_DW 8
+
+/* InlineData[0-1] is used for Vulkan descriptor. */
+#define BRW_TASK_MESH_PUSH_CONSTANTS_START_DW 2
+
+#define BRW_TASK_MESH_PUSH_CONSTANTS_SIZE_DW \
+   (BRW_TASK_MESH_INLINE_DATA_SIZE_DW - BRW_TASK_MESH_PUSH_CONSTANTS_START_DW)
+
+/**
+ * This enum is used as the base indice of the nir_load_topology_id_intel
+ * intrinsic. This is used to return different values based on some aspect of
+ * the topology of the device.
+ */
+enum brw_topology_id
+{
+   /* A value based of the DSS identifier the shader is currently running on.
+    * Be mindful that the DSS ID can be higher than the total number of DSS on
+    * the device. This is because of the fusing that can occur on different
+    * parts.
+    */
+   BRW_TOPOLOGY_ID_DSS,
+
+   /* A value composed of EU ID, thread ID & SIMD lane ID. */
+   BRW_TOPOLOGY_ID_EU_THREAD_SIMD,
+};
 
 #ifdef __cplusplus
 } /* extern "C" */

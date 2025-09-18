@@ -70,7 +70,7 @@ fd5_zsa_state_create(struct pipe_context *pctx,
 
    if (cso->depth_enabled)
       so->rb_depth_cntl |=
-         A5XX_RB_DEPTH_CNTL_Z_ENABLE | A5XX_RB_DEPTH_CNTL_Z_TEST_ENABLE;
+         A5XX_RB_DEPTH_CNTL_Z_TEST_ENABLE | A5XX_RB_DEPTH_CNTL_Z_READ_ENABLE;
 
    if (cso->depth_writemask)
       so->rb_depth_cntl |= A5XX_RB_DEPTH_CNTL_Z_WRITE_ENABLE;
@@ -105,7 +105,7 @@ fd5_zsa_state_create(struct pipe_context *pctx,
    }
 
    if (cso->alpha_enabled) {
-      uint32_t ref = cso->alpha_ref_value * 255.0;
+      uint32_t ref = cso->alpha_ref_value * 255.0f;
       so->rb_alpha_control =
          A5XX_RB_ALPHA_CONTROL_ALPHA_TEST |
          A5XX_RB_ALPHA_CONTROL_ALPHA_REF(ref) |

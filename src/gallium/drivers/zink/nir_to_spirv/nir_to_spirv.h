@@ -34,16 +34,20 @@
 
 #include "zink_compiler.h"
 
+#define SPIRV_VERSION(major, minor) (((major) << 16) | ((minor) << 8))
+
 struct spirv_shader {
    uint32_t *words;
    size_t num_words;
+   uint32_t tcs_vertices_out_word;
 };
 
 struct nir_shader;
 struct pipe_stream_output_info;
 
 struct spirv_shader *
-nir_to_spirv(struct nir_shader *s, const struct zink_so_info *so_info, bool spirv_15);
+nir_to_spirv(struct nir_shader *s, const struct zink_shader_info *so_info,
+             uint32_t spirv_version);
 
 void
 spirv_shader_delete(struct spirv_shader *s);

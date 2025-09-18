@@ -24,7 +24,7 @@
 #include "common/intel_decoder.h"
 #include "intel_disasm.h"
 #include "util/macros.h"
-#include "main/macros.h" /* Needed for ROUND_DOWN_TO */
+#include "util/u_math.h" /* Needed for ROUND_DOWN_TO */
 
 #include <string.h>
 
@@ -263,7 +263,7 @@ handle_binding_table_pool_alloc(struct intel_batch_decode_ctx *ctx,
       }
    }
 
-   if (bt_pool_enable) {
+   if (bt_pool_enable || ctx->devinfo.verx10 >= 125) {
       ctx->bt_pool_base = bt_pool_base;
    } else {
       ctx->bt_pool_base = 0;
@@ -611,10 +611,42 @@ decode_single_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 }
 
 static void
-decode_ps_kernels(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
+decode_mesh_task_ksp(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 {
    struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
 
+   uint64_t ksp = 0;
+   uint64_t local_x_maximum = 0;
+   uint64_t threads = 0;
+
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+   while (intel_field_iterator_next(&iter)) {
+      if (strcmp(iter.name, "Kernel Start Pointer") == 0) {
+         ksp = iter.raw_value;
+      } else if (strcmp(iter.name, "Local X Maximum") == 0) {
+         local_x_maximum = iter.raw_value;
+      } else if (strcmp(iter.name, "Number of Threads in GPGPU Thread Group") == 0) {
+         threads = iter.raw_value;
+      }
+   }
+
+   const char *type =
+      strcmp(inst->name,   "3DSTATE_MESH_SHADER") == 0 ? "mesh shader" :
+      strcmp(inst->name,   "3DSTATE_TASK_SHADER") == 0 ? "task shader" :
+      NULL;
+
+   if (threads && local_x_maximum) {
+      ctx_disassemble_program(ctx, ksp, type);
+      fprintf(ctx->fp, "\n");
+   }
+}
+
+static void
+decode_ps_kern(struct intel_batch_decode_ctx *ctx,
+               struct intel_group *inst, const uint32_t *p)
+{
+   bool single_ksp = ctx->devinfo.ver == 4;
    uint64_t ksp[3] = {0, 0, 0};
    bool enabled[3] = {false, false, false};
 
@@ -633,6 +665,9 @@ decode_ps_kernels(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
          enabled[2] = strcmp(iter.value, "true") == 0;
       }
    }
+
+   if (single_ksp)
+      ksp[1] = ksp[2] = ksp[0];
 
    /* Reorder KSPs to be [8, 16, 32] instead of the hardware order. */
    if (enabled[0] + enabled[1] + enabled[2] == 1) {
@@ -661,6 +696,14 @@ decode_ps_kernels(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 }
 
 static void
+decode_ps_kernels(struct intel_batch_decode_ctx *ctx,
+                  const uint32_t *p)
+{
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+   decode_ps_kern(ctx, inst, p);
+}
+
+static void
 decode_3dstate_constant_all(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
 {
    struct intel_group *inst =
@@ -668,7 +711,7 @@ decode_3dstate_constant_all(struct intel_batch_decode_ctx *ctx, const uint32_t *
    struct intel_group *body =
       intel_spec_find_struct(ctx->spec, "3DSTATE_CONSTANT_ALL_DATA");
 
-   uint32_t read_length[4];
+   uint32_t read_length[4] = {0};
    struct intel_batch_decode_bo buffer[4];
    memset(buffer, 0, sizeof(buffer));
 
@@ -711,7 +754,7 @@ decode_3dstate_constant(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
       intel_spec_find_struct(ctx->spec, "3DSTATE_CONSTANT_BODY");
 
    uint32_t read_length[4] = {0};
-   uint64_t read_addr[4];
+   uint64_t read_addr[4] = {0};
 
    struct intel_field_iterator outer;
    intel_field_iterator_init(&outer, inst, p, 0, false);
@@ -749,6 +792,39 @@ decode_3dstate_constant(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
       }
    }
 }
+
+static void
+decode_gfx4_constant_buffer(struct intel_batch_decode_ctx *ctx, const uint32_t *p)
+{
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+   uint64_t read_length = 0, read_addr = 0, valid = 0;
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+
+   while (intel_field_iterator_next(&iter)) {
+      if (!strcmp(iter.name, "Buffer Length")) {
+         read_length = iter.raw_value;
+      } else if (!strcmp(iter.name, "Valid")) {
+         valid = iter.raw_value;
+      } else if (!strcmp(iter.name, "Buffer Starting Address")) {
+         read_addr = iter.raw_value;
+      }
+   }
+
+   if (!valid)
+      return;
+
+   struct intel_batch_decode_bo buffer = ctx_get_bo(ctx, true, read_addr);
+   if (!buffer.map) {
+      fprintf(ctx->fp, "constant buffer unavailable\n");
+      return;
+   }
+   unsigned size = (read_length + 1) * 16 * sizeof(float);
+   fprintf(ctx->fp, "constant buffer size %u\n", size);
+
+   ctx_print_buffer(ctx, buffer, size, 0, -1);
+}
+
 
 static void
 decode_gfx4_3dstate_binding_table_pointers(struct intel_batch_decode_ctx *ctx,
@@ -807,23 +883,10 @@ str_ends_with(const char *str, const char *end)
 }
 
 static void
-decode_dynamic_state_pointers(struct intel_batch_decode_ctx *ctx,
-                              const char *struct_type, const uint32_t *p,
-                              int count)
+decode_dynamic_state(struct intel_batch_decode_ctx *ctx,
+                       const char *struct_type, uint32_t state_offset,
+                       int count)
 {
-   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
-
-   uint32_t state_offset = 0;
-
-   struct intel_field_iterator iter;
-   intel_field_iterator_init(&iter, inst, p, 0, false);
-   while (intel_field_iterator_next(&iter)) {
-      if (str_ends_with(iter.name, "Pointer")) {
-         state_offset = iter.raw_value;
-         break;
-      }
-   }
-
    uint64_t state_addr = ctx->dynamic_base + state_offset;
    struct intel_batch_decode_bo bo = ctx_get_bo(ctx, true, state_addr);
    const void *state_map = bo.map;
@@ -862,6 +925,57 @@ decode_dynamic_state_pointers(struct intel_batch_decode_ctx *ctx,
 }
 
 static void
+decode_dynamic_state_pointers(struct intel_batch_decode_ctx *ctx,
+                              const char *struct_type, const uint32_t *p,
+                              int count)
+{
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+
+   uint32_t state_offset = 0;
+
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+   while (intel_field_iterator_next(&iter)) {
+      if (str_ends_with(iter.name, "Pointer") || !strncmp(iter.name, "Pointer", 7)) {
+         state_offset = iter.raw_value;
+         break;
+      }
+   }
+   decode_dynamic_state(ctx, struct_type, state_offset, count);
+}
+
+static void
+decode_3dstate_viewport_state_pointers(struct intel_batch_decode_ctx *ctx,
+                                       const uint32_t *p)
+{
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+   uint32_t state_offset = 0;
+   bool clip = false, sf = false, cc = false;
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+   while (intel_field_iterator_next(&iter)) {
+      if (!strcmp(iter.name, "CLIP Viewport State Change"))
+         clip = iter.raw_value;
+      if (!strcmp(iter.name, "SF Viewport State Change"))
+         sf = iter.raw_value;
+      if (!strcmp(iter.name, "CC Viewport State Change"))
+         cc = iter.raw_value;
+      else if (!strcmp(iter.name, "Pointer to CLIP_VIEWPORT") && clip) {
+         state_offset = iter.raw_value;
+         decode_dynamic_state(ctx, "CLIP_VIEWPORT", state_offset, 1);
+      }
+      else if (!strcmp(iter.name, "Pointer to SF_VIEWPORT") && sf) {
+         state_offset = iter.raw_value;
+         decode_dynamic_state(ctx, "SF_VIEWPORT", state_offset, 1);
+      }
+      else if (!strcmp(iter.name, "Pointer to CC_VIEWPORT") && cc) {
+         state_offset = iter.raw_value;
+         decode_dynamic_state(ctx, "CC_VIEWPORT", state_offset, 1);
+      }
+   }
+}
+
+static void
 decode_3dstate_viewport_state_pointers_cc(struct intel_batch_decode_ctx *ctx,
                                           const uint32_t *p)
 {
@@ -886,7 +1000,44 @@ static void
 decode_3dstate_cc_state_pointers(struct intel_batch_decode_ctx *ctx,
                                  const uint32_t *p)
 {
-   decode_dynamic_state_pointers(ctx, "COLOR_CALC_STATE", p, 1);
+   if (ctx->devinfo.ver != 6) {
+      decode_dynamic_state_pointers(ctx, "COLOR_CALC_STATE", p, 1);
+      return;
+   }
+
+   struct intel_group *inst = intel_ctx_find_instruction(ctx, p);
+
+   uint32_t state_offset = 0;
+   bool blend_change = false, ds_change = false, cc_change = false;
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, inst, p, 0, false);
+   while (intel_field_iterator_next(&iter)) {
+      if (!strcmp(iter.name, "BLEND_STATE Change"))
+         blend_change = iter.raw_value;
+      else if (!strcmp(iter.name, "DEPTH_STENCIL_STATE Change"))
+         ds_change = iter.raw_value;
+      else if (!strcmp(iter.name, "Color Calc State Pointer Valid"))
+         cc_change = iter.raw_value;
+      else if (!strcmp(iter.name, "Pointer to DEPTH_STENCIL_STATE") && ds_change) {
+         state_offset = iter.raw_value;
+         decode_dynamic_state(ctx, "DEPTH_STENCIL_STATE", state_offset, 1);
+      }
+      else if (!strcmp(iter.name, "Pointer to BLEND_STATE") && blend_change) {
+         state_offset = iter.raw_value;
+         decode_dynamic_state(ctx, "BLEND_STATE", state_offset, 1);
+      }
+      else if (!strcmp(iter.name, "Color Calc State Pointer") && cc_change) {
+         state_offset = iter.raw_value;
+         decode_dynamic_state(ctx, "COLOR_CALC_STATE", state_offset, 1);
+      }
+   }
+}
+
+static void
+decode_3dstate_ds_state_pointers(struct intel_batch_decode_ctx *ctx,
+                                 const uint32_t *p)
+{
+   decode_dynamic_state_pointers(ctx, "DEPTH_STENCIL_STATE", p, 1);
 }
 
 static void
@@ -908,6 +1059,8 @@ handle_gt_mode(struct intel_batch_decode_ctx *ctx,
                uint32_t reg_addr, uint32_t val)
 {
    struct intel_group *reg = intel_spec_find_register(ctx->spec, reg_addr);
+
+   assert(intel_group_get_length(reg, &val) == 1);
 
    struct intel_field_iterator iter;
    intel_field_iterator_init(&iter, reg, &val, 0, false);
@@ -977,6 +1130,22 @@ decode_vs_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
    }
 
    ctx_print_group(ctx, strct, offset, bind_bo.map);
+
+   uint64_t ksp = 0;
+   bool is_enabled = true;
+   struct intel_field_iterator iter;
+   intel_field_iterator_init(&iter, strct, bind_bo.map, 0, false);
+   while (intel_field_iterator_next(&iter)) {
+      if (strcmp(iter.name, "Kernel Start Pointer") == 0) {
+         ksp = iter.raw_value;
+      } else if (strcmp(iter.name, "Enable") == 0) {
+	is_enabled = iter.raw_value;
+      }
+   }
+   if (is_enabled) {
+      ctx_disassemble_program(ctx, ksp, "vertex shader");
+      fprintf(ctx->fp, "\n");
+   }
 }
 
 static void
@@ -1092,6 +1261,8 @@ decode_wm_state(struct intel_batch_decode_ctx *ctx, uint32_t offset)
    }
 
    ctx_print_group(ctx, strct, offset, bind_bo.map);
+
+   decode_ps_kern(ctx, strct, bind_bo.map);
 }
 
 static void
@@ -1170,6 +1341,8 @@ struct custom_decoder {
    { "3DSTATE_HS", decode_single_ksp },
    { "3DSTATE_PS", decode_ps_kernels },
    { "3DSTATE_WM", decode_ps_kernels },
+   { "3DSTATE_MESH_SHADER", decode_mesh_task_ksp },
+   { "3DSTATE_TASK_SHADER", decode_mesh_task_ksp },
    { "3DSTATE_CONSTANT_VS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_GS", decode_3dstate_constant },
    { "3DSTATE_CONSTANT_PS", decode_3dstate_constant },
@@ -1191,15 +1364,18 @@ struct custom_decoder {
    { "3DSTATE_SAMPLER_STATE_POINTERS_PS", decode_3dstate_sampler_state_pointers },
    { "3DSTATE_SAMPLER_STATE_POINTERS", decode_3dstate_sampler_state_pointers_gfx6 },
 
+   { "3DSTATE_VIEWPORT_STATE_POINTERS", decode_3dstate_viewport_state_pointers },
    { "3DSTATE_VIEWPORT_STATE_POINTERS_CC", decode_3dstate_viewport_state_pointers_cc },
    { "3DSTATE_VIEWPORT_STATE_POINTERS_SF_CLIP", decode_3dstate_viewport_state_pointers_sf_clip },
    { "3DSTATE_BLEND_STATE_POINTERS", decode_3dstate_blend_state_pointers },
    { "3DSTATE_CC_STATE_POINTERS", decode_3dstate_cc_state_pointers },
+   { "3DSTATE_DEPTH_STENCIL_STATE_POINTERS", decode_3dstate_ds_state_pointers },
    { "3DSTATE_SCISSOR_STATE_POINTERS", decode_3dstate_scissor_state_pointers },
    { "3DSTATE_SLICE_TABLE_STATE_POINTERS", decode_3dstate_slice_table_state_pointers },
    { "MI_LOAD_REGISTER_IMM", decode_load_register_imm },
    { "3DSTATE_PIPELINED_POINTERS", decode_pipelined_pointers },
    { "3DSTATE_CPS_POINTERS", decode_cps_pointers },
+   { "CONSTANT_BUFFER", decode_gfx4_constant_buffer },
 };
 
 void
@@ -1266,8 +1442,9 @@ intel_print_batch(struct intel_batch_decode_ctx *ctx,
          reset_color = "";
       }
 
-      fprintf(ctx->fp, "%s0x%08"PRIx64":  0x%08x:  %-80s%s\n",
-              color, offset, p[0], inst_name, reset_color);
+      fprintf(ctx->fp, "%s0x%08"PRIx64"%s:  0x%08x:  %-80s%s\n", color, offset,
+              ctx->acthd && offset == ctx->acthd ? " (ACTHD)" : "", p[0],
+              inst_name, reset_color);
 
       if (ctx->flags & INTEL_BATCH_DECODE_FULL) {
          ctx_print_group(ctx, inst, offset, p);

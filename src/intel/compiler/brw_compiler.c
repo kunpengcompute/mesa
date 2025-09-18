@@ -38,13 +38,14 @@
    .lower_bitfield_insert = true,                                             \
    .lower_uadd_carry = true,                                                  \
    .lower_usub_borrow = true,                                                 \
-   .lower_fdiv = true,                                                        \
    .lower_flrp64 = true,                                                      \
    .lower_isign = true,                                                       \
    .lower_ldexp = true,                                                       \
    .lower_device_index_to_zero = true,                                        \
    .vectorize_io = true,                                                      \
    .use_interpolated_input_intrinsics = true,                                 \
+   .lower_insert_byte = true,                                                 \
+   .lower_insert_word = true,                                                 \
    .vertex_id_zero_based = true,                                              \
    .lower_base_vertex = true,                                                 \
    .use_scoped_barrier = true,                                                \
@@ -64,10 +65,15 @@
    .lower_unpack_snorm_4x8 = true,                                            \
    .lower_unpack_unorm_2x16 = true,                                           \
    .lower_unpack_unorm_4x8 = true,                                            \
-   .lower_usub_sat64 = true,                                                  \
    .lower_hadd64 = true,                                                      \
-   .lower_bfe_with_two_constants = true,                                      \
-   .max_unroll_iterations = 32
+   .avoid_ternary_with_two_constants = true,                                  \
+   .has_pack_32_4x8 = true,                                                   \
+   .max_unroll_iterations = 32,                                               \
+   .force_indirect_unrolling = nir_var_function_temp,                         \
+   .divergence_analysis_options =                                             \
+      (nir_divergence_single_prim_per_subgroup |                              \
+       nir_divergence_single_patch_per_tcs_subgroup |                         \
+       nir_divergence_single_patch_per_tes_subgroup)
 
 static const struct nir_shader_compiler_options scalar_nir_options = {
    COMMON_OPTIONS,
@@ -107,7 +113,7 @@ brw_compiler_create(void *mem_ctx, const struct intel_device_info *devinfo)
 
    compiler->use_tcs_8_patch =
       devinfo->ver >= 12 ||
-      (devinfo->ver >= 9 && (INTEL_DEBUG & DEBUG_TCS_EIGHT_PATCH));
+      (devinfo->ver >= 9 && INTEL_DEBUG(DEBUG_TCS_EIGHT_PATCH));
 
    /* Default to the sampler since that's what we've done since forever */
    compiler->indirect_ubos_use_sampler = true;
@@ -139,7 +145,7 @@ brw_compiler_create(void *mem_ctx, const struct intel_device_info *devinfo)
       nir_lower_dsub |
       nir_lower_ddiv;
 
-   if (!devinfo->has_64bit_float || (INTEL_DEBUG & DEBUG_SOFT64)) {
+   if (!devinfo->has_64bit_float || INTEL_DEBUG(DEBUG_SOFT64)) {
       int64_options |= (nir_lower_int64_options)~0;
       fp64_options |= nir_lower_fp64_full_software;
    }
@@ -153,23 +159,12 @@ brw_compiler_create(void *mem_ctx, const struct intel_device_info *devinfo)
 
    /* We want the GLSL compiler to emit code that uses condition codes */
    for (int i = 0; i < MESA_ALL_SHADER_STAGES; i++) {
-      compiler->glsl_compiler_options[i].MaxUnrollIterations = 0;
-      compiler->glsl_compiler_options[i].MaxIfDepth =
-         devinfo->ver < 6 ? 16 : UINT_MAX;
-
-      /* We handle this in NIR */
-      compiler->glsl_compiler_options[i].EmitNoIndirectInput = false;
-      compiler->glsl_compiler_options[i].EmitNoIndirectOutput = false;
-      compiler->glsl_compiler_options[i].EmitNoIndirectUniform = false;
-      compiler->glsl_compiler_options[i].EmitNoIndirectTemp = false;
-
-      bool is_scalar = compiler->scalar_stage[i];
-      compiler->glsl_compiler_options[i].OptimizeForAOS = !is_scalar;
-
       struct nir_shader_compiler_options *nir_options =
          rzalloc(compiler, struct nir_shader_compiler_options);
+      bool is_scalar = compiler->scalar_stage[i];
       if (is_scalar) {
          *nir_options = scalar_nir_options;
+         int64_options |= nir_lower_usub_sat64;
       } else {
          *nir_options = vector_nir_options;
       }
@@ -185,18 +180,27 @@ brw_compiler_create(void *mem_ctx, const struct intel_device_info *devinfo)
 
       nir_options->lower_rotate = devinfo->ver < 11;
       nir_options->lower_bitfield_reverse = devinfo->ver < 7;
+      nir_options->has_iadd3 = devinfo->verx10 >= 125;
+
+      nir_options->has_sdot_4x8 = devinfo->ver >= 12;
+      nir_options->has_udot_4x8 = devinfo->ver >= 12;
+      nir_options->has_sudot_4x8 = devinfo->ver >= 12;
 
       nir_options->lower_int64_options = int64_options;
       nir_options->lower_doubles_options = fp64_options;
 
-      /* Starting with Gfx11, we lower away 8-bit arithmetic */
-      nir_options->support_8bit_alu = devinfo->ver < 11;
-
       nir_options->unify_interfaces = i < MESA_SHADER_FRAGMENT;
 
-      compiler->glsl_compiler_options[i].NirOptions = nir_options;
+      nir_options->force_indirect_unrolling |=
+         brw_nir_no_indirect_mask(compiler, i);
 
-      compiler->glsl_compiler_options[i].ClampBlockIndicesToArrayBounds = true;
+      if (compiler->use_tcs_8_patch) {
+         /* TCS 8_PATCH mode has multiple patches per subgroup */
+         nir_options->divergence_analysis_options &=
+            ~nir_divergence_single_patch_per_tcs_subgroup;
+      }
+
+      compiler->nir_options[i] = nir_options;
    }
 
    return compiler;
@@ -213,17 +217,11 @@ brw_get_compiler_config_value(const struct brw_compiler *compiler)
 {
    uint64_t config = 0;
    insert_u64_bit(&config, compiler->precise_trig);
-   if (compiler->devinfo->ver >= 8 && compiler->devinfo->ver < 10) {
-      insert_u64_bit(&config, compiler->scalar_stage[MESA_SHADER_VERTEX]);
-      insert_u64_bit(&config, compiler->scalar_stage[MESA_SHADER_TESS_CTRL]);
-      insert_u64_bit(&config, compiler->scalar_stage[MESA_SHADER_TESS_EVAL]);
-      insert_u64_bit(&config, compiler->scalar_stage[MESA_SHADER_GEOMETRY]);
-   }
-   uint64_t debug_bits = INTEL_DEBUG;
+
    uint64_t mask = DEBUG_DISK_CACHE_MASK;
    while (mask != 0) {
       const uint64_t bit = 1ULL << (ffsll(mask) - 1);
-      insert_u64_bit(&config, (debug_bits & bit) != 0);
+      insert_u64_bit(&config, INTEL_DEBUG(bit));
       mask &= ~bit;
    }
    return config;
@@ -239,6 +237,8 @@ brw_prog_data_size(gl_shader_stage stage)
       [MESA_SHADER_GEOMETRY]     = sizeof(struct brw_gs_prog_data),
       [MESA_SHADER_FRAGMENT]     = sizeof(struct brw_wm_prog_data),
       [MESA_SHADER_COMPUTE]      = sizeof(struct brw_cs_prog_data),
+      [MESA_SHADER_TASK]         = sizeof(struct brw_task_prog_data),
+      [MESA_SHADER_MESH]         = sizeof(struct brw_mesh_prog_data),
       [MESA_SHADER_RAYGEN]       = sizeof(struct brw_bs_prog_data),
       [MESA_SHADER_ANY_HIT]      = sizeof(struct brw_bs_prog_data),
       [MESA_SHADER_CLOSEST_HIT]  = sizeof(struct brw_bs_prog_data),
@@ -261,6 +261,8 @@ brw_prog_key_size(gl_shader_stage stage)
       [MESA_SHADER_GEOMETRY]     = sizeof(struct brw_gs_prog_key),
       [MESA_SHADER_FRAGMENT]     = sizeof(struct brw_wm_prog_key),
       [MESA_SHADER_COMPUTE]      = sizeof(struct brw_cs_prog_key),
+      [MESA_SHADER_TASK]         = sizeof(struct brw_task_prog_key),
+      [MESA_SHADER_MESH]         = sizeof(struct brw_mesh_prog_key),
       [MESA_SHADER_RAYGEN]       = sizeof(struct brw_bs_prog_key),
       [MESA_SHADER_ANY_HIT]      = sizeof(struct brw_bs_prog_key),
       [MESA_SHADER_CLOSEST_HIT]  = sizeof(struct brw_bs_prog_key),
@@ -282,10 +284,20 @@ brw_write_shader_relocs(const struct intel_device_info *devinfo,
 {
    for (unsigned i = 0; i < prog_data->num_relocs; i++) {
       assert(prog_data->relocs[i].offset % 8 == 0);
-      brw_inst *inst = (brw_inst *)(program + prog_data->relocs[i].offset);
+      void *dst = program + prog_data->relocs[i].offset;
       for (unsigned j = 0; j < num_values; j++) {
          if (prog_data->relocs[i].id == values[j].id) {
-            brw_update_reloc_imm(devinfo, inst, values[j].value);
+            uint32_t value = values[j].value + prog_data->relocs[i].delta;
+            switch (prog_data->relocs[i].type) {
+            case BRW_SHADER_RELOC_TYPE_U32:
+               *(uint32_t *)dst = value;
+               break;
+            case BRW_SHADER_RELOC_TYPE_MOV_IMM:
+               brw_update_reloc_imm(devinfo, dst, value);
+               break;
+            default:
+               unreachable("Invalid relocation type");
+            }
             break;
          }
       }

@@ -28,11 +28,29 @@
 
 #include "nir.h"
 #include "ac_shader_args.h"
+#include "ac_shader_util.h"
 #include "amd_family.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+enum
+{
+   /* SPI_PS_INPUT_CNTL_i.OFFSET[0:4] */
+   AC_EXP_PARAM_OFFSET_0 = 0,
+   AC_EXP_PARAM_OFFSET_31 = 31,
+   /* SPI_PS_INPUT_CNTL_i.DEFAULT_VAL[0:1] */
+   AC_EXP_PARAM_DEFAULT_VAL_0000 = 64,
+   AC_EXP_PARAM_DEFAULT_VAL_0001,
+   AC_EXP_PARAM_DEFAULT_VAL_1110,
+   AC_EXP_PARAM_DEFAULT_VAL_1111,
+   AC_EXP_PARAM_UNDEFINED = 255, /* deprecated, use AC_EXP_PARAM_DEFAULT_VAL_0000 instead */
+};
+
+/* Forward declaration of nir_builder so we don't have to include nir_builder.h here */
+struct nir_builder;
+typedef struct nir_builder nir_builder;
 
 void
 ac_nir_lower_ls_outputs_to_mem(nir_shader *ls,
@@ -85,6 +103,41 @@ ac_nir_lower_gs_inputs_to_mem(nir_shader *shader,
 bool
 ac_nir_lower_indirect_derefs(nir_shader *shader,
                              enum chip_class chip_class);
+
+void
+ac_nir_lower_ngg_nogs(nir_shader *shader,
+                      unsigned max_num_es_vertices,
+                      unsigned num_vertices_per_primitive,
+                      unsigned max_workgroup_size,
+                      unsigned wave_size,
+                      bool can_cull,
+                      bool early_prim_export,
+                      bool passthrough,
+                      bool export_prim_id,
+                      bool provoking_vtx_last,
+                      bool use_edgeflags,
+                      uint32_t instance_rate_inputs);
+
+void
+ac_nir_lower_ngg_gs(nir_shader *shader,
+                    unsigned wave_size,
+                    unsigned max_workgroup_size,
+                    unsigned esgs_ring_lds_bytes,
+                    unsigned gs_out_vtx_bytes,
+                    unsigned gs_total_out_vtx_bytes,
+                    bool provoking_vtx_last);
+
+void
+ac_nir_lower_ngg_ms(nir_shader *shader,
+                    unsigned wave_size);
+
+nir_ssa_def *
+ac_nir_cull_triangle(nir_builder *b,
+                     nir_ssa_def *initially_accepted,
+                     nir_ssa_def *pos[3][4]);
+
+bool
+ac_nir_lower_global_access(nir_shader *shader);
 
 #ifdef __cplusplus
 }

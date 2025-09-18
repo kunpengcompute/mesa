@@ -1,28 +1,27 @@
 /*
- * Copyright © 2007-2019 Advanced Micro Devices, Inc.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS, AUTHORS
- * AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- */
+************************************************************************************************************************
+*
+*  Copyright (C) 2007-2022 Advanced Micro Devices, Inc.  All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+* THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+* OTHER DEALINGS IN THE SOFTWARE
+*
+***********************************************************************************************************************/
 
 /**
 ************************************************************************************************************************
@@ -68,46 +67,46 @@ namespace V2
 
 const SwizzleModeFlags Gfx9Lib::SwizzleModeTable[ADDR_SW_MAX_TYPE] =
 {//Linear 256B  4KB  64KB   Var    Z    Std   Disp  Rot   XOR    T     RtOpt Reserved
-    {1,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // ADDR_SW_LINEAR
-    {0,    1,    0,    0,    0,    0,    1,    0,    0,    0,    0,    0,    0}, // ADDR_SW_256B_S
-    {0,    1,    0,    0,    0,    0,    0,    1,    0,    0,    0,    0,    0}, // ADDR_SW_256B_D
-    {0,    1,    0,    0,    0,    0,    0,    0,    1,    0,    0,    0,    0}, // ADDR_SW_256B_R
+    {{1,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // ADDR_SW_LINEAR
+    {{0,    1,    0,    0,    0,    0,    1,    0,    0,    0,    0,    0,    0}}, // ADDR_SW_256B_S
+    {{0,    1,    0,    0,    0,    0,    0,    1,    0,    0,    0,    0,    0}}, // ADDR_SW_256B_D
+    {{0,    1,    0,    0,    0,    0,    0,    0,    1,    0,    0,    0,    0}}, // ADDR_SW_256B_R
 
-    {0,    0,    1,    0,    0,    1,    0,    0,    0,    0,    0,    0,    0}, // ADDR_SW_4KB_Z
-    {0,    0,    1,    0,    0,    0,    1,    0,    0,    0,    0,    0,    0}, // ADDR_SW_4KB_S
-    {0,    0,    1,    0,    0,    0,    0,    1,    0,    0,    0,    0,    0}, // ADDR_SW_4KB_D
-    {0,    0,    1,    0,    0,    0,    0,    0,    1,    0,    0,    0,    0}, // ADDR_SW_4KB_R
+    {{0,    0,    1,    0,    0,    1,    0,    0,    0,    0,    0,    0,    0}}, // ADDR_SW_4KB_Z
+    {{0,    0,    1,    0,    0,    0,    1,    0,    0,    0,    0,    0,    0}}, // ADDR_SW_4KB_S
+    {{0,    0,    1,    0,    0,    0,    0,    1,    0,    0,    0,    0,    0}}, // ADDR_SW_4KB_D
+    {{0,    0,    1,    0,    0,    0,    0,    0,    1,    0,    0,    0,    0}}, // ADDR_SW_4KB_R
 
-    {0,    0,    0,    1,    0,    1,    0,    0,    0,    0,    0,    0,    0}, // ADDR_SW_64KB_Z
-    {0,    0,    0,    1,    0,    0,    1,    0,    0,    0,    0,    0,    0}, // ADDR_SW_64KB_S
-    {0,    0,    0,    1,    0,    0,    0,    1,    0,    0,    0,    0,    0}, // ADDR_SW_64KB_D
-    {0,    0,    0,    1,    0,    0,    0,    0,    1,    0,    0,    0,    0}, // ADDR_SW_64KB_R
+    {{0,    0,    0,    1,    0,    1,    0,    0,    0,    0,    0,    0,    0}}, // ADDR_SW_64KB_Z
+    {{0,    0,    0,    1,    0,    0,    1,    0,    0,    0,    0,    0,    0}}, // ADDR_SW_64KB_S
+    {{0,    0,    0,    1,    0,    0,    0,    1,    0,    0,    0,    0,    0}}, // ADDR_SW_64KB_D
+    {{0,    0,    0,    1,    0,    0,    0,    0,    1,    0,    0,    0,    0}}, // ADDR_SW_64KB_R
 
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
 
-    {0,    0,    0,    1,    0,    1,    0,    0,    0,    1,    1,    0,    0}, // ADDR_SW_64KB_Z_T
-    {0,    0,    0,    1,    0,    0,    1,    0,    0,    1,    1,    0,    0}, // ADDR_SW_64KB_S_T
-    {0,    0,    0,    1,    0,    0,    0,    1,    0,    1,    1,    0,    0}, // ADDR_SW_64KB_D_T
-    {0,    0,    0,    1,    0,    0,    0,    0,    1,    1,    1,    0,    0}, // ADDR_SW_64KB_R_T
+    {{0,    0,    0,    1,    0,    1,    0,    0,    0,    1,    1,    0,    0}}, // ADDR_SW_64KB_Z_T
+    {{0,    0,    0,    1,    0,    0,    1,    0,    0,    1,    1,    0,    0}}, // ADDR_SW_64KB_S_T
+    {{0,    0,    0,    1,    0,    0,    0,    1,    0,    1,    1,    0,    0}}, // ADDR_SW_64KB_D_T
+    {{0,    0,    0,    1,    0,    0,    0,    0,    1,    1,    1,    0,    0}}, // ADDR_SW_64KB_R_T
 
-    {0,    0,    1,    0,    0,    1,    0,    0,    0,    1,    0,    0,    0}, // ADDR_SW_4KB_Z_x
-    {0,    0,    1,    0,    0,    0,    1,    0,    0,    1,    0,    0,    0}, // ADDR_SW_4KB_S_x
-    {0,    0,    1,    0,    0,    0,    0,    1,    0,    1,    0,    0,    0}, // ADDR_SW_4KB_D_x
-    {0,    0,    1,    0,    0,    0,    0,    0,    1,    1,    0,    0,    0}, // ADDR_SW_4KB_R_x
+    {{0,    0,    1,    0,    0,    1,    0,    0,    0,    1,    0,    0,    0}}, // ADDR_SW_4KB_Z_x
+    {{0,    0,    1,    0,    0,    0,    1,    0,    0,    1,    0,    0,    0}}, // ADDR_SW_4KB_S_x
+    {{0,    0,    1,    0,    0,    0,    0,    1,    0,    1,    0,    0,    0}}, // ADDR_SW_4KB_D_x
+    {{0,    0,    1,    0,    0,    0,    0,    0,    1,    1,    0,    0,    0}}, // ADDR_SW_4KB_R_x
 
-    {0,    0,    0,    1,    0,    1,    0,    0,    0,    1,    0,    0,    0}, // ADDR_SW_64KB_Z_X
-    {0,    0,    0,    1,    0,    0,    1,    0,    0,    1,    0,    0,    0}, // ADDR_SW_64KB_S_X
-    {0,    0,    0,    1,    0,    0,    0,    1,    0,    1,    0,    0,    0}, // ADDR_SW_64KB_D_X
-    {0,    0,    0,    1,    0,    0,    0,    0,    1,    1,    0,    0,    0}, // ADDR_SW_64KB_R_X
+    {{0,    0,    0,    1,    0,    1,    0,    0,    0,    1,    0,    0,    0}}, // ADDR_SW_64KB_Z_X
+    {{0,    0,    0,    1,    0,    0,    1,    0,    0,    1,    0,    0,    0}}, // ADDR_SW_64KB_S_X
+    {{0,    0,    0,    1,    0,    0,    0,    1,    0,    1,    0,    0,    0}}, // ADDR_SW_64KB_D_X
+    {{0,    0,    0,    1,    0,    0,    0,    0,    1,    1,    0,    0,    0}}, // ADDR_SW_64KB_R_X
 
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
-    {0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // Reserved
-    {1,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}, // ADDR_SW_LINEAR_GENERAL
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
+    {{0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // Reserved
+    {{1,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0,    0}}, // ADDR_SW_LINEAR_GENERAL
 };
 
 const UINT_32 Gfx9Lib::MipTailOffset256B[] = {2048, 1024, 512, 256, 128, 64, 32, 16, 8, 6, 5, 4, 3, 2, 1, 0};
@@ -349,6 +348,50 @@ ADDR_E_RETURNCODE Gfx9Lib::HwlComputeCmaskInfo(
     pOut->metaBlkHeight = metaBlkDim.h;
 
     pOut->metaBlkNumPerSlice = numMetaBlkX * numMetaBlkY;
+
+    // Get the CMASK address equation (copied from CmaskAddrFromCoord)
+    UINT_32 fmaskBpp              = GetFmaskBpp(1, 1);
+    UINT_32 fmaskElementBytesLog2 = Log2(fmaskBpp >> 3);
+    UINT_32 metaBlkWidthLog2      = Log2(pOut->metaBlkWidth);
+    UINT_32 metaBlkHeightLog2     = Log2(pOut->metaBlkHeight);
+
+    MetaEqParams metaEqParams = {0, fmaskElementBytesLog2, 0, pIn->cMaskFlags,
+                                Gfx9DataFmask, pIn->swizzleMode, pIn->resourceType,
+                                metaBlkWidthLog2, metaBlkHeightLog2, 0, 3, 3, 0};
+
+    CoordEq *eq = (CoordEq *)((Gfx9Lib *)this)->GetMetaEquation(metaEqParams);
+
+    // Generate the CMASK address equation.
+    pOut->equation.gfx9.num_bits = Min(32u, eq->getsize());
+    bool checked = false;
+    for (unsigned b = 0; b < pOut->equation.gfx9.num_bits; b++) {
+       CoordTerm &bit = (*eq)[b];
+
+       unsigned c;
+       for (c = 0; c < bit.getsize(); c++) {
+          Coordinate &coord = bit[c];
+          pOut->equation.gfx9.bit[b].coord[c].dim = coord.getdim();
+          pOut->equation.gfx9.bit[b].coord[c].ord = coord.getord();
+       }
+       for (; c < 5; c++)
+          pOut->equation.gfx9.bit[b].coord[c].dim = 5; /* meaning invalid */
+    }
+
+    // Reduce num_bits because DIM_M fills the rest of the bits monotonically.
+    for (int b = pOut->equation.gfx9.num_bits - 1; b >= 1; b--) {
+       CoordTerm &prev = (*eq)[b - 1];
+       CoordTerm &cur = (*eq)[b];
+
+       if (cur.getsize() == 1 && cur[0].getdim() == DIM_M &&
+          prev.getsize() == 1 && prev[0].getdim() == DIM_M &&
+          prev[0].getord() + 1 == cur[0].getord())
+          pOut->equation.gfx9.num_bits = b;
+       else
+          break;
+    }
+
+    pOut->equation.gfx9.numPipeBits = GetPipeLog2ForMetaAddressing(pIn->cMaskFlags.pipeAligned,
+                                                                   pIn->swizzleMode);
 
     return ADDR_OK;
 }

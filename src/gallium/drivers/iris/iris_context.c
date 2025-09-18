@@ -33,6 +33,7 @@
 #include "iris_context.h"
 #include "iris_resource.h"
 #include "iris_screen.h"
+#include "iris_utrace.h"
 #include "common/intel_defines.h"
 #include "common/intel_sample_positions.h"
 
@@ -41,9 +42,12 @@
  */
 static void
 iris_set_debug_callback(struct pipe_context *ctx,
-                        const struct pipe_debug_callback *cb)
+                        const struct util_debug_callback *cb)
 {
    struct iris_context *ice = (struct iris_context *)ctx;
+   struct iris_screen *screen = (struct iris_screen *)ctx->screen;
+
+   util_queue_finish(&screen->shader_compiler_queue);
 
    if (cb)
       ice->dbg = *cb;
@@ -67,6 +71,8 @@ iris_lost_context_state(struct iris_batch *batch)
       batch->screen->vtbl.init_render_context(batch);
    } else if (batch->name == IRIS_BATCH_COMPUTE) {
       batch->screen->vtbl.init_compute_context(batch);
+   } else if (batch->name == IRIS_BATCH_BLITTER) {
+      /* No state to set up */
    } else {
       unreachable("unhandled batch reset");
    }
@@ -77,7 +83,7 @@ iris_lost_context_state(struct iris_batch *batch)
    memset(&ice->shaders.urb, 0, sizeof(ice->shaders.urb));
    memset(ice->state.last_block, 0, sizeof(ice->state.last_block));
    memset(ice->state.last_grid, 0, sizeof(ice->state.last_grid));
-   batch->last_surface_base_address = ~0ull;
+   batch->last_binder_address = ~0ull;
    batch->last_aux_map_state = 0;
    batch->screen->vtbl.lost_genx_state(ice, batch);
 }
@@ -92,12 +98,12 @@ iris_get_device_reset_status(struct pipe_context *ctx)
    /* Check the reset status of each batch's hardware context, and take the
     * worst status (if one was guilty, proclaim guilt).
     */
-   for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
+   iris_foreach_batch(ice, batch) {
       /* This will also recreate the hardware contexts as necessary, so any
        * future queries will show no resets.  We only want to report once.
        */
       enum pipe_reset_status batch_reset =
-         iris_batch_check_for_reset(&ice->batches[i]);
+         iris_batch_check_for_reset(batch);
 
       if (batch_reset == PIPE_NO_RESET)
          continue;
@@ -205,11 +211,10 @@ iris_flush_dirty_dmabufs(struct iris_context *ice)
    clear_dirty_dmabuf_set(ice);
 }
 
-
 /**
  * Destroy a context, freeing any associated memory.
  */
-static void
+void
 iris_destroy_context(struct pipe_context *ctx)
 {
    struct iris_context *ice = (struct iris_context *)ctx;
@@ -217,22 +222,34 @@ iris_destroy_context(struct pipe_context *ctx)
 
    if (ctx->stream_uploader)
       u_upload_destroy(ctx->stream_uploader);
+   if (ctx->const_uploader)
+      u_upload_destroy(ctx->const_uploader);
 
    clear_dirty_dmabuf_set(ice);
 
    screen->vtbl.destroy_state(ice);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(ice->shaders.scratch_surfs); i++)
+      pipe_resource_reference(&ice->shaders.scratch_surfs[i].res, NULL);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(ice->shaders.scratch_bos); i++) {
+      for (unsigned j = 0; j < ARRAY_SIZE(ice->shaders.scratch_bos[i]); j++)
+         iris_bo_unreference(ice->shaders.scratch_bos[i][j]);
+   }
+
    iris_destroy_program_cache(ice);
-   iris_destroy_border_color_pool(ice);
    if (screen->measure.config)
       iris_destroy_ctx_measure(ice);
 
    u_upload_destroy(ice->state.surface_uploader);
+   u_upload_destroy(ice->state.bindless_uploader);
    u_upload_destroy(ice->state.dynamic_uploader);
    u_upload_destroy(ice->query_buffer_uploader);
 
-   iris_batch_free(&ice->batches[IRIS_BATCH_RENDER]);
-   iris_batch_free(&ice->batches[IRIS_BATCH_COMPUTE]);
+   iris_destroy_batches(ice);
    iris_destroy_binder(&ice->state.binder);
+
+   iris_utrace_fini(ice);
 
    slab_destroy_child(&ice->transfer_pool);
    slab_destroy_child(&ice->transfer_pool_unsync);
@@ -286,7 +303,15 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
       free(ctx);
       return NULL;
    }
-   ctx->const_uploader = ctx->stream_uploader;
+   ctx->const_uploader = u_upload_create(ctx, 1024 * 1024,
+                                         PIPE_BIND_CONSTANT_BUFFER,
+                                         PIPE_USAGE_IMMUTABLE,
+                                         IRIS_RESOURCE_FLAG_DEVICE_MEM);
+   if (!ctx->const_uploader) {
+      u_upload_destroy(ctx->stream_uploader);
+      free(ctx);
+      return NULL;
+   }
 
    if (!create_dirty_dmabuf_set(ice)) {
       ralloc_free(ice);
@@ -308,21 +333,26 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    iris_init_perfquery_functions(ctx);
 
    iris_init_program_cache(ice);
-   iris_init_border_color_pool(ice);
    iris_init_binder(ice);
 
    slab_create_child(&ice->transfer_pool, &screen->transfer_pool);
    slab_create_child(&ice->transfer_pool_unsync, &screen->transfer_pool);
 
    ice->state.surface_uploader =
-      u_upload_create(ctx, 16384, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
-                      IRIS_RESOURCE_FLAG_SURFACE_MEMZONE);
+      u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
+                      IRIS_RESOURCE_FLAG_SURFACE_MEMZONE |
+                      IRIS_RESOURCE_FLAG_DEVICE_MEM);
+   ice->state.bindless_uploader =
+      u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
+                      IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE |
+                      IRIS_RESOURCE_FLAG_DEVICE_MEM);
    ice->state.dynamic_uploader =
-      u_upload_create(ctx, 16384, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
-                      IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE);
+      u_upload_create(ctx, 64 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE,
+                      IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE |
+                      IRIS_RESOURCE_FLAG_DEVICE_MEM);
 
    ice->query_buffer_uploader =
-      u_upload_create(ctx, 4096, PIPE_BIND_CUSTOM, PIPE_USAGE_STAGING,
+      u_upload_create(ctx, 16 * 1024, PIPE_BIND_CUSTOM, PIPE_USAGE_STAGING,
                       0);
 
    genX_call(devinfo, init_state, ice);
@@ -335,12 +365,13 @@ iris_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    if (flags & PIPE_CONTEXT_LOW_PRIORITY)
       priority = INTEL_CONTEXT_LOW_PRIORITY;
 
-   if (INTEL_DEBUG & DEBUG_BATCH)
+   if (INTEL_DEBUG(DEBUG_BATCH))
       ice->state.sizes = _mesa_hash_table_u64_create(ice);
 
-   for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
-      iris_init_batch(ice, (enum iris_batch_name) i, priority);
-   }
+   /* Do this before initializing the batches */
+   iris_utrace_init(ice);
+
+   iris_init_batches(ice, priority);
 
    screen->vtbl.init_render_context(&ice->batches[IRIS_BATCH_RENDER]);
    screen->vtbl.init_compute_context(&ice->batches[IRIS_BATCH_COMPUTE]);

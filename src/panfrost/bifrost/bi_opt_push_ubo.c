@@ -30,10 +30,16 @@
  * structure returned back to the command stream. */
 
 static bool
-bi_is_direct_aligned_ubo(bi_instr *ins)
+bi_is_ubo(bi_instr *ins)
 {
         return (bi_opcode_props[ins->op].message == BIFROST_MESSAGE_LOAD) &&
-                (ins->seg == BI_SEG_UBO) &&
+                (ins->seg == BI_SEG_UBO);
+}
+
+static bool
+bi_is_direct_aligned_ubo(bi_instr *ins)
+{
+        return bi_is_ubo(ins) &&
                 (ins->src[0].type == BI_INDEX_CONSTANT) &&
                 (ins->src[1].type == BI_INDEX_CONSTANT) &&
                 ((ins->src[0].value & 0x3) == 0);
@@ -73,8 +79,12 @@ bi_analyze_ranges(bi_context *ctx)
                 assert(ubo < res.nr_blocks);
                 assert(channels > 0 && channels <= 4);
 
-                if (word < MAX_UBO_WORDS)
-                        res.blocks[ubo].range[word] = channels;
+                if (word >= MAX_UBO_WORDS) continue;
+
+                /* Must use max if the same base is read with different channel
+                 * counts, which is possible with nir_opt_shrink_vectors */
+                uint8_t *range = res.blocks[ubo].range;
+                range[word] = MAX2(range[word], channels);
         }
 
         return res;
@@ -118,24 +128,34 @@ bi_pick_ubo(struct panfrost_ubo_push *push, struct bi_ubo_analysis *analysis)
 void
 bi_opt_push_ubo(bi_context *ctx)
 {
-        if (ctx->inputs->no_ubo_to_push)
-                return;
-
-        /* This pass only runs once */
-        assert(ctx->info->push.count == 0);
-
         struct bi_ubo_analysis analysis = bi_analyze_ranges(ctx);
-        bi_pick_ubo(&ctx->info->push, &analysis);
+        bi_pick_ubo(ctx->info.push, &analysis);
+
+        ctx->ubo_mask = 0;
 
         bi_foreach_instr_global_safe(ctx, ins) {
-                if (!bi_is_direct_aligned_ubo(ins)) continue;
+                if (!bi_is_ubo(ins)) continue;
 
                 unsigned ubo = ins->src[1].value;
                 unsigned offset = ins->src[0].value;
 
+                if (!bi_is_direct_aligned_ubo(ins)) {
+                        /* The load can't be pushed, so this UBO needs to be
+                         * uploaded conventionally */
+                        if (ins->src[1].type == BI_INDEX_CONSTANT)
+                                ctx->ubo_mask |= BITSET_BIT(ubo);
+                        else
+                                ctx->ubo_mask = ~0;
+
+                        continue;
+                }
+
                 /* Check if we decided to push this */
                 assert(ubo < analysis.nr_blocks);
-                if (!BITSET_TEST(analysis.blocks[ubo].pushed, offset / 4)) continue;
+                if (!BITSET_TEST(analysis.blocks[ubo].pushed, offset / 4)) {
+                        ctx->ubo_mask |= BITSET_BIT(ubo);
+                        continue;
+                }
 
                 /* Replace the UBO load with moves from FAU */
                 bi_builder b = bi_init_builder(ctx, bi_after_instr(ins));
@@ -145,7 +165,7 @@ bi_opt_push_ubo(bi_context *ctx)
                 for (unsigned w = 0; w < channels; ++w) {
                         /* FAU is grouped in pairs (2 x 4-byte) */
                         unsigned base =
-                                pan_lookup_pushed_ubo(&ctx->info->push, ubo,
+                                pan_lookup_pushed_ubo(ctx->info.push, ubo,
                                                       (offset + 4 * w));
 
                         unsigned fau_idx = (base >> 1);
@@ -160,4 +180,170 @@ bi_opt_push_ubo(bi_context *ctx)
         }
 
         free(analysis.blocks);
+}
+
+typedef struct {
+        BITSET_DECLARE(row, PAN_MAX_PUSH);
+} adjacency_row;
+
+/* Find the connected component containing `node` with depth-first search */
+static void
+bi_find_component(adjacency_row *adjacency, BITSET_WORD *visited,
+                  unsigned *component, unsigned *size, unsigned node)
+{
+        unsigned neighbour;
+
+        BITSET_SET(visited, node);
+        component[(*size)++] = node;
+
+        BITSET_FOREACH_SET(neighbour, adjacency[node].row, PAN_MAX_PUSH) {
+                if (!BITSET_TEST(visited, neighbour)) {
+                        bi_find_component(adjacency, visited, component, size,
+                                          neighbour);
+                }
+        }
+}
+
+static bool
+bi_is_uniform(bi_index idx)
+{
+        return (idx.type == BI_INDEX_FAU) && (idx.value & BIR_FAU_UNIFORM);
+}
+
+/* Get the index of a uniform in 32-bit words from the start of FAU-RAM */
+static unsigned
+bi_uniform_word(bi_index idx)
+{
+        assert(bi_is_uniform(idx));
+        assert(idx.offset <= 1);
+
+        return ((idx.value & ~BIR_FAU_UNIFORM) << 1) | idx.offset;
+}
+
+/*
+ * Create an undirected graph where nodes are 32-bit uniform indices and edges
+ * represent that two nodes are used in the same instruction.
+ *
+ * The graph is constructed as an adjacency matrix stored in adjacency.
+ */
+static void
+bi_create_fau_interference_graph(bi_context *ctx, adjacency_row *adjacency)
+{
+        bi_foreach_instr_global(ctx, I) {
+                unsigned nodes[BI_MAX_SRCS] = {};
+                unsigned node_count = 0;
+
+                /* Set nodes[] to 32-bit uniforms accessed */
+                bi_foreach_src(I, s) {
+                        if (bi_is_uniform(I->src[s])) {
+                                unsigned word = bi_uniform_word(I->src[s]);
+
+                                if (word >= ctx->info.push_offset)
+                                        nodes[node_count++] = word;
+                        }
+                }
+
+                /* Create clique connecting nodes[] */
+                for (unsigned i = 0; i < node_count; ++i) {
+                        for (unsigned j = 0; j < node_count; ++j) {
+                                if (i == j)
+                                        continue;
+
+                                unsigned x = nodes[i], y = nodes[j];
+                                assert(MAX2(x, y) < ctx->info.push->count);
+
+                                /* Add undirected edge between the nodes */
+                                BITSET_SET(adjacency[x].row, y);
+                                BITSET_SET(adjacency[y].row, x);
+                        }
+                }
+        }
+}
+
+/*
+ * Optimization pass to reorder uniforms. The goal is to reduce the number of
+ * moves we emit when lowering FAU. The pass groups uniforms used by the same
+ * instruction.
+ *
+ * The pass works by creating a graph of pushed uniforms, where edges denote the
+ * "both 32-bit uniforms required by the same instruction" relationship. We
+ * perform depth-first search on this graph to find the connected components,
+ * where each connected component is a cluster of uniforms that are used
+ * together. We then select pairs of uniforms from each connected component.
+ * The remaining unpaired uniforms (from components of odd sizes) are paired
+ * together arbitrarily.
+ *
+ * After a new ordering is selected, pushed uniforms in the program and the
+ * panfrost_ubo_push data structure must be remapped to use the new ordering.
+ */
+void
+bi_opt_reorder_push(bi_context *ctx)
+{
+        adjacency_row adjacency[PAN_MAX_PUSH] = { 0 };
+        BITSET_DECLARE(visited, PAN_MAX_PUSH) = { 0 };
+
+        unsigned ordering[PAN_MAX_PUSH] = { 0 };
+        unsigned unpaired[PAN_MAX_PUSH] = { 0 };
+        unsigned pushed = 0, unpaired_count = 0;
+
+        struct panfrost_ubo_push *push = ctx->info.push;
+        unsigned push_offset = ctx->info.push_offset;
+
+        bi_create_fau_interference_graph(ctx, adjacency);
+
+        for (unsigned i = push_offset; i < push->count; ++i) {
+                if (BITSET_TEST(visited, i)) continue;
+
+                unsigned component[PAN_MAX_PUSH] = { 0 };
+                unsigned size = 0;
+                bi_find_component(adjacency, visited, component, &size, i);
+
+                /* If there is an odd number of uses, at least one use must be
+                 * unpaired. Arbitrarily take the last one.
+                 */
+                if (size % 2)
+                        unpaired[unpaired_count++] = component[--size];
+
+                /* The rest of uses are paired */
+                assert((size % 2) == 0);
+
+                /* Push the paired uses */
+                memcpy(ordering + pushed, component, sizeof(unsigned) * size);
+                pushed += size;
+        }
+
+        /* Push unpaired nodes at the end */
+        memcpy(ordering + pushed, unpaired, sizeof(unsigned) * unpaired_count);
+        pushed += unpaired_count;
+
+        /* Ordering is a permutation. Invert it for O(1) lookup. */
+        unsigned old_to_new[PAN_MAX_PUSH] = { 0 };
+
+        for (unsigned i = 0; i < push_offset; ++i) {
+                old_to_new[i] = i;
+        }
+
+        for (unsigned i = 0; i < pushed; ++i) {
+                assert(ordering[i] >= push_offset);
+                old_to_new[ordering[i]] = push_offset + i;
+        }
+
+        /* Use new ordering throughout the program */
+        bi_foreach_instr_global(ctx, I) {
+                bi_foreach_src(I, s) {
+                        if (bi_is_uniform(I->src[s])) {
+                                unsigned node = bi_uniform_word(I->src[s]);
+                                unsigned new_node = old_to_new[node];
+                                I->src[s].value = BIR_FAU_UNIFORM | (new_node >> 1);
+                                I->src[s].offset = new_node & 1;
+                        }
+                }
+        }
+
+        /* Use new ordering for push */
+        struct panfrost_ubo_push old = *push;
+        for (unsigned i = 0; i < pushed; ++i)
+                push->words[push_offset + i] = old.words[ordering[i]];
+
+        push->count = push_offset + pushed;
 }

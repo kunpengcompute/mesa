@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright © 2009,2012 Intel Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -73,6 +73,9 @@ _mesa_hash_table_init(struct hash_table *ht,
                                                   const void *b));
 
 struct hash_table *
+_mesa_hash_table_create_u32_keys(void *mem_ctx);
+
+struct hash_table *
 _mesa_hash_table_clone(struct hash_table *src, void *dst_mem_ctx);
 void _mesa_hash_table_destroy(struct hash_table *ht,
                               void (*delete_function)(struct hash_entry *entry));
@@ -116,6 +119,7 @@ uint32_t _mesa_hash_int(const void *key);
 uint32_t _mesa_hash_uint(const void *key);
 uint32_t _mesa_hash_u32(const void *key);
 uint32_t _mesa_hash_string(const void *key);
+uint32_t _mesa_hash_string_with_length(const void *_key, unsigned length);
 uint32_t _mesa_hash_pointer(const void *pointer);
 
 bool _mesa_key_int_equal(const void *a, const void *b);

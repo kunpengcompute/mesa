@@ -130,13 +130,18 @@ void st_init_limits(struct pipe_screen *screen,
    c->MaxLineWidthAA =
       _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_LINE_WIDTH_AA));
 
-   c->MaxPointSize =
-      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_WIDTH));
-   c->MaxPointSizeAA =
-      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_WIDTH_AA));
+   c->MinLineWidth = screen->get_paramf(screen, PIPE_CAPF_MIN_LINE_WIDTH);
+   c->MinLineWidthAA = screen->get_paramf(screen, PIPE_CAPF_MIN_LINE_WIDTH_AA);
+   c->LineWidthGranularity = screen->get_paramf(screen, PIPE_CAPF_LINE_WIDTH_GRANULARITY);
 
-   c->MinPointSize = 1.0f;
-   c->MinPointSizeAA = 1.0f;
+   c->MaxPointSize =
+      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_SIZE));
+   c->MaxPointSizeAA =
+      _maxf(1.0f, screen->get_paramf(screen, PIPE_CAPF_MAX_POINT_SIZE_AA));
+
+   c->MinPointSize = MAX2(screen->get_paramf(screen, PIPE_CAPF_MIN_POINT_SIZE), 0.01);
+   c->MinPointSizeAA = MAX2(screen->get_paramf(screen, PIPE_CAPF_MIN_POINT_SIZE_AA), 0.01);
+   c->PointSizeGranularity = screen->get_paramf(screen, PIPE_CAPF_POINT_SIZE_GRANULARITY);
 
    c->MaxTextureMaxAnisotropy =
       _maxf(2.0f,
@@ -232,14 +237,7 @@ void st_init_limits(struct pipe_screen *screen,
 
          if (!screen->get_param(screen, PIPE_CAP_POINT_SIZE_FIXED))
             pc->MaxUniformComponents -= 4;
-
-         if (screen->get_param(screen, PIPE_CAP_DEPTH_CLIP_DISABLE) == 2)
-            pc->MaxUniformComponents -= 4;
-
       } else if (sh == PIPE_SHADER_FRAGMENT) {
-         if (screen->get_param(screen, PIPE_CAP_DEPTH_CLIP_DISABLE) == 2)
-            pc->MaxUniformComponents -= 4;
-
          if (!screen->get_param(screen, PIPE_CAP_ALPHA_TEST))
             pc->MaxUniformComponents -= 4;
       }
@@ -326,9 +324,16 @@ void st_init_limits(struct pipe_screen *screen,
       options->MaxIfDepth =
          screen->get_shader_param(screen, sh,
                                   PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH);
-      options->EmitNoLoops =
+
+      /* If we're using NIR, then leave GLSL loop handling to NIR.  If we set
+       * this flag, then GLSL jump lowering will turn the breaks into something
+       * that GLSL loop unrolling can't handle, and then you get linker failures
+       * about samplers with non-const indexes in loops that should be unrollable.
+       */
+      options->EmitNoLoops = !prefer_nir &&
          !screen->get_shader_param(screen, sh,
                                    PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH);
+
       options->EmitNoMainReturn =
          !screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_SUBROUTINES);
 
@@ -379,16 +384,18 @@ void st_init_limits(struct pipe_screen *screen,
             options->LowerBuiltinVariablesXfb |= VARYING_BIT_PSIZ;
       }
 
-      options->LowerPrecisionFloat16 =
-         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16);
-      options->LowerPrecisionDerivatives =
-         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16_DERIVATIVES);
-      options->LowerPrecisionInt16 =
-         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_INT16);
-      options->LowerPrecisionConstants =
-         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_GLSL_16BIT_CONSTS);
-      options->LowerPrecisionFloat16Uniforms =
-         screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16_CONST_BUFFERS);
+      if (prefer_nir) {
+         options->LowerPrecisionFloat16 =
+            screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16);
+         options->LowerPrecisionDerivatives =
+            screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16_DERIVATIVES);
+         options->LowerPrecisionInt16 =
+            screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_INT16);
+         options->LowerPrecisionConstants =
+            screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_GLSL_16BIT_CONSTS);
+         options->LowerPrecisionFloat16Uniforms =
+            screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_FP16_CONST_BUFFERS);
+      }
    }
 
    c->MaxUserAssignableUniformLocations =
@@ -408,8 +415,7 @@ void st_init_limits(struct pipe_screen *screen,
       !screen->get_param(screen, PIPE_CAP_NIR_COMPACT_ARRAYS);
    c->LowerCsDerivedVariables =
       !screen->get_param(screen, PIPE_CAP_CS_DERIVED_SYSTEM_VALUES_SUPPORTED);
-   c->PrimitiveRestartForPatches =
-      screen->get_param(screen, PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES);
+   c->PrimitiveRestartForPatches = false;
 
    c->MaxCombinedTextureImageUnits =
          _min(c->Program[MESA_SHADER_VERTEX].MaxTextureImageUnits +
@@ -480,8 +486,6 @@ void st_init_limits(struct pipe_screen *screen,
    temp = screen->get_param(screen, PIPE_CAP_MAX_VERTEX_ELEMENT_SRC_OFFSET);
    c->MaxVertexAttribRelativeOffset = MIN2(0xffff, temp);
 
-   c->StripTextureBorder = GL_TRUE;
-
    c->GLSLSkipStrictMaxUniformLimitCheck =
       screen->get_param(screen, PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS);
 
@@ -501,11 +505,11 @@ void st_init_limits(struct pipe_screen *screen,
    }
 
    c->GLSLFragCoordIsSysVal =
-      screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL);
+      screen->get_param(screen, PIPE_CAP_FS_POSITION_IS_SYSVAL);
    c->GLSLPointCoordIsSysVal =
-      screen->get_param(screen, PIPE_CAP_TGSI_FS_POINT_IS_SYSVAL);
+      screen->get_param(screen, PIPE_CAP_FS_POINT_IS_SYSVAL);
    c->GLSLFrontFacingIsSysVal =
-      screen->get_param(screen, PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL);
+      screen->get_param(screen, PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL);
 
    /* GL_ARB_get_program_binary */
    if (screen->get_disk_shader_cache && screen->get_disk_shader_cache(screen))
@@ -538,7 +542,7 @@ void st_init_limits(struct pipe_screen *screen,
    if (!c->MaxCombinedAtomicCounters)
       c->MaxCombinedAtomicCounters = MAX_ATOMIC_COUNTERS;
 
-   if (c->MaxCombinedAtomicBuffers > 0) {
+   if (c->Program[MESA_SHADER_FRAGMENT].MaxAtomicBuffers) {
       extensions->ARB_shader_atomic_counters = GL_TRUE;
       extensions->ARB_shader_atomic_counter_ops = GL_TRUE;
    }
@@ -566,7 +570,8 @@ void st_init_limits(struct pipe_screen *screen,
          c->MaxCombinedShaderStorageBlocks;
       c->MaxShaderStorageBlockSize =
          screen->get_param(screen, PIPE_CAP_MAX_SHADER_BUFFER_SIZE);
-      extensions->ARB_shader_storage_buffer_object = GL_TRUE;
+      if (c->Program[MESA_SHADER_FRAGMENT].MaxShaderStorageBlocks)
+         extensions->ARB_shader_storage_buffer_object = GL_TRUE;
    }
 
    c->MaxCombinedImageUniforms =
@@ -578,7 +583,8 @@ void st_init_limits(struct pipe_screen *screen,
          c->Program[MESA_SHADER_COMPUTE].MaxImageUniforms;
    c->MaxCombinedShaderOutputResources += c->MaxCombinedImageUniforms;
    c->MaxImageUnits = MAX_IMAGE_UNITS;
-   if (c->MaxCombinedImageUniforms) {
+   if (c->Program[MESA_SHADER_FRAGMENT].MaxImageUniforms &&
+       screen->get_param(screen, PIPE_CAP_IMAGE_STORE_FORMATTED)) {
       extensions->ARB_shader_image_load_store = GL_TRUE;
       extensions->ARB_shader_image_size = GL_TRUE;
    }
@@ -628,12 +634,20 @@ void st_init_limits(struct pipe_screen *screen,
    c->VertexBufferOffsetIsInt32 =
       screen->get_param(screen, PIPE_CAP_SIGNED_VERTEX_BUFFER_OFFSET);
 
-   c->MultiDrawWithUserIndices = true;
    c->AllowDynamicVAOFastPath =
          screen->get_param(screen, PIPE_CAP_ALLOW_DYNAMIC_VAO_FASTPATH);
 
    c->glBeginEndBufferSize =
       screen->get_param(screen, PIPE_CAP_GL_BEGIN_END_BUFFER_SIZE);
+
+   c->MaxSparseTextureSize =
+      screen->get_param(screen, PIPE_CAP_MAX_SPARSE_TEXTURE_SIZE);
+   c->MaxSparse3DTextureSize =
+      screen->get_param(screen, PIPE_CAP_MAX_SPARSE_3D_TEXTURE_SIZE);
+   c->MaxSparseArrayTextureLayers =
+      screen->get_param(screen, PIPE_CAP_MAX_SPARSE_ARRAY_TEXTURE_LAYERS);
+   c->SparseTextureFullArrayCubeMipmaps =
+      screen->get_param(screen, PIPE_CAP_SPARSE_TEXTURE_FULL_ARRAY_CUBE_MIPMAPS);
 }
 
 
@@ -775,17 +789,16 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(OES_copy_image),                   PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS },
       { o(ARB_cull_distance),                PIPE_CAP_CULL_DISTANCE                    },
       { o(ARB_depth_clamp),                  PIPE_CAP_DEPTH_CLIP_DISABLE               },
-      { o(ARB_derivative_control),           PIPE_CAP_TGSI_FS_FINE_DERIVATIVE          },
+      { o(ARB_derivative_control),           PIPE_CAP_FS_FINE_DERIVATIVE               },
       { o(ARB_draw_buffers_blend),           PIPE_CAP_INDEP_BLEND_FUNC                 },
       { o(ARB_draw_indirect),                PIPE_CAP_DRAW_INDIRECT                    },
-      { o(ARB_draw_instanced),               PIPE_CAP_TGSI_INSTANCEID                  },
+      { o(ARB_draw_instanced),               PIPE_CAP_VS_INSTANCEID                    },
       { o(ARB_fragment_program_shadow),      PIPE_CAP_TEXTURE_SHADOW_MAP               },
       { o(ARB_framebuffer_object),           PIPE_CAP_MIXED_FRAMEBUFFER_SIZES          },
       { o(ARB_gpu_shader_int64),             PIPE_CAP_INT64                            },
       { o(ARB_gl_spirv),                     PIPE_CAP_GL_SPIRV                         },
       { o(ARB_indirect_parameters),          PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS       },
       { o(ARB_instanced_arrays),             PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR  },
-      { o(ARB_occlusion_query),              PIPE_CAP_OCCLUSION_QUERY                  },
       { o(ARB_occlusion_query2),             PIPE_CAP_OCCLUSION_QUERY                  },
       { o(ARB_pipeline_statistics_query),    PIPE_CAP_QUERY_PIPELINE_STATISTICS        },
       { o(ARB_pipeline_statistics_query),    PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE },
@@ -797,17 +810,20 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_sample_shading),               PIPE_CAP_SAMPLE_SHADING                   },
       { o(ARB_sample_locations),             PIPE_CAP_PROGRAMMABLE_SAMPLE_LOCATIONS    },
       { o(ARB_seamless_cube_map),            PIPE_CAP_SEAMLESS_CUBE_MAP                },
-      { o(ARB_shader_ballot),                PIPE_CAP_TGSI_BALLOT                      },
-      { o(ARB_shader_clock),                 PIPE_CAP_TGSI_CLOCK                       },
+      { o(ARB_shader_ballot),                PIPE_CAP_SHADER_BALLOT                    },
+      { o(ARB_shader_clock),                 PIPE_CAP_SHADER_CLOCK                     },
       { o(ARB_shader_draw_parameters),       PIPE_CAP_DRAW_PARAMETERS                  },
-      { o(ARB_shader_group_vote),            PIPE_CAP_TGSI_VOTE                        },
+      { o(ARB_shader_group_vote),            PIPE_CAP_SHADER_GROUP_VOTE                },
       { o(EXT_shader_image_load_formatted),  PIPE_CAP_IMAGE_LOAD_FORMATTED             },
-      { o(EXT_shader_image_load_store),      PIPE_CAP_TGSI_ATOMINC_WRAP                },
+      { o(EXT_shader_image_load_store),      PIPE_CAP_IMAGE_ATOMIC_INC_WRAP            },
       { o(ARB_shader_stencil_export),        PIPE_CAP_SHADER_STENCIL_EXPORT            },
-      { o(ARB_shader_texture_image_samples), PIPE_CAP_TGSI_TXQS                        },
+      { o(ARB_shader_texture_image_samples), PIPE_CAP_TEXTURE_QUERY_SAMPLES            },
       { o(ARB_shader_texture_lod),           PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD      },
       { o(ARB_shadow),                       PIPE_CAP_TEXTURE_SHADOW_MAP               },
       { o(ARB_sparse_buffer),                PIPE_CAP_SPARSE_BUFFER_PAGE_SIZE          },
+      { o(ARB_sparse_texture),               PIPE_CAP_MAX_SPARSE_TEXTURE_SIZE          },
+      { o(ARB_sparse_texture2),              PIPE_CAP_QUERY_SPARSE_TEXTURE_RESIDENCY   },
+      { o(ARB_sparse_texture_clamp),         PIPE_CAP_CLAMP_SPARSE_TEXTURE_LOD         },
       { o(ARB_spirv_extensions),             PIPE_CAP_GL_SPIRV                         },
       { o(ARB_texture_buffer_object),        PIPE_CAP_TEXTURE_BUFFER_OBJECTS           },
       { o(ARB_texture_cube_map_array),       PIPE_CAP_CUBE_MAP_ARRAY                   },
@@ -830,7 +846,9 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(EXT_disjoint_timer_query),         PIPE_CAP_QUERY_TIMESTAMP                  },
       { o(EXT_draw_buffers2),                PIPE_CAP_INDEP_BLEND_ENABLE               },
       { o(EXT_memory_object),                PIPE_CAP_MEMOBJ                           },
+#ifndef _WIN32
       { o(EXT_memory_object_fd),             PIPE_CAP_MEMOBJ                           },
+#endif
       { o(EXT_multisampled_render_to_texture), PIPE_CAP_SURFACE_SAMPLE_COUNT           },
       { o(EXT_semaphore),                    PIPE_CAP_FENCE_SIGNAL                     },
       { o(EXT_semaphore_fd),                 PIPE_CAP_FENCE_SIGNAL                     },
@@ -858,7 +876,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(NV_conditional_render),            PIPE_CAP_CONDITIONAL_RENDER               },
       { o(NV_fill_rectangle),                PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE      },
       { o(NV_primitive_restart),             PIPE_CAP_PRIMITIVE_RESTART                },
-      { o(NV_shader_atomic_float),           PIPE_CAP_TGSI_ATOMFADD                    },
+      { o(NV_shader_atomic_float),           PIPE_CAP_IMAGE_ATOMIC_FLOAT_ADD           },
       { o(NV_shader_atomic_int64),           PIPE_CAP_SHADER_ATOMIC_INT64              },
       { o(NV_texture_barrier),               PIPE_CAP_TEXTURE_BARRIER                  },
       { o(NV_viewport_array2),               PIPE_CAP_VIEWPORT_MASK                    },
@@ -1084,55 +1102,6 @@ void st_init_extensions(struct pipe_screen *screen,
         } },
    };
 
-   /*
-    * Extensions that are supported by all Gallium drivers:
-    */
-   extensions->ARB_ES2_compatibility = GL_TRUE;
-   extensions->ARB_depth_texture = GL_TRUE;
-   extensions->ARB_draw_elements_base_vertex = GL_TRUE;
-   extensions->ARB_explicit_attrib_location = GL_TRUE;
-   extensions->ARB_explicit_uniform_location = GL_TRUE;
-   extensions->ARB_fragment_coord_conventions = GL_TRUE;
-   extensions->ARB_fragment_program = GL_TRUE;
-   extensions->ARB_fragment_shader = GL_TRUE;
-   extensions->ARB_half_float_vertex = GL_TRUE;
-   extensions->ARB_internalformat_query = GL_TRUE;
-   extensions->ARB_internalformat_query2 = GL_TRUE;
-   extensions->ARB_map_buffer_range = GL_TRUE;
-   extensions->ARB_sync = GL_TRUE;
-   extensions->ARB_texture_border_clamp = GL_TRUE;
-   extensions->ARB_texture_cube_map = GL_TRUE;
-   extensions->ARB_texture_env_combine = GL_TRUE;
-   extensions->ARB_texture_env_crossbar = GL_TRUE;
-   extensions->ARB_texture_env_dot3 = GL_TRUE;
-   extensions->ARB_vertex_program = GL_TRUE;
-   extensions->ARB_vertex_shader = GL_TRUE;
-
-   extensions->EXT_blend_color = GL_TRUE;
-   extensions->EXT_blend_func_separate = GL_TRUE;
-   extensions->EXT_blend_minmax = GL_TRUE;
-   extensions->EXT_EGL_image_storage = GL_TRUE;
-   extensions->EXT_gpu_program_parameters = GL_TRUE;
-   extensions->EXT_pixel_buffer_object = GL_TRUE;
-   extensions->EXT_point_parameters = GL_TRUE;
-   extensions->EXT_provoking_vertex = GL_TRUE;
-   extensions->EXT_stencil_two_side = GL_TRUE;
-   extensions->EXT_texture_env_dot3 = GL_TRUE;
-
-   extensions->ATI_fragment_shader = GL_TRUE;
-   extensions->ATI_texture_env_combine3 = GL_TRUE;
-
-   extensions->MESA_framebuffer_flip_y = GL_TRUE;
-
-   extensions->NV_copy_image = GL_TRUE;
-   extensions->NV_fog_distance = GL_TRUE;
-   extensions->NV_texture_env_combine4 = GL_TRUE;
-   extensions->NV_texture_rectangle = GL_TRUE;
-
-   extensions->OES_EGL_image = GL_TRUE;
-   extensions->OES_EGL_image_external = GL_TRUE;
-   extensions->OES_draw_texture = GL_TRUE;
-
    /* Expose the extensions which directly correspond to gallium caps. */
    for (i = 0; i < ARRAY_SIZE(cap_mapping); i++) {
       if (screen->get_param(screen, cap_mapping[i].cap)) {
@@ -1180,9 +1149,12 @@ void st_init_extensions(struct pipe_screen *screen,
       consts->ForceGLSLVersion = options->force_glsl_version;
    }
 
+   consts->ForceCompatShaders = options->force_compat_shaders;
+
    consts->AllowExtraPPTokens = options->allow_extra_pp_tokens;
 
    consts->AllowHigherCompatVersion = options->allow_higher_compat_version;
+   consts->AllowGLSLCompatShaders = options->allow_glsl_compat_shaders;
 
    consts->ForceGLSLAbsSqrt = options->force_glsl_abs_sqrt;
 
@@ -1191,6 +1163,12 @@ void st_init_extensions(struct pipe_screen *screen,
    consts->dri_config_options_sha1 = options->config_options_sha1;
 
    consts->AllowGLSLCrossStageInterpolationMismatch = options->allow_glsl_cross_stage_interpolation_mismatch;
+
+   consts->DoDCEBeforeClipCullAnalysis = options->do_dce_before_clip_cull_analysis;
+
+   consts->GLSLIgnoreWriteToReadonlyVar = options->glsl_ignore_write_to_readonly_var;
+
+   consts->ForceMapBufferSynchronized = options->force_gl_map_buffer_synchronized;
 
    consts->PrimitiveRestartFixedIndex =
       screen->get_param(screen, PIPE_CAP_PRIMITIVE_RESTART_FIXED_INDEX);
@@ -1210,7 +1188,7 @@ void st_init_extensions(struct pipe_screen *screen,
    /* This extension needs full OpenGL 3.2, but we don't know if that's
     * supported at this point. Only check the GLSL version. */
    if (GLSLVersion >= 150 &&
-       screen->get_param(screen, PIPE_CAP_TGSI_VS_LAYER_VIEWPORT)) {
+       screen->get_param(screen, PIPE_CAP_VS_LAYER_VIEWPORT)) {
       extensions->AMD_vertex_shader_layer = GL_TRUE;
    }
 
@@ -1223,13 +1201,19 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->EXT_gpu_shader4 = GL_TRUE;
       extensions->EXT_texture_buffer_object = GL_TRUE;
 
-      if (screen->get_param(screen, PIPE_CAP_TGSI_ARRAY_COMPONENTS))
+      if (consts->MaxTransformFeedbackBuffers &&
+          screen->get_param(screen, PIPE_CAP_SHADER_ARRAY_COMPONENTS))
          extensions->ARB_enhanced_layouts = GL_TRUE;
    }
 
    if (GLSLVersion >= 130) {
       consts->NativeIntegers = GL_TRUE;
       consts->MaxClipPlanes = 8;
+
+      uint32_t drv_clip_planes = screen->get_param(screen, PIPE_CAP_CLIP_PLANES);
+      /* only override for > 1 - 0 if none, 1 is MAX, >2 overrides MAX */
+      if (drv_clip_planes > 1)
+         consts->MaxClipPlanes = drv_clip_planes;
 
       if (screen->get_param(screen, PIPE_CAP_VERTEXID_NOBASE)) {
          consts->VertexID_is_zero_based = GL_TRUE;
@@ -1265,6 +1249,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
       /* Integer textures make no sense before GLSL 1.30 */
       extensions->EXT_texture_integer = GL_FALSE;
+      extensions->ARB_texture_rgb10_a2ui = GL_FALSE;
    }
 
    if (options->glsl_zero_init) {
@@ -1278,6 +1263,7 @@ void st_init_extensions(struct pipe_screen *screen,
    consts->ForceIntegerTexNearest = options->force_integer_tex_nearest;
 
    consts->VendorOverride = options->force_gl_vendor;
+   consts->RendererOverride = options->force_gl_renderer;
 
    consts->UniformBooleanTrue = consts->NativeIntegers ? ~0U : fui(1.0f);
 
@@ -1290,14 +1276,21 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->ARB_tessellation_shader = GL_TRUE;
    }
 
-   /* What this is really checking for is the ability to support multiple
-    * invocations of a geometry shader. There is no separate cap for that, so
-    * we check the GLSLVersion.
-    */
+   /* OES_geometry_shader requires instancing */
    if ((GLSLVersion >= 400 || ESSLVersion >= 310) &&
        screen->get_shader_param(screen, PIPE_SHADER_GEOMETRY,
-                                PIPE_SHADER_CAP_MAX_INSTRUCTIONS) > 0) {
+                                PIPE_SHADER_CAP_MAX_INSTRUCTIONS) > 0 &&
+       consts->MaxGeometryShaderInvocations >= 32) {
       extensions->OES_geometry_shader = GL_TRUE;
+   }
+
+   /* Some hardware may not support indirect draws, but still wants ES
+    * 3.1. This allows the extension to be enabled only in ES contexts to
+    * avoid claiming hw support when there is none, and using a software
+    * fallback for ES.
+    */
+   if (api == API_OPENGLES2 && ESSLVersion >= 310) {
+      extensions->ARB_draw_indirect = GL_TRUE;
    }
 
    /* Needs PIPE_CAP_SAMPLE_SHADING + all the sample-related bits of
@@ -1497,10 +1490,10 @@ void st_init_extensions(struct pipe_screen *screen,
    }
 
    extensions->OES_texture_buffer =
+      consts->Program[MESA_SHADER_COMPUTE].MaxImageUniforms &&
       extensions->ARB_texture_buffer_object &&
       extensions->ARB_texture_buffer_range &&
-      extensions->ARB_texture_buffer_object_rgb32 &&
-      extensions->ARB_shader_image_load_store;
+      extensions->ARB_texture_buffer_object_rgb32;
 
    extensions->EXT_framebuffer_sRGB =
          screen->get_param(screen, PIPE_CAP_DEST_SURFACE_SRGB_CONTROL) &&
@@ -1522,6 +1515,9 @@ void st_init_extensions(struct pipe_screen *screen,
 
    if (!screen->get_param(screen, PIPE_CAP_PACKED_STREAM_OUTPUT))
       consts->DisableTransformFeedbackPacking = GL_TRUE;
+
+   if (screen->get_param(screen, PIPE_CAP_PREFER_POT_ALIGNED_VARYINGS))
+      consts->PreferPOTAlignedVaryings = GL_TRUE;
 
    unsigned max_fb_fetch_rts = screen->get_param(screen, PIPE_CAP_FBFETCH);
    bool coherent_fb_fetch =
@@ -1558,7 +1554,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
    if (extensions->AMD_vertex_shader_layer &&
        extensions->AMD_vertex_shader_viewport_index &&
-       screen->get_param(screen, PIPE_CAP_TGSI_TES_LAYER_VIEWPORT))
+       screen->get_param(screen, PIPE_CAP_TES_LAYER_VIEWPORT))
       extensions->ARB_shader_viewport_layer_array = GL_TRUE;
 
    /* ARB_framebuffer_no_attachments */
@@ -1649,8 +1645,9 @@ void st_init_extensions(struct pipe_screen *screen,
          }
 
          extensions->ARB_compute_shader =
-                                      extensions->ARB_shader_image_load_store &&
-                                      extensions->ARB_shader_atomic_counters;
+            max_threads_per_block >= 1024 &&
+            extensions->ARB_shader_image_load_store &&
+            extensions->ARB_shader_atomic_counters;
 
          if (extensions->ARB_compute_shader) {
             uint64_t max_variable_threads_per_block = 0;
@@ -1692,6 +1689,7 @@ void st_init_extensions(struct pipe_screen *screen,
     * these are redunant, but simpler to just have a (near-)exact copy here.
     */
    extensions->ARB_ES3_1_compatibility =
+      consts->Program[MESA_SHADER_FRAGMENT].MaxImageUniforms &&
       extensions->ARB_ES3_compatibility &&
       extensions->ARB_arrays_of_arrays &&
       extensions->ARB_compute_shader &&
@@ -1724,10 +1722,10 @@ void st_init_extensions(struct pipe_screen *screen,
    consts->NoPrimitiveBoundingBoxOutput = true;
 
    extensions->ANDROID_extension_pack_es31a =
+      consts->Program[MESA_SHADER_FRAGMENT].MaxImageUniforms &&
       extensions->KHR_texture_compression_astc_ldr &&
       extensions->KHR_blend_equation_advanced &&
       extensions->OES_sample_variables &&
-      extensions->ARB_shader_image_load_store &&
       extensions->ARB_texture_stencil8 &&
       extensions->ARB_texture_multisample &&
       extensions->OES_copy_image &&
@@ -1736,7 +1734,6 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->ARB_gpu_shader5 &&
       extensions->OES_primitive_bounding_box &&
       extensions->ARB_tessellation_shader &&
-      extensions->ARB_texture_border_clamp &&
       extensions->OES_texture_buffer &&
       extensions->OES_texture_cube_map_array &&
       extensions->EXT_texture_sRGB_decode;
@@ -1755,7 +1752,6 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->ARB_gpu_shader5 &&
       extensions->ARB_sample_shading &&
       extensions->ARB_tessellation_shader &&
-      extensions->ARB_texture_border_clamp &&
       extensions->OES_texture_buffer &&
       extensions->ARB_texture_cube_map_array &&
       extensions->ARB_texture_stencil8 &&
@@ -1819,7 +1815,7 @@ void st_init_extensions(struct pipe_screen *screen,
    }
 
    consts->AllowDrawOutOfOrder = options->allow_draw_out_of_order;
-   consts->AllowIncorrectPrimitiveId = options->allow_incorrect_primitive_id;
+   consts->GLThreadNopCheckFramebufferStatus = options->glthread_nop_check_framebuffer_status;
 
    bool prefer_nir = PIPE_SHADER_IR_NIR ==
          screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_PREFERRED_IR);
@@ -1829,6 +1825,7 @@ void st_init_extensions(struct pipe_screen *screen,
    if (prefer_nir &&
        screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT, PIPE_SHADER_CAP_INTEGERS) &&
        extensions->ARB_stencil_texturing &&
+       screen->get_param(screen, PIPE_CAP_DOUBLES) &&
        !(nir_options->lower_doubles_options & nir_lower_fp64_full_software))
       extensions->NV_copy_depth_to_color = TRUE;
 

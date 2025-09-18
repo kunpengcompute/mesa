@@ -26,6 +26,7 @@
 
 #include "r600_pipe_common.h"
 #include "r600_cs.h"
+#include "evergreen_compute.h"
 #include "tgsi/tgsi_parse.h"
 #include "util/list.h"
 #include "util/u_draw_quad.h"
@@ -91,7 +92,7 @@ void r600_gfx_write_event_eop(struct r600_common_context *ctx,
 	radeon_emit(cs, 0); /* unused */
 
 	if (buf)
-		r600_emit_reloc(ctx, &ctx->gfx, buf, RADEON_USAGE_WRITE,
+		r600_emit_reloc(ctx, &ctx->gfx, buf, RADEON_USAGE_WRITE |
 				RADEON_PRIO_QUERY);
 }
 
@@ -120,7 +121,7 @@ void r600_gfx_wait_fence(struct r600_common_context *ctx,
 	radeon_emit(cs, 4); /* poll interval */
 
 	if (buf)
-		r600_emit_reloc(ctx, &ctx->gfx, buf, RADEON_USAGE_READ,
+		r600_emit_reloc(ctx, &ctx->gfx, buf, RADEON_USAGE_READ |
 				RADEON_PRIO_QUERY);
 }
 
@@ -262,7 +263,7 @@ void r600_need_dma_space(struct r600_common_context *ctx, unsigned num_dw,
 	 * engine busy while uploads are being submitted.
 	 */
 	num_dw++; /* for emit_wait_idle below */
-	if (!ctx->ws->cs_check_space(&ctx->dma.cs, num_dw, false) ||
+	if (!ctx->ws->cs_check_space(&ctx->dma.cs, num_dw) ||
 	    ctx->dma.cs.used_vram_kb + ctx->dma.cs.used_gart_kb > 64 * 1024 ||
 	    !radeon_cs_memory_below_limit(ctx->screen, &ctx->dma.cs, vram, gtt)) {
 		ctx->dma.flush(ctx, PIPE_FLUSH_ASYNC, NULL);
@@ -286,10 +287,10 @@ void r600_need_dma_space(struct r600_common_context *ctx, unsigned num_dw,
 	if (ctx->screen->info.r600_has_virtual_memory) {
 		if (dst)
 			radeon_add_to_buffer_list(ctx, &ctx->dma, dst,
-						  RADEON_USAGE_WRITE, 0);
+						  RADEON_USAGE_WRITE);
 		if (src)
 			radeon_add_to_buffer_list(ctx, &ctx->dma, src,
-						  RADEON_USAGE_READ, 0);
+						  RADEON_USAGE_READ);
 	}
 
 	/* this function is called before all DMA calls, so increment this. */
@@ -491,7 +492,7 @@ static enum pipe_reset_status r600_get_reset_status(struct pipe_context *ctx)
 }
 
 static void r600_set_debug_callback(struct pipe_context *ctx,
-				    const struct pipe_debug_callback *cb)
+				    const struct util_debug_callback *cb)
 {
 	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
 
@@ -589,9 +590,11 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 
 	rctx->b.invalidate_resource = r600_invalidate_resource;
 	rctx->b.resource_commit = r600_resource_commit;
-	rctx->b.transfer_map = u_transfer_map_vtbl;
-	rctx->b.transfer_flush_region = u_transfer_flush_region_vtbl;
-	rctx->b.transfer_unmap = u_transfer_unmap_vtbl;
+	rctx->b.buffer_map = r600_buffer_transfer_map;
+        rctx->b.texture_map = r600_texture_transfer_map;
+	rctx->b.transfer_flush_region = r600_buffer_flush_region;
+	rctx->b.buffer_unmap = r600_buffer_transfer_unmap;
+        rctx->b.texture_unmap = r600_texture_transfer_unmap;
 	rctx->b.texture_subdata = u_default_texture_subdata;
 	rctx->b.flush = r600_flush_from_st;
 	rctx->b.set_debug_callback = r600_set_debug_callback;
@@ -686,12 +689,8 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "cs", DBG_CS, "Print compute shaders" },
 	{ "tcs", DBG_TCS, "Print tessellation control shaders" },
 	{ "tes", DBG_TES, "Print tessellation evaluation shaders" },
-	{ "noir", DBG_NO_IR, "Don't print the LLVM IR"},
-	{ "notgsi", DBG_NO_TGSI, "Don't print the TGSI"},
-	{ "noasm", DBG_NO_ASM, "Don't print disassembled shaders"},
 	{ "preoptir", DBG_PREOPT_IR, "Print the LLVM IR before initial optimizations" },
 	{ "checkir", DBG_CHECK_IR, "Enable additional sanity checks on shader IR" },
-	{ "nooptvariant", DBG_NO_OPT_VARIANT, "Disable compiling optimized shader variants." },
 
 	{ "testdma", DBG_TEST_DMA, "Invoke SDMA tests and exit." },
 	{ "testvmfaultcp", DBG_TEST_VMFAULT_CP, "Invoke a CP VM fault test and exit." },
@@ -707,10 +706,8 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "notiling", DBG_NO_TILING, "Disable tiling" },
 	{ "switch_on_eop", DBG_SWITCH_ON_EOP, "Program WD/IA to switch on end-of-packet." },
 	{ "forcedma", DBG_FORCE_DMA, "Use asynchronous DMA for all operations when possible." },
-	{ "precompile", DBG_PRECOMPILE, "Compile one shader variant at shader creation." },
 	{ "nowc", DBG_NO_WC, "Disable GTT write combining" },
 	{ "check_vm", DBG_CHECK_VM, "Check VM faults and dump debug info." },
-	{ "unsafemath", DBG_UNSAFE_MATH, "Enable unsafe math shader optimizations" },
 
 	DEBUG_NAMED_VALUE_END /* must be last */
 };
@@ -778,8 +775,8 @@ static void r600_disk_cache_create(struct r600_common_screen *rscreen)
 	/* These flags affect shader compilation. */
 	uint64_t shader_debug_flags =
 		rscreen->debug_flags &
-		(DBG_FS_CORRECT_DERIVS_AFTER_KILL |
-		 DBG_UNSAFE_MATH);
+		(DBG_NIR |
+		 DBG_NIR_PREFERRED);
 
 	rscreen->disk_shader_cache =
 		disk_cache_create(r600_get_family_name(rscreen),
@@ -804,10 +801,20 @@ static float r600_get_paramf(struct pipe_screen* pscreen,
 			     enum pipe_capf param)
 {
 	switch (param) {
+	case PIPE_CAPF_MIN_LINE_WIDTH:
+	case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+	case PIPE_CAPF_MIN_POINT_SIZE:
+	case PIPE_CAPF_MIN_POINT_SIZE_AA:
+		return 1;
+
+	case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+	case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+		return 0.1;
+
 	case PIPE_CAPF_MAX_LINE_WIDTH:
 	case PIPE_CAPF_MAX_LINE_WIDTH_AA:
-	case PIPE_CAPF_MAX_POINT_WIDTH:
-	case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+	case PIPE_CAPF_MAX_POINT_SIZE:
+	case PIPE_CAPF_MAX_POINT_SIZE_AA:
          return 8191.0f;
 	case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
 		return 16.0f;
@@ -1181,6 +1188,21 @@ r600_get_compiler_options(struct pipe_screen *screen,
        return &rscreen->nir_options;
 }
 
+extern bool r600_lower_to_scalar_instr_filter(const nir_instr *instr, const void *);
+
+static void r600_resource_destroy(struct pipe_screen *screen,
+				  struct pipe_resource *res)
+{
+	if (res->target == PIPE_BUFFER) {
+		if (r600_resource(res)->compute_global_bo)
+			r600_compute_global_buffer_destroy(screen, res);
+		else
+			r600_buffer_destroy(screen, res);
+	} else {
+		r600_texture_destroy(screen, res);
+	}
+}
+
 bool r600_common_screen_init(struct r600_common_screen *rscreen,
 			     struct radeon_winsys *ws)
 {
@@ -1217,11 +1239,11 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 	rscreen->b.get_compiler_options = r600_get_compiler_options;
 	rscreen->b.fence_finish = r600_fence_finish;
 	rscreen->b.fence_reference = r600_fence_reference;
-	rscreen->b.resource_destroy = u_resource_destroy_vtbl;
+	rscreen->b.resource_destroy = r600_resource_destroy;
 	rscreen->b.resource_from_user_memory = r600_buffer_from_user_memory;
 	rscreen->b.query_memory_info = r600_query_memory_info;
 
-	if (rscreen->info.has_hw_decode) {
+	if (rscreen->info.has_video_hw.uvd_decode) {
 		rscreen->b.get_video_param = rvid_get_video_param;
 		rscreen->b.is_video_format_supported = rvid_is_format_supported;
 	} else {
@@ -1269,7 +1291,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("has_dedicated_vram = %u\n", rscreen->info.has_dedicated_vram);
 		printf("r600_has_virtual_memory = %i\n", rscreen->info.r600_has_virtual_memory);
 		printf("gfx_ib_pad_with_type2 = %i\n", rscreen->info.gfx_ib_pad_with_type2);
-		printf("has_hw_decode = %u\n", rscreen->info.has_hw_decode);
+		printf("uvd_decode = %u\n", rscreen->info.has_video_hw.uvd_decode);
 		printf("num_rings[RING_DMA] = %i\n", rscreen->info.num_rings[RING_DMA]);
 		printf("num_rings[RING_COMPUTE] = %u\n", rscreen->info.num_rings[RING_COMPUTE]);
 		printf("uvd_fw_version = %u\n", rscreen->info.uvd_fw_version);
@@ -1316,6 +1338,8 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.lower_int64_options = ~0,
 		.lower_extract_byte = true,
 		.lower_extract_word = true,
+		.lower_insert_byte = true,
+		.lower_insert_word = true,
 		.lower_rotate = true,
 		.max_unroll_iterations = 32,
 		.lower_interpolate_at = true,
@@ -1330,6 +1354,9 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		.lower_bitfield_insert_to_bitfield_select = true,
 		.has_fused_comp_and_csel = true,
 		.lower_find_msb_to_reverse = true,
+                .lower_to_scalar = true,
+                .lower_to_scalar_filter = r600_lower_to_scalar_instr_filter,
+                .linker_ignore_precision = true,
 	};
 
 	rscreen->nir_options = nir_options;

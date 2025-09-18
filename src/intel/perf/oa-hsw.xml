@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
-<metrics version="1599482684" merge_md5="">
-  <set name="Render Metrics Basic Gen7.5"
+<metrics version="1619078709" merge_md5="">
+  <set name="Render Metrics Basic set"
        chipset="HSW"
        symbol_name="RenderBasic"
        underscore_name="render_basic"
@@ -128,7 +128,7 @@
     <counter name="GPU Busy"
              symbol_name="GpuBusy"
              underscore_name="gpu_busy"
-             description="The percentage of time in which the GPU has being processing GPU commands."
+             description="The percentage of time in which the GPU has been processing GPU commands."
              data_type="float"
              max_equation="100"
              units="percent"
@@ -1041,7 +1041,7 @@
     </register_config>
   </set>
 
-  <set name="Compute Metrics Basic Gen7.5"
+  <set name="Compute Metrics Basic set"
        chipset="HSW"
        symbol_name="ComputeBasic"
        underscore_name="compute_basic"
@@ -1091,7 +1091,7 @@
     <counter name="GPU Busy"
              symbol_name="GpuBusy"
              underscore_name="gpu_busy"
-             description="The percentage of time in which the GPU has being processing GPU commands."
+             description="The percentage of time in which the GPU has been processing GPU commands."
              data_type="float"
              max_equation="100"
              units="percent"
@@ -1811,7 +1811,7 @@
     </register_config>
   </set>
 
-  <set name="Compute Metrics Extended Gen7.5"
+  <set name="Compute Metrics Extended set"
        chipset="HSW"
        symbol_name="ComputeExtended"
        underscore_name="compute_extended"
@@ -2150,7 +2150,7 @@
     </register_config>
   </set>
 
-  <set name="Memory Reads Distribution Gen7.5"
+  <set name="Memory Reads Distribution set"
        chipset="HSW"
        symbol_name="MemoryReads"
        underscore_name="memory_reads"
@@ -2200,7 +2200,7 @@
     <counter name="GPU Busy"
              symbol_name="GpuBusy"
              underscore_name="gpu_busy"
-             description="The percentage of time in which the GPU has being processing GPU commands."
+             description="The percentage of time in which the GPU has been processing GPU commands."
              data_type="float"
              max_equation="100"
              units="percent"
@@ -2964,7 +2964,7 @@
     </register_config>
   </set>
 
-  <set name="Memory Writes Distribution Gen7.5"
+  <set name="Memory Writes Distribution set"
        chipset="HSW"
        symbol_name="MemoryWrites"
        underscore_name="memory_writes"
@@ -3014,7 +3014,7 @@
     <counter name="GPU Busy"
              symbol_name="GpuBusy"
              underscore_name="gpu_busy"
-             description="The percentage of time in which the GPU has being processing GPU commands."
+             description="The percentage of time in which the GPU has been processing GPU commands."
              data_type="float"
              max_equation="100"
              units="percent"
@@ -3830,7 +3830,7 @@
     <counter name="GPU Busy"
              symbol_name="GpuBusy"
              underscore_name="gpu_busy"
-             description="The percentage of time in which the GPU has being processing GPU commands."
+             description="The percentage of time in which the GPU has been processing GPU commands."
              data_type="float"
              max_equation="100"
              units="percent"

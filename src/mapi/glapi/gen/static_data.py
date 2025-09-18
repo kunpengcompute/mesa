@@ -1689,6 +1689,9 @@ offsets = {
     "VertexAttribs2hvNV": 1653,
     "VertexAttribs3hvNV": 1654,
     "VertexAttribs4hvNV": 1655,
+    "TexPageCommitmentARB": 1656,
+    "TexturePageCommitmentEXT": 1657,
+    "nativeTexImage2D": 1658,
 }
 
 functions = [

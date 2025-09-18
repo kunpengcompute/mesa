@@ -236,19 +236,12 @@ nir_insert_phi_undef(nir_block *block, nir_block *pred)
 
       nir_phi_instr *phi = nir_instr_as_phi(instr);
       nir_ssa_undef_instr *undef =
-         nir_ssa_undef_instr_create(ralloc_parent(phi),
+         nir_ssa_undef_instr_create(impl->function->shader,
                                     phi->dest.ssa.num_components,
                                     phi->dest.ssa.bit_size);
       nir_instr_insert_before_cf_list(&impl->body, &undef->instr);
-      nir_phi_src *src = ralloc(phi, nir_phi_src);
-      src->pred = pred;
-      src->src.parent_instr = &phi->instr;
-      src->src.is_ssa = true;
-      src->src.ssa = &undef->def;
-
+      nir_phi_src *src = nir_phi_instr_add_src(phi, pred, nir_src_for_ssa(&undef->def));
       list_addtail(&src->src.use_link, &undef->def.uses);
-
-      exec_list_push_tail(&phi->srcs, &src->node);
    }
 }
 
@@ -420,7 +413,8 @@ insert_non_block(nir_block *before, nir_cf_node *node, nir_block *after)
 {
    node->parent = before->cf_node.parent;
    exec_node_insert_after(&before->cf_node.node, &node->node);
-   link_block_to_non_block(before, node);
+   if (!nir_block_ends_in_jump(before))
+      link_block_to_non_block(before, node);
    link_non_block_to_block(node, after);
 }
 
@@ -447,6 +441,7 @@ remove_phi_src(nir_block *block, nir_block *pred)
          if (src->pred == pred) {
             list_del(&src->src.use_link);
             exec_node_remove(&src->node);
+            free(src);
          }
       }
    }
@@ -552,9 +547,12 @@ update_if_uses(nir_cf_node *node)
 /**
  * Stitch two basic blocks together into one. The aggregate must have the same
  * predecessors as the first and the same successors as the second.
+ *
+ * Returns a cursor pointing at the end of the before block (i.e.m between the
+ * two blocks) once stiched together.
  */
 
-static void
+static nir_cursor
 stitch_blocks(nir_block *before, nir_block *after)
 {
    /*
@@ -572,7 +570,11 @@ stitch_blocks(nir_block *before, nir_block *after)
          remove_phi_src(after->successors[1], after);
       unlink_block_successors(after);
       exec_node_remove(&after->cf_node.node);
+
+      return nir_after_block(before);
    } else {
+      nir_instr *last_before_instr = nir_block_last_instr(before);
+
       move_successors(after, before);
 
       foreach_list_typed(nir_instr, instr, node, &after->instr_list) {
@@ -581,6 +583,9 @@ stitch_blocks(nir_block *before, nir_block *after)
 
       exec_list_append(&before->instr_list, &after->instr_list);
       exec_node_remove(&after->cf_node.node);
+
+      return last_before_instr ? nir_after_instr(last_before_instr) :
+                                 nir_before_block(before);
    }
 }
 
@@ -614,10 +619,10 @@ static bool
 replace_ssa_def_uses(nir_ssa_def *def, void *void_impl)
 {
    nir_function_impl *impl = void_impl;
-   void *mem_ctx = ralloc_parent(impl);
 
    nir_ssa_undef_instr *undef =
-      nir_ssa_undef_instr_create(mem_ctx, def->num_components,
+      nir_ssa_undef_instr_create(impl->function->shader,
+                                 def->num_components,
                                  def->bit_size);
    nir_instr_insert_before_cf_list(&impl->body, &undef->instr);
    nir_ssa_def_rewrite_uses(def, &undef->def);
@@ -673,7 +678,11 @@ cleanup_cf_node(nir_cf_node *node, nir_function_impl *impl)
    }
 }
 
-void
+/**
+ * Extracts everything between two cursors.  Returns the cursor which is
+ * equivalent to the old begin/end curosors.
+ */
+nir_cursor
 nir_cf_extract(nir_cf_list *extracted, nir_cursor begin, nir_cursor end)
 {
    nir_block *block_begin, *block_end, *block_before, *block_after;
@@ -681,7 +690,7 @@ nir_cf_extract(nir_cf_list *extracted, nir_cursor begin, nir_cursor end)
    if (nir_cursors_equal(begin, end)) {
       exec_list_make_empty(&extracted->list);
       extracted->impl = NULL; /* we shouldn't need this */
-      return;
+      return begin;
    }
 
    split_block_cursor(begin, &block_before, &block_begin);
@@ -732,7 +741,7 @@ nir_cf_extract(nir_cf_list *extracted, nir_cursor begin, nir_cursor end)
       cf_node = next;
    }
 
-   stitch_blocks(block_before, block_after);
+   return stitch_blocks(block_before, block_after);
 }
 
 static void
@@ -782,13 +791,17 @@ relink_jump_halt_cf_node(nir_cf_node *node, nir_block *end_block)
    }
 }
 
-void
+/**
+ * Inserts a list at a given cursor. Returns the cursor at the end of the
+ * insertion (i.e., at the end of the instructions contained in cf_list).
+ */
+nir_cursor
 nir_cf_reinsert(nir_cf_list *cf_list, nir_cursor cursor)
 {
    nir_block *before, *after;
 
    if (exec_list_is_empty(&cf_list->list))
-      return;
+      return cursor;
 
    nir_function_impl *cursor_impl =
       nir_cf_node_get_function(&nir_cursor_current_block(cursor)->cf_node);
@@ -807,8 +820,8 @@ nir_cf_reinsert(nir_cf_list *cf_list, nir_cursor cursor)
 
    stitch_blocks(before,
                  nir_cf_node_as_block(nir_cf_node_next(&before->cf_node)));
-   stitch_blocks(nir_cf_node_as_block(nir_cf_node_prev(&after->cf_node)),
-                 after);
+   return stitch_blocks(nir_cf_node_as_block(nir_cf_node_prev(&after->cf_node)),
+                        after);
 }
 
 void

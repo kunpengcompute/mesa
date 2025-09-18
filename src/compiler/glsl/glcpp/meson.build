@@ -89,8 +89,14 @@ glcpp = executable(
   build_by_default : false,
 )
 
+# Meson can't auto-skip these on cross builds because of the python wrapper
+#
+# TODO: has_exe_wrapper() is deprecated and renamed to can_run_host_binaries()
+# starting with Meson 0.55.0
+#
 # FIXME: these fail on windows due to whitespace differences
-if with_any_opengl and with_tests and host_machine.system() != 'windows'
+if with_any_opengl and with_tests and meson.has_exe_wrapper() and \
+   host_machine.system() != 'windows'
   modes = ['unix', 'windows', 'oldmac', 'bizarro']
 
   foreach m : modes
@@ -106,18 +112,4 @@ if with_any_opengl and with_tests and host_machine.system() != 'windows'
       timeout: 60,
     )
   endforeach
-
-  if dep_valgrind.found()
-    test(
-      'glcpp test (valgrind)',
-      prog_python,
-      args : [
-        join_paths(meson.current_source_dir(), 'tests/glcpp_test.py'),
-        glcpp, join_paths(meson.current_source_dir(), 'tests'),
-        '--valgrind',
-      ],
-      suite : ['compiler', 'glcpp'],
-      timeout: 240,
-    )
-  endif
 endif

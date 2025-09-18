@@ -31,7 +31,7 @@
 
 #include "pipe/p_screen.h"
 #include "os/os_thread.h"
-
+#include "util/u_threaded_context.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,6 +51,7 @@ struct trace_screen
    struct pipe_screen base;
 
    struct pipe_screen *screen;
+   tc_is_resource_busy is_resource_busy;
    bool trace_tc;
 };
 
@@ -58,6 +59,8 @@ struct trace_screen
 struct trace_screen *
 trace_screen(struct pipe_screen *screen);
 
+struct pipe_screen *
+trace_screen_unwrap(struct pipe_screen *_screen);
 
 #ifdef __cplusplus
 }

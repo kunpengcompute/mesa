@@ -294,7 +294,11 @@ lower_ray_walk_intrinsics(nir_shader *shader,
              * optimization passes.
              */
             nir_push_if(&b, nir_imm_true(&b));
-            nir_trace_ray_continue_intel(&b);
+            nir_trace_ray_intel(&b,
+                                nir_load_btd_global_arg_addr_intel(&b),
+                                nir_imm_int(&b, BRW_RT_BVH_LEVEL_OBJECT),
+                                nir_imm_int(&b, GEN_RT_TRACE_RAY_CONTINUE),
+                                .synchronous = false);
             nir_jump(&b, nir_jump_halt);
             nir_pop_if(&b, NULL);
             progress = true;
@@ -313,7 +317,11 @@ lower_ray_walk_intrinsics(nir_shader *shader,
             }
             nir_push_else(&b, NULL);
             {
-               nir_trace_ray_commit_intel(&b);
+               nir_trace_ray_intel(&b,
+                                   nir_load_btd_global_arg_addr_intel(&b),
+                                   nir_imm_int(&b, BRW_RT_BVH_LEVEL_OBJECT),
+                                   nir_imm_int(&b, GEN_RT_TRACE_RAY_COMMIT),
+                                   .synchronous = false);
                nir_jump(&b, nir_jump_halt);
             }
             nir_pop_if(&b, NULL);
@@ -417,7 +425,7 @@ brw_nir_create_raygen_trampoline(const struct brw_compiler *compiler,
 {
    const struct intel_device_info *devinfo = compiler->devinfo;
    const nir_shader_compiler_options *nir_options =
-      compiler->glsl_compiler_options[MESA_SHADER_COMPUTE].NirOptions;
+      compiler->nir_options[MESA_SHADER_COMPUTE];
 
    STATIC_ASSERT(sizeof(struct brw_rt_raygen_trampoline_params) == 32);
 
@@ -426,7 +434,7 @@ brw_nir_create_raygen_trampoline(const struct brw_compiler *compiler,
                                                   "RT Ray-Gen Trampoline");
    ralloc_steal(mem_ctx, b.shader);
 
-   b.shader->info.cs.local_size_variable = true;
+   b.shader->info.workgroup_size_variable = true;
 
    /* The RT global data and raygen BINDLESS_SHADER_RECORD addresses are
     * passed in as push constants in the first register.  We deal with the
@@ -438,7 +446,7 @@ brw_nir_create_raygen_trampoline(const struct brw_compiler *compiler,
    nir_ssa_def *local_shift =
       nir_u2u32(&b, load_trampoline_param(&b, local_group_size_log2, 3, 8));
 
-   nir_ssa_def *global_id = nir_load_work_group_id(&b, 32);
+   nir_ssa_def *global_id = nir_load_workgroup_id(&b, 32);
    nir_ssa_def *simd_channel = nir_load_subgroup_invocation(&b);
    nir_ssa_def *local_x =
       nir_ubfe(&b, simd_channel, nir_imm_int(&b, 0),

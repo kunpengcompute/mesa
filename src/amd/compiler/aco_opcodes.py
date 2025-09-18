@@ -20,9 +20,6 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 #
-# Authors:
-#    Daniel Schuermann (daniel.schuermann@campus.tu-berlin.de)
-
 
 # Class that represents all the information we have about the opcode
 # NOTE: this must be kept in sync with aco_op_info
@@ -77,8 +74,9 @@ class Format(Enum):
    VOPC = 1 << 10
    VOP3 = 1 << 11
    VINTRP = 1 << 12
-   DPP = 1 << 13
+   DPP16 = 1 << 13
    SDWA = 1 << 14
+   DPP8 = 1 << 15
 
    def get_builder_fields(self):
       if self == Format.SOPK:
@@ -92,8 +90,8 @@ class Format(Enum):
                  ('bool', 'dlc', 'false'),
                  ('bool', 'nv', 'false')]
       elif self == Format.DS:
-         return [('int16_t', 'offset0', '0'),
-                 ('int8_t', 'offset1', '0'),
+         return [('uint16_t', 'offset0', '0'),
+                 ('uint8_t', 'offset1', '0'),
                  ('bool', 'gds', 'false')]
       elif self == Format.MTBUF:
          return [('unsigned', 'dfmt', None),
@@ -150,7 +148,7 @@ class Format(Enum):
       elif self == Format.VINTRP:
          return [('unsigned', 'attribute', None),
                  ('unsigned', 'component', None)]
-      elif self == Format.DPP:
+      elif self == Format.DPP16:
          return [('uint16_t', 'dpp_ctrl', None),
                  ('uint8_t', 'row_mask', '0xF'),
                  ('uint8_t', 'bank_mask', '0xF'),
@@ -181,9 +179,8 @@ class Format(Enum):
       res = ''
       if self == Format.SDWA:
          for i in range(min(num_operands, 2)):
-            res += 'instr->sel[{0}] = op{0}.op.bytes() == 2 ? sdwa_uword : (op{0}.op.bytes() == 1 ? sdwa_ubyte : sdwa_udword);\n'.format(i)
-         res += 'instr->dst_sel = def0.bytes() == 2 ? sdwa_uword : (def0.bytes() == 1 ? sdwa_ubyte : sdwa_udword);\n'
-         res += 'instr->dst_preserve = true;'
+            res += 'instr->sel[{0}] = SubdwordSel(op{0}.op.bytes(), 0, false);'.format(i)
+         res += 'instr->dst_sel = SubdwordSel(def0.bytes(), 0, false);\n'
       return res
 
 
@@ -222,24 +219,21 @@ class Opcode(object):
 
       parts = name.replace('_e64', '').rsplit('_', 2)
       op_dtype = parts[-1]
-      def_dtype = parts[-2] if len(parts) > 1 else parts[-1]
 
-      def_dtype_sizes = {'{}{}'.format(prefix, size) : size for prefix in 'biuf' for size in [64, 32, 24, 16]}
-      op_dtype_sizes = {k:v for k, v in def_dtype_sizes.items()}
+      op_dtype_sizes = {'{}{}'.format(prefix, size) : size for prefix in 'biuf' for size in [64, 32, 24, 16]}
       # inline constants are 32-bit for 16-bit integer/typeless instructions: https://reviews.llvm.org/D81841
       op_dtype_sizes['b16'] = 32
       op_dtype_sizes['i16'] = 32
       op_dtype_sizes['u16'] = 32
 
-      # If we can't tell the definition size and the operand size, default to
-      # 32. Some opcodes can have a larger definition size, but
-      # get_subdword_definition_info() handles that.
+      # If we can't tell the operand size, default to 32.
       self.operand_size = op_dtype_sizes.get(op_dtype, 32)
-      self.definition_size = def_dtype_sizes.get(def_dtype, self.operand_size)
 
       # exceptions for operands:
-      if 'sad_' in name:
+      if 'qsad_' in name:
         self.operand_size = 0
+      elif 'sad_' in name:
+        self.operand_size = 32
       elif name in ['v_mad_u64_u32', 'v_mad_i64_i32']:
         self.operand_size = 0
       elif self.operand_size == 24:
@@ -249,13 +243,6 @@ class Opcode(object):
       elif name in ['v_cvt_f32_ubyte0', 'v_cvt_f32_ubyte1',
                     'v_cvt_f32_ubyte2', 'v_cvt_f32_ubyte3']:
         self.operand_size = 32
-
-      # exceptions for definitions:
-      if 'sad_' in name:
-        self.definition_size = 0
-      elif '_pk' in name:
-        self.definition_size = 32
-
 
 # global dictionary of opcodes
 opcodes = {}
@@ -318,7 +305,18 @@ opcode("p_exit_early_if")
 # simulates proper bpermute behavior when it's unsupported, eg. GFX10 wave64
 opcode("p_bpermute")
 
+# creates a lane mask where only the first active lane is selected
+opcode("p_elect")
+
 opcode("p_constaddr")
+
+# These don't have to be pseudo-ops, but it makes optimization easier to only
+# have to consider two instructions.
+# (src0 >> (index * bits)) & ((1 << bits) - 1) with optional sign extension
+opcode("p_extract") # src1=index, src2=bits, src3=signext
+# (src0 & ((1 << bits) - 1)) << (index * bits)
+opcode("p_insert") # src1=index, src2=bits
+
 
 # SOP2 instructions: 2 scalar inputs, 1 scalar output (+optional scc)
 SOP2 = {
@@ -676,13 +674,15 @@ VOP2 = {
    (0x03, 0x03, 0x01, 0x01, 0x03, "v_add_f32", True),
    (0x04, 0x04, 0x02, 0x02, 0x04, "v_sub_f32", True),
    (0x05, 0x05, 0x03, 0x03, 0x05, "v_subrev_f32", True),
-   (0x06, 0x06,   -1,   -1, 0x06, "v_mac_legacy_f32", True),
+   (0x06, 0x06,   -1,   -1, 0x06, "v_mac_legacy_f32", True), #GFX6,7,10
+   (  -1,   -1,   -1,   -1, 0x06, "v_fmac_legacy_f32", True), #GFX10.3+
    (0x07, 0x07, 0x04, 0x04, 0x07, "v_mul_legacy_f32", True),
    (0x08, 0x08, 0x05, 0x05, 0x08, "v_mul_f32", True),
    (0x09, 0x09, 0x06, 0x06, 0x09, "v_mul_i32_i24", False),
    (0x0a, 0x0a, 0x07, 0x07, 0x0a, "v_mul_hi_i32_i24", False),
    (0x0b, 0x0b, 0x08, 0x08, 0x0b, "v_mul_u32_u24", False),
    (0x0c, 0x0c, 0x09, 0x09, 0x0c, "v_mul_hi_u32_u24", False),
+   (  -1,   -1,   -1, 0x39, 0x0d, "v_dot4c_i32_i8", False),
    (0x0d, 0x0d,   -1,   -1,   -1, "v_min_legacy_f32", True),
    (0x0e, 0x0e,   -1,   -1,   -1, "v_max_legacy_f32", True),
    (0x0f, 0x0f, 0x0a, 0x0a, 0x0f, "v_min_f32", True),
@@ -966,6 +966,10 @@ VOPP = {
 # (gfx6, gfx7, gfx8, gfx9, gfx10, name) = (-1, -1, -1, code, code, name)
 for (code, name, modifiers) in VOPP:
    opcode(name, -1, code, code, Format.VOP3P, InstrClass.Valu32, modifiers, modifiers)
+opcode("v_dot2_i32_i16", -1, 0x26, 0x14, Format.VOP3P, InstrClass.Valu32)
+opcode("v_dot2_u32_u16", -1, 0x27, 0x15, Format.VOP3P, InstrClass.Valu32)
+opcode("v_dot4_i32_i8", -1, 0x28, 0x16, Format.VOP3P, InstrClass.Valu32)
+opcode("v_dot4_u32_u8", -1, 0x29, 0x17, Format.VOP3P, InstrClass.Valu32)
 
 
 # VINTERP instructions: 
@@ -1196,14 +1200,14 @@ DS = {
    (0x51, 0x51, 0x51, 0x51, 0x51, "ds_cmpst_f64"),
    (0x52, 0x52, 0x52, 0x52, 0x52, "ds_min_f64"),
    (0x53, 0x53, 0x53, 0x53, 0x53, "ds_max_f64"),
-   (  -1,   -1, 0x54, 0x54, 0xa0, "ds_write_b8_d16_hi"),
-   (  -1,   -1, 0x55, 0x55, 0xa1, "ds_write_b16_d16_hi"),
-   (  -1,   -1, 0x56, 0x56, 0xa2, "ds_read_u8_d16"),
-   (  -1,   -1, 0x57, 0x57, 0xa3, "ds_read_u8_d16_hi"),
-   (  -1,   -1, 0x58, 0x58, 0xa4, "ds_read_i8_d16"),
-   (  -1,   -1, 0x59, 0x59, 0xa5, "ds_read_i8_d16_hi"),
-   (  -1,   -1, 0x5a, 0x5a, 0xa6, "ds_read_u16_d16"),
-   (  -1,   -1, 0x5b, 0x5b, 0xa7, "ds_read_u16_d16_hi"),
+   (  -1,   -1,   -1, 0x54, 0xa0, "ds_write_b8_d16_hi"),
+   (  -1,   -1,   -1, 0x55, 0xa1, "ds_write_b16_d16_hi"),
+   (  -1,   -1,   -1, 0x56, 0xa2, "ds_read_u8_d16"),
+   (  -1,   -1,   -1, 0x57, 0xa3, "ds_read_u8_d16_hi"),
+   (  -1,   -1,   -1, 0x58, 0xa4, "ds_read_i8_d16"),
+   (  -1,   -1,   -1, 0x59, 0xa5, "ds_read_i8_d16_hi"),
+   (  -1,   -1,   -1, 0x5a, 0xa6, "ds_read_u16_d16"),
+   (  -1,   -1,   -1, 0x5b, 0xa7, "ds_read_u16_d16_hi"),
    (0x60, 0x60, 0x60, 0x60, 0x60, "ds_add_rtn_u64"),
    (0x61, 0x61, 0x61, 0x61, 0x61, "ds_sub_rtn_u64"),
    (0x62, 0x62, 0x62, 0x62, 0x62, "ds_rsub_rtn_u64"),
@@ -1509,6 +1513,7 @@ IMAGE_GATHER4 = {
 for (code, name) in IMAGE_GATHER4:
    opcode(name, code, code, code, Format.MIMG, InstrClass.VMem)
 
+opcode("image_bvh64_intersect_ray", -1, -1, 231, Format.MIMG, InstrClass.VMem)
 
 FLAT = {
    #GFX7, GFX8_9, GFX10
@@ -1682,8 +1687,12 @@ for ver in ['gfx9', 'gfx10']:
             # v_mad_legacy_f32 is replaced with v_fma_legacy_f32 on GFX10.3
             if ver == 'gfx10' and names == set(['v_mad_legacy_f32', 'v_fma_legacy_f32']):
                 continue
+            # v_mac_legacy_f32 is replaced with v_fmac_legacy_f32 on GFX10.3
+            if ver == 'gfx10' and names == set(['v_mac_legacy_f32', 'v_fmac_legacy_f32']):
+                continue
 
             print('%s and %s share the same opcode number (%s)' % (op_to_name[key], op.name, ver))
             sys.exit(1)
         else:
             op_to_name[key] = op.name
+

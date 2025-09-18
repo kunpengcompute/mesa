@@ -29,6 +29,8 @@
 
 #include "anv_private.h"
 
+#include "util/os_time.h"
+
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
 
@@ -163,7 +165,7 @@ VkResult genX(CreateQueryPool)(
 
    if (!vk_object_multialloc(&device->vk, &ma, pAllocator,
                              VK_OBJECT_TYPE_QUERY_POOL))
-      return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    pool->type = pCreateInfo->queryType;
    pool->pipeline_statistics = pipeline_statistics;
@@ -194,17 +196,7 @@ VkResult genX(CreateQueryPool)(
    }
 #endif
 
-   uint32_t bo_flags = 0;
-   if (pdevice->supports_48bit_addresses)
-      bo_flags |= EXEC_OBJECT_SUPPORTS_48B_ADDRESS;
-
-   if (pdevice->use_softpin)
-      bo_flags |= EXEC_OBJECT_PINNED;
-
-   if (pdevice->has_exec_async)
-      bo_flags |= EXEC_OBJECT_ASYNC;
-
-   uint64_t size = pool->slots * pool->stride;
+   uint64_t size = pool->slots * (uint64_t)pool->stride;
    result = anv_device_alloc_bo(device, "query-pool", size,
                                 ANV_BO_ALLOC_MAPPED |
                                 ANV_BO_ALLOC_SNOOPED,
@@ -225,7 +217,7 @@ VkResult genX(CreateQueryPool)(
 
          mi_builder_init(&b, &device->info, &batch);
          mi_store(&b, mi_reg64(ANV_PERF_QUERY_OFFSET_REG),
-                      mi_imm(p * pool->pass_size));
+                      mi_imm(p * (uint64_t)pool->pass_size));
          anv_batch_emit(&batch, GENX(MI_BATCH_BUFFER_END), bbe);
       }
    }
@@ -304,13 +296,13 @@ void genX(DestroyQueryPool)(
 static uint64_t
 khr_perf_query_availability_offset(struct anv_query_pool *pool, uint32_t query, uint32_t pass)
 {
-   return query * (pool->stride) + pass * pool->pass_size;
+   return query * (uint64_t)pool->stride + pass * (uint64_t)pool->pass_size;
 }
 
 static uint64_t
 khr_perf_query_data_offset(struct anv_query_pool *pool, uint32_t query, uint32_t pass, bool end)
 {
-   return query * (pool->stride) + pass * pool->pass_size +
+   return query * (uint64_t)pool->stride + pass * (uint64_t)pool->pass_size +
       pool->data_offset + (end ? pool->snapshot_size : 0);
 }
 
@@ -343,7 +335,7 @@ khr_perf_query_ensure_relocs(struct anv_cmd_buffer *cmd_buffer)
    const struct anv_physical_device *pdevice = device->physical;
 
    cmd_buffer->self_mod_locations =
-      vk_alloc(&cmd_buffer->pool->alloc,
+      vk_alloc(&cmd_buffer->vk.pool->alloc,
                pdevice->n_perf_query_commands * sizeof(*cmd_buffer->self_mod_locations), 8,
                VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
 
@@ -425,17 +417,17 @@ static VkResult
 wait_for_available(struct anv_device *device,
                    struct anv_query_pool *pool, uint32_t query)
 {
-   uint64_t abs_timeout = anv_get_absolute_timeout(2 * NSEC_PER_SEC);
+   uint64_t abs_timeout_ns = os_time_get_absolute_timeout(2 * NSEC_PER_SEC);
 
-   while (anv_gettime_ns() < abs_timeout) {
+   while (os_time_get_nano() < abs_timeout_ns) {
       if (query_is_available(pool, query))
          return VK_SUCCESS;
-      VkResult status = anv_device_query_status(device);
+      VkResult status = vk_device_check_status(&device->vk);
       if (status != VK_SUCCESS)
          return status;
    }
 
-   return anv_device_set_lost(device, "query timeout");
+   return vk_device_set_lost(&device->vk, "query timeout");
 }
 
 VkResult genX(GetQueryPoolResults)(
@@ -458,7 +450,7 @@ VkResult genX(GetQueryPoolResults)(
           pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_KHR ||
           pool->type == VK_QUERY_TYPE_PERFORMANCE_QUERY_INTEL);
 
-   if (anv_device_is_lost(device))
+   if (vk_device_is_lost(&device->vk))
       return VK_ERROR_DEVICE_LOST;
 
    if (pData == NULL)
@@ -524,7 +516,7 @@ VkResult genX(GetQueryPoolResults)(
                uint64_t result = slot[idx * 2 + 2] - slot[idx * 2 + 1];
 
                /* WaDividePSInvocationCountBy4:HSW,BDW */
-               if ((device->info.ver == 8 || device->info.is_haswell) &&
+               if ((device->info.ver == 8 || device->info.verx10 == 75) &&
                    (1 << stat) == VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT)
                   result >>= 2;
 
@@ -733,13 +725,29 @@ void genX(CmdResetQueryPool)(
 
    switch (pool->type) {
    case VK_QUERY_TYPE_OCCLUSION:
-   case VK_QUERY_TYPE_TIMESTAMP:
       for (uint32_t i = 0; i < queryCount; i++) {
          emit_query_pc_availability(cmd_buffer,
                                     anv_query_address(pool, firstQuery + i),
                                     false);
       }
       break;
+
+   case VK_QUERY_TYPE_TIMESTAMP: {
+      for (uint32_t i = 0; i < queryCount; i++) {
+         emit_query_pc_availability(cmd_buffer,
+                                    anv_query_address(pool, firstQuery + i),
+                                    false);
+      }
+
+      /* Add a CS stall here to make sure the PIPE_CONTROL above has
+       * completed. Otherwise some timestamps written later with MI_STORE_*
+       * commands might race with the PIPE_CONTROL in the loop above.
+       */
+      anv_add_pending_pipe_bits(cmd_buffer, ANV_PIPE_CS_STALL_BIT,
+                                "vkCmdResetQueryPool of timestamps");
+      genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
+      break;
+   }
 
    case VK_QUERY_TYPE_PIPELINE_STATISTICS:
    case VK_QUERY_TYPE_TRANSFORM_FEEDBACK_STREAM_EXT: {
@@ -1226,9 +1234,9 @@ void genX(CmdEndQueryIndexedEXT)(
     * first index, mark the other query indices as being already available
     * with result 0.
     */
-   if (cmd_buffer->state.subpass && cmd_buffer->state.subpass->view_mask) {
+   if (cmd_buffer->state.gfx.view_mask) {
       const uint32_t num_queries =
-         util_bitcount(cmd_buffer->state.subpass->view_mask);
+         util_bitcount(cmd_buffer->state.gfx.view_mask);
       if (num_queries > 1)
          emit_zero_queries(cmd_buffer, &b, pool, query + 1, num_queries - 1);
    }
@@ -1236,9 +1244,9 @@ void genX(CmdEndQueryIndexedEXT)(
 
 #define TIMESTAMP 0x2358
 
-void genX(CmdWriteTimestamp)(
+void genX(CmdWriteTimestamp2)(
     VkCommandBuffer                             commandBuffer,
-    VkPipelineStageFlagBits                     pipelineStage,
+    VkPipelineStageFlags2                       stage,
     VkQueryPool                                 queryPool,
     uint32_t                                    query)
 {
@@ -1251,13 +1259,11 @@ void genX(CmdWriteTimestamp)(
    struct mi_builder b;
    mi_builder_init(&b, &cmd_buffer->device->info, &cmd_buffer->batch);
 
-   switch (pipelineStage) {
-   case VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT:
+   if (stage == VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT_KHR) {
       mi_store(&b, mi_mem64(anv_address_add(query_addr, 8)),
                    mi_reg64(TIMESTAMP));
-      break;
-
-   default:
+      emit_query_mi_availability(&b, query_addr, true);
+   } else {
       /* Everything else is bottom-of-pipe */
       cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_POST_SYNC_BIT;
       genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
@@ -1270,10 +1276,9 @@ void genX(CmdWriteTimestamp)(
          if (GFX_VER == 9 && cmd_buffer->device->info.gt == 4)
             pc.CommandStreamerStallEnable = true;
       }
-      break;
+      emit_query_pc_availability(cmd_buffer, query_addr, true);
    }
 
-   emit_query_pc_availability(cmd_buffer, query_addr, true);
 
    /* When multiview is active the spec requires that N consecutive query
     * indices are used, where N is the number of active views in the subpass.
@@ -1283,9 +1288,9 @@ void genX(CmdWriteTimestamp)(
     * first index, mark the other query indices as being already available
     * with result 0.
     */
-   if (cmd_buffer->state.subpass && cmd_buffer->state.subpass->view_mask) {
+   if (cmd_buffer->state.gfx.view_mask) {
       const uint32_t num_queries =
-         util_bitcount(cmd_buffer->state.subpass->view_mask);
+         util_bitcount(cmd_buffer->state.gfx.view_mask);
       if (num_queries > 1)
          emit_zero_queries(cmd_buffer, &b, pool, query + 1, num_queries - 1);
    }
@@ -1374,8 +1379,10 @@ void genX(CmdCopyQueryPoolResults)(
     * command streamer.
     */
    if (cmd_buffer->state.pending_pipe_bits & ANV_PIPE_RENDER_TARGET_BUFFER_WRITES) {
-      cmd_buffer->state.pending_pipe_bits |=
-         ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
+      anv_add_pending_pipe_bits(cmd_buffer,
+                                ANV_PIPE_TILE_CACHE_FLUSH_BIT |
+                                ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT,
+                                "CopyQueryPoolResults");
    }
 
    if ((flags & VK_QUERY_RESULT_WAIT_BIT) ||
@@ -1393,7 +1400,9 @@ void genX(CmdCopyQueryPoolResults)(
         */
        pool->type == VK_QUERY_TYPE_OCCLUSION ||
        pool->type == VK_QUERY_TYPE_TIMESTAMP) {
-      cmd_buffer->state.pending_pipe_bits |= ANV_PIPE_CS_STALL_BIT;
+      anv_add_pending_pipe_bits(cmd_buffer,
+                                ANV_PIPE_CS_STALL_BIT,
+                                "CopyQueryPoolResults");
       genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
    }
 
@@ -1428,7 +1437,7 @@ void genX(CmdCopyQueryPoolResults)(
 
             /* WaDividePSInvocationCountBy4:HSW,BDW */
             if ((cmd_buffer->device->info.ver == 8 ||
-                 cmd_buffer->device->info.is_haswell) &&
+                 cmd_buffer->device->info.verx10 == 75) &&
                 (1 << stat) == VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT) {
                result = mi_ushr32_imm(&b, result, 2);
             }
@@ -1448,7 +1457,7 @@ void genX(CmdCopyQueryPoolResults)(
 
       case VK_QUERY_TYPE_TIMESTAMP:
          result = mi_mem64(anv_address_add(query_addr, 8));
-         gpu_write_query_result(&b, dest_addr, flags, 0, result);
+         gpu_write_query_result(&b, dest_addr, flags, idx++, result);
          break;
 
 #if GFX_VER >= 8

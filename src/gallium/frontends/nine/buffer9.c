@@ -272,6 +272,7 @@ NineBuffer9_Lock( struct NineBuffer9 *This,
     if (!(This->base.usage & D3DUSAGE_DYNAMIC) && This->base.pool == D3DPOOL_DEFAULT)
         SizeToLock = This->size - OffsetToLock;
 
+    SizeToLock = MIN2(SizeToLock, This->size - OffsetToLock); /* Do not read or track out of the buffer */
     u_box_1d(OffsetToLock, SizeToLock, &box);
 
     if (This->base.pool != D3DPOOL_DEFAULT) {
@@ -475,11 +476,11 @@ NineBuffer9_Lock( struct NineBuffer9 *This,
     else
         pipe = NineDevice9_GetPipe(device);
 
-    data = pipe->transfer_map(pipe, This->base.resource, 0,
+    data = pipe->buffer_map(pipe, This->base.resource, 0,
                               usage, &box, &This->maps[This->nmaps].transfer);
 
     if (!data) {
-        DBG("pipe::transfer_map failed\n"
+        DBG("pipe::buffer_map failed\n"
             " usage = %x\n"
             " box.x = %u\n"
             " box.width = %u\n",
@@ -517,7 +518,7 @@ NineBuffer9_Unlock( struct NineBuffer9 *This )
                 pipe = This->maps[i].is_pipe_secondary ?
                     device->pipe_secondary :
                     nine_context_get_pipe_acquire(device);
-                pipe->transfer_unmap(pipe, This->maps[i].transfer);
+                pipe->buffer_unmap(pipe, This->maps[i].transfer);
                 /* We need to flush in case the driver does implicit copies */
                 if (This->maps[i].is_pipe_secondary)
                     pipe->flush(pipe, NULL, 0);

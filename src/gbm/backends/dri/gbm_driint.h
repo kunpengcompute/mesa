@@ -36,6 +36,7 @@
 
 #include <GL/gl.h> /* dri_interface needs GL types */
 #include "GL/internal/dri_interface.h"
+#include "kopper_interface.h"
 
 struct gbm_dri_surface;
 struct gbm_dri_bo;
@@ -74,6 +75,7 @@ struct gbm_dri_device {
    const __DRI2fenceExtension *fence;
    const __DRIimageExtension  *image;
    const __DRIswrastExtension *swrast;
+   const __DRIkopperExtension *kopper;
    const __DRI2flushExtension *flush;
 
    const __DRIconfig   **driver_configs;
@@ -81,6 +83,8 @@ struct gbm_dri_device {
    const __DRIextension **driver_extensions;
 
    __DRIimage *(*lookup_image)(__DRIscreen *screen, void *image, void *data);
+   GLboolean (*validate_image)(void *image, void *data);
+   __DRIimage *(*lookup_image_validated)(void *image, void *data);
    void *lookup_user_data;
 
    __DRIbuffer *(*get_buffers)(__DRIdrawable * driDrawable,
@@ -170,12 +174,12 @@ gbm_dri_bo_map_dumb(struct gbm_dri_bo *bo)
    memset(&map_arg, 0, sizeof(map_arg));
    map_arg.handle = bo->handle;
 
-   ret = drmIoctl(bo->base.gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg);
+   ret = drmIoctl(bo->base.gbm->v0.fd, DRM_IOCTL_MODE_MAP_DUMB, &map_arg);
    if (ret)
       return NULL;
 
-   bo->map = mmap(0, bo->size, PROT_WRITE,
-                  MAP_SHARED, bo->base.gbm->fd, map_arg.offset);
+   bo->map = mmap(NULL, bo->size, PROT_WRITE,
+                  MAP_SHARED, bo->base.gbm->v0.fd, map_arg.offset);
    if (bo->map == MAP_FAILED) {
       bo->map = NULL;
       return NULL;

@@ -66,7 +66,11 @@ class PoERun:
                 self.print_error("Memory overflow in the binner; GPU hang")
                 return 1
 
-            result = re.search("bare-metal result: (\S*)", line)
+            if re.search("nouveau 57000000.gpu: bus: MMIO read of 00000000 FAULT at 137000", line):
+                self.print_error("nouveau jetson boot bug, retrying.")
+                return 2
+
+            result = re.search("hwci: mesa: (\S*)", line)
             if result:
                 if result.group(1) == "pass":
                     return 0

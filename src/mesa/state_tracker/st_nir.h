@@ -41,12 +41,10 @@ void st_nir_lower_wpos_ytransform(struct nir_shader *nir,
                                   struct gl_program *prog,
                                   struct pipe_screen *pscreen);
 
-void st_finalize_nir(struct st_context *st, struct gl_program *prog,
-                     struct gl_shader_program *shader_program,
-                     struct nir_shader *nir, bool finalize_by_driver,
-                     bool is_before_variants);
-
-void st_nir_opts(struct nir_shader *nir);
+char *st_finalize_nir(struct st_context *st, struct gl_program *prog,
+                      struct gl_shader_program *shader_program,
+                      struct nir_shader *nir, bool finalize_by_driver,
+                      bool is_before_variants);
 
 bool
 st_link_nir(struct gl_context *ctx,
@@ -74,7 +72,8 @@ st_nir_make_passthrough_shader(struct st_context *st,
                                unsigned *output_locations,
                                unsigned *interpolation_modes,
                                unsigned sysval_mask);
-
+void
+st_nir_add_point_size(struct nir_shader *nir);
 #ifdef __cplusplus
 }
 #endif

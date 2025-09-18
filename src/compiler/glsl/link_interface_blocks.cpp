@@ -30,7 +30,7 @@
 #include "glsl_symbol_table.h"
 #include "linker.h"
 #include "main/macros.h"
-#include "main/mtypes.h"
+#include "main/shader_types.h"
 #include "util/hash_table.h"
 #include "util/u_string.h"
 
@@ -55,6 +55,9 @@ interstage_member_mismatch(struct gl_shader_program *prog,
          return true;
       if (c->fields.structure[i].location !=
           p->fields.structure[i].location)
+         return true;
+      if (c->fields.structure[i].component !=
+          p->fields.structure[i].component)
          return true;
       if (c->fields.structure[i].patch !=
           p->fields.structure[i].patch)

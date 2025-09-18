@@ -27,11 +27,9 @@
 
 using namespace brw;
 
-int ret = 0;
-
 #define register_coalesce(v) _register_coalesce(v, __func__)
 
-class register_coalesce_test : public ::testing::Test {
+class register_coalesce_vec4_test : public ::testing::Test {
    virtual void SetUp();
    virtual void TearDown();
 
@@ -53,7 +51,7 @@ public:
                                   nir_shader *shader,
                                   struct brw_vue_prog_data *prog_data)
       : vec4_visitor(compiler, NULL, NULL, prog_data, shader, mem_ctx,
-                     false /* no_spills */, -1, false)
+                     false /* no_spills */, false)
    {
       prog_data->dispatch_mode = DISPATCH_MODE_4X2_DUAL_OBJECT;
    }
@@ -91,7 +89,7 @@ protected:
 };
 
 
-void register_coalesce_test::SetUp()
+void register_coalesce_vec4_test::SetUp()
 {
    ctx = ralloc_context(NULL);
    compiler = rzalloc(ctx, struct brw_compiler);
@@ -109,7 +107,7 @@ void register_coalesce_test::SetUp()
    devinfo->verx10 = devinfo->ver * 10;
 }
 
-void register_coalesce_test::TearDown()
+void register_coalesce_vec4_test::TearDown()
 {
    delete v;
    v = NULL;
@@ -137,7 +135,7 @@ _register_coalesce(vec4_visitor *v, const char *func)
    }
 }
 
-TEST_F(register_coalesce_test, test_compute_to_mrf)
+TEST_F(register_coalesce_vec4_test, test_compute_to_mrf)
 {
    src_reg something = src_reg(v, glsl_type::float_type);
    dst_reg temp = dst_reg(v, glsl_type::float_type);
@@ -156,7 +154,7 @@ TEST_F(register_coalesce_test, test_compute_to_mrf)
 }
 
 
-TEST_F(register_coalesce_test, test_multiple_use)
+TEST_F(register_coalesce_vec4_test, test_multiple_use)
 {
    src_reg something = src_reg(v, glsl_type::float_type);
    dst_reg temp = dst_reg(v, glsl_type::vec4_type);
@@ -182,7 +180,7 @@ TEST_F(register_coalesce_test, test_multiple_use)
    EXPECT_NE(mul->dst.file, MRF);
 }
 
-TEST_F(register_coalesce_test, test_dp4_mrf)
+TEST_F(register_coalesce_vec4_test, test_dp4_mrf)
 {
    src_reg some_src_1 = src_reg(v, glsl_type::vec4_type);
    src_reg some_src_2 = src_reg(v, glsl_type::vec4_type);
@@ -203,7 +201,7 @@ TEST_F(register_coalesce_test, test_dp4_mrf)
    EXPECT_EQ(dp4->dst.writemask, WRITEMASK_Y);
 }
 
-TEST_F(register_coalesce_test, test_dp4_grf)
+TEST_F(register_coalesce_vec4_test, test_dp4_grf)
 {
    src_reg some_src_1 = src_reg(v, glsl_type::vec4_type);
    src_reg some_src_2 = src_reg(v, glsl_type::vec4_type);
@@ -229,7 +227,7 @@ TEST_F(register_coalesce_test, test_dp4_grf)
    EXPECT_EQ(dp4->dst.writemask, WRITEMASK_Y);
 }
 
-TEST_F(register_coalesce_test, test_channel_mul_grf)
+TEST_F(register_coalesce_vec4_test, test_channel_mul_grf)
 {
    src_reg some_src_1 = src_reg(v, glsl_type::vec4_type);
    src_reg some_src_2 = src_reg(v, glsl_type::vec4_type);

@@ -146,7 +146,8 @@ etna_optimize_loop(nir_shader *s)
 
       NIR_PASS_V(s, nir_lower_vars_to_ssa);
       progress |= OPT(s, nir_opt_copy_prop_vars);
-      progress |= OPT(s, nir_opt_shrink_vectors, true);
+      progress |= OPT(s, nir_opt_shrink_stores, true);
+      progress |= OPT(s, nir_opt_shrink_vectors);
       progress |= OPT(s, nir_copy_prop);
       progress |= OPT(s, nir_opt_dce);
       progress |= OPT(s, nir_opt_cse);
@@ -164,7 +165,7 @@ etna_optimize_loop(nir_shader *s)
          OPT(s, nir_copy_prop);
          OPT(s, nir_opt_dce);
       }
-      progress |= OPT(s, nir_opt_loop_unroll, nir_var_all);
+      progress |= OPT(s, nir_opt_loop_unroll);
       progress |= OPT(s, nir_opt_if, false);
       progress |= OPT(s, nir_opt_remove_phis);
       progress |= OPT(s, nir_opt_undef);
@@ -653,7 +654,7 @@ emit_if(struct etna_compile *c, nir_if * nif)
     */
    if (!nir_block_ends_in_jump(nir_if_last_then_block(nif)) &&
        !nir_cf_list_is_empty_block(&nif->else_list))
-      etna_emit_jump(c, nir_if_last_else_block(nif)->successors[0]->index, SRC_DISABLE);
+      etna_emit_jump(c, nir_if_last_then_block(nif)->successors[0]->index, SRC_DISABLE);
 
    emit_cf_list(c, &nif->else_list);
 }
@@ -687,7 +688,7 @@ insert_vec_mov(nir_alu_instr *vec, unsigned start_idx, nir_shader *shader)
    unsigned write_mask = (1u << start_idx);
 
    nir_alu_instr *mov = nir_alu_instr_create(shader, nir_op_mov);
-   nir_alu_src_copy(&mov->src[0], &vec->src[start_idx], mov);
+   nir_alu_src_copy(&mov->src[0], &vec->src[start_idx]);
 
    mov->src[0].swizzle[0] = vec->src[start_idx].swizzle[0];
    mov->src[0].negate = vec->src[start_idx].negate;
@@ -944,7 +945,7 @@ emit_shader(struct etna_compile *c, unsigned *num_temps, unsigned *num_consts)
       c->const_count = indirect_max;
    }
 
-   /* add mov for any store output using sysval/const  */
+   /* add mov for any store output using sysval/const and for depth stores from intrinsics */
    nir_foreach_block(block, c->impl) {
       nir_foreach_instr_safe(instr, block) {
          if (instr->type != nir_instr_type_intrinsic)
@@ -954,8 +955,13 @@ emit_shader(struct etna_compile *c, unsigned *num_temps, unsigned *num_consts)
 
          switch (intr->intrinsic) {
          case nir_intrinsic_store_deref: {
+            nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
             nir_src *src = &intr->src[1];
-            if (nir_src_is_const(*src) || is_sysval(src->ssa->parent_instr)) {
+            if (nir_src_is_const(*src) || is_sysval(src->ssa->parent_instr) ||
+                (shader->info.stage == MESA_SHADER_FRAGMENT &&
+                 deref->var->data.location == FRAG_RESULT_DEPTH &&
+                 src->is_ssa &&
+                 src->ssa->parent_instr->type != nir_instr_type_alu)) {
                b.cursor = nir_before_instr(instr);
                nir_instr_rewrite_src(instr, src, nir_src_for_ssa(nir_mov(&b, src->ssa)));
             }
@@ -1049,7 +1055,7 @@ fill_vs_mystery(struct etna_shader_variant *v)
 }
 
 bool
-etna_compile_shader_nir(struct etna_shader_variant *v)
+etna_compile_shader(struct etna_shader_variant *v)
 {
    if (unlikely(!v))
       return false;
@@ -1113,6 +1119,12 @@ etna_compile_shader_nir(struct etna_shader_variant *v)
    NIR_PASS_V(s, nir_lower_vars_to_ssa);
    NIR_PASS_V(s, nir_lower_indirect_derefs, nir_var_all, UINT32_MAX);
    NIR_PASS_V(s, nir_lower_tex, &(struct nir_lower_tex_options) { .lower_txp = ~0u });
+
+   if (v->key.has_sample_tex_compare)
+      NIR_PASS_V(s, nir_lower_tex_shadow, v->key.num_texture_states,
+                                          v->key.tex_compare_func,
+                                          v->key.tex_swizzle);
+
    NIR_PASS_V(s, nir_lower_alu_to_scalar, etna_alu_to_scalar_filter_cb, specs);
    nir_lower_idiv_options idiv_options = {
       .imprecise_32bit_lowering = true,
@@ -1218,9 +1230,9 @@ etna_shader_vs_lookup(const struct etna_shader_variant *sobj,
 }
 
 bool
-etna_link_shader_nir(struct etna_shader_link_info *info,
-                     const struct etna_shader_variant *vs,
-                     const struct etna_shader_variant *fs)
+etna_link_shader(struct etna_shader_link_info *info,
+                 const struct etna_shader_variant *vs,
+                 const struct etna_shader_variant *fs)
 {
    int comp_ofs = 0;
    /* For each fragment input we need to find the associated vertex shader

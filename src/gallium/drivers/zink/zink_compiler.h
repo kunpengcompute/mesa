@@ -29,6 +29,7 @@
 
 #include "compiler/nir/nir.h"
 #include "compiler/shader_info.h"
+#include "util/u_live_shader_cache.h"
 
 #include <vulkan/vulkan.h>
 #include "zink_descriptors.h"
@@ -37,12 +38,18 @@
 #define ZINK_WORKGROUP_SIZE_Y 2
 #define ZINK_WORKGROUP_SIZE_Z 3
 
+/* stop inlining shaders if they have >limit ssa vals after inlining:
+ * recompile time isn't worth the inline
+ */
+#define ZINK_ALWAYS_INLINE_LIMIT 1500
+
 struct pipe_screen;
 struct zink_context;
 struct zink_screen;
 struct zink_shader_key;
 struct zink_shader_module;
 struct zink_gfx_program;
+struct spirv_shader;
 
 struct nir_shader_compiler_options;
 struct nir_shader;
@@ -50,10 +57,13 @@ struct nir_shader;
 struct set;
 
 struct tgsi_token;
-struct zink_so_info {
+struct zink_shader_info {
    struct pipe_stream_output_info so_info;
    unsigned so_info_slots[PIPE_MAX_SO_OUTPUTS];
+   uint32_t so_propagate; //left shifted by 32
+   bool last_vertex;
    bool have_xfb;
+   bool have_sparse;
 };
 
 
@@ -66,47 +76,59 @@ struct nir_shader *
 zink_tgsi_to_nir(struct pipe_screen *screen, const struct tgsi_token *tokens);
 
 struct zink_shader {
-   unsigned shader_id;
+   struct util_live_shader base;
+   uint32_t hash;
    struct nir_shader *nir;
+   enum pipe_prim_type reduced_prim; // PIPE_PRIM_MAX for vs
 
-   struct zink_so_info streamout;
+   struct zink_shader_info sinfo;
 
    struct {
       int index;
       int binding;
       VkDescriptorType type;
       unsigned char size;
-   } bindings[ZINK_DESCRIPTOR_TYPES][32];
+   } bindings[ZINK_DESCRIPTOR_TYPES][ZINK_MAX_DESCRIPTORS_PER_TYPE];
    size_t num_bindings[ZINK_DESCRIPTOR_TYPES];
+   unsigned num_texel_buffers;
    uint32_t ubos_used; // bitfield of which ubo indices are used
    uint32_t ssbos_used; // bitfield of which ssbo indices are used
+   bool bindless;
+   bool can_inline;
+   struct spirv_shader *spirv;
+
+   simple_mtx_t lock;
    struct set *programs;
 
    union {
       struct zink_shader *generated; // a generated shader that this shader "owns"
       bool is_generated; // if this is a driver-created shader (e.g., tcs)
+      nir_variable *fbfetch; //for fs output
    };
 };
 
 void
 zink_screen_init_compiler(struct zink_screen *screen);
-
+void
+zink_compiler_assign_io(nir_shader *producer, nir_shader *consumer);
 VkShaderModule
-zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, struct zink_shader_key *key,
-                    unsigned char *shader_slot_map, unsigned char *shader_slots_reserved);
-
+zink_shader_compile(struct zink_screen *screen, struct zink_shader *zs, nir_shader *nir, const struct zink_shader_key *key);
+VkShaderModule
+zink_shader_spirv_compile(struct zink_screen *screen, struct zink_shader *zs, struct spirv_shader *spirv);
 struct zink_shader *
 zink_shader_create(struct zink_screen *screen, struct nir_shader *nir,
                  const struct pipe_stream_output_info *so_info);
 
-void
-zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr, bool optimize);
+char *
+zink_shader_finalize(struct pipe_screen *pscreen, void *nirptr);
 
 void
 zink_shader_free(struct zink_context *ctx, struct zink_shader *shader);
 
+VkShaderModule
+zink_shader_tcs_compile(struct zink_screen *screen, struct zink_shader *zs, unsigned patch_vertices);
 struct zink_shader *
-zink_shader_tcs_create(struct zink_context *ctx, struct zink_shader *vs);
+zink_shader_tcs_create(struct zink_screen *screen, struct zink_shader *vs, unsigned vertices_per_patch);
 
 static inline bool
 zink_shader_descriptor_is_buffer(struct zink_shader *zs, enum zink_descriptor_type type, unsigned i)

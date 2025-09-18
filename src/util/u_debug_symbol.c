@@ -1,8 +1,8 @@
 /**************************************************************************
- * 
+ *
  * Copyright 2009 VMware, Inc.
  * All Rights Reserved.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
  * "Software"), to deal in the Software without restriction, including
@@ -10,11 +10,11 @@
  * distribute, sub license, and/or sell copies of the Software, and to
  * permit persons to whom the Software is furnished to do so, subject to
  * the following conditions:
- * 
+ *
  * The above copyright notice and this permission notice (including the
  * next paragraph) shall be included in all copies or substantial portions
  * of the Software.
- * 
+ *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
  * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
  * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
@@ -22,13 +22,13 @@
  * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
  * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- * 
+ *
  **************************************************************************/
 
 /**
  * @file
  * Symbol lookup.
- * 
+ *
  * @author Jose Fonseca <jfonseca@vmware.com>
  */
 
@@ -42,7 +42,7 @@
 
 
 #if defined(PIPE_OS_WINDOWS)
-   
+
 #include <windows.h>
 #include <stddef.h>
 
@@ -218,31 +218,6 @@ debug_symbol_name_dbghelp(const void *addr, char* buf, unsigned size)
 
 #endif /* PIPE_OS_WINDOWS */
 
-
-#if defined(HAVE_EXECINFO_H)
-
-#include <execinfo.h>
-
-/* This can only provide dynamic symbols, or binary offsets into a file.
- *
- * To fix this, post-process the output with tools/addr2line.sh
- */
-static inline boolean
-debug_symbol_name_glibc(const void *addr, char* buf, unsigned size)
-{
-   char** syms = backtrace_symbols((void**)&addr, 1);
-   if (!syms) {
-      return FALSE;
-   }
-   strncpy(buf, syms[0], size - 1);
-   buf[size - 1] = 0;
-   free(syms);
-   return TRUE;
-}
-
-#endif /* defined(HAVE_EXECINFO_H) */
-
-
 void
 debug_symbol_name(const void *addr, char* buf, unsigned size)
 {
@@ -251,12 +226,6 @@ debug_symbol_name(const void *addr, char* buf, unsigned size)
       return;
    }
 #endif
-
-#if defined(HAVE_EXECINFO_H)
-   if (debug_symbol_name_glibc(addr, buf, size)) {
-       return;
-   }
-#endif /* defined(HAVE_EXECINFO_H) */
 
    snprintf(buf, size, "%p", addr);
    buf[size - 1] = 0;

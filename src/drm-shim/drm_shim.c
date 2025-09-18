@@ -63,13 +63,14 @@ bool drm_shim_debug;
  */
 DIR *fake_dev_dri = (void *)&opendir_set;
 
-/* XXX: implement REAL_FUNCTION_POINTER(close); */
+REAL_FUNCTION_POINTER(close);
 REAL_FUNCTION_POINTER(closedir);
 REAL_FUNCTION_POINTER(dup);
 REAL_FUNCTION_POINTER(fcntl);
 REAL_FUNCTION_POINTER(fopen);
 REAL_FUNCTION_POINTER(ioctl);
 REAL_FUNCTION_POINTER(mmap);
+REAL_FUNCTION_POINTER(mmap64);
 REAL_FUNCTION_POINTER(open);
 REAL_FUNCTION_POINTER(opendir);
 REAL_FUNCTION_POINTER(readdir);
@@ -77,11 +78,18 @@ REAL_FUNCTION_POINTER(readdir64);
 REAL_FUNCTION_POINTER(readlink);
 REAL_FUNCTION_POINTER(realpath);
 
-#if __GLIBC__ == 2 && __GLIBC_MINOR__ < 33
+#define HAS_XSTAT __GLIBC__ == 2 && __GLIBC_MINOR__ < 33
+
+#if HAS_XSTAT
 REAL_FUNCTION_POINTER(__xstat);
 REAL_FUNCTION_POINTER(__xstat64);
 REAL_FUNCTION_POINTER(__fxstat);
 REAL_FUNCTION_POINTER(__fxstat64);
+#else
+REAL_FUNCTION_POINTER(stat);
+REAL_FUNCTION_POINTER(stat64);
+REAL_FUNCTION_POINTER(fstat);
+REAL_FUNCTION_POINTER(fstat64);
 #endif
 
 /* Full path of /dev/dri/renderD* */
@@ -196,12 +204,14 @@ init_shim(void)
                                   _mesa_hash_string,
                                   _mesa_key_string_equal);
 
+   GET_FUNCTION_POINTER(close);
    GET_FUNCTION_POINTER(closedir);
    GET_FUNCTION_POINTER(dup);
    GET_FUNCTION_POINTER(fcntl);
    GET_FUNCTION_POINTER(fopen);
    GET_FUNCTION_POINTER(ioctl);
    GET_FUNCTION_POINTER(mmap);
+   GET_FUNCTION_POINTER(mmap64);
    GET_FUNCTION_POINTER(open);
    GET_FUNCTION_POINTER(opendir);
    GET_FUNCTION_POINTER(readdir);
@@ -209,11 +219,16 @@ init_shim(void)
    GET_FUNCTION_POINTER(readlink);
    GET_FUNCTION_POINTER(realpath);
 
-#if __GLIBC__ == 2 && __GLIBC_MINOR__ < 33
+#if HAS_XSTAT
    GET_FUNCTION_POINTER(__xstat);
    GET_FUNCTION_POINTER(__xstat64);
    GET_FUNCTION_POINTER(__fxstat);
    GET_FUNCTION_POINTER(__fxstat64);
+#else
+   GET_FUNCTION_POINTER(stat);
+   GET_FUNCTION_POINTER(stat64);
+   GET_FUNCTION_POINTER(fstat);
+   GET_FUNCTION_POINTER(fstat64);
 #endif
 
    get_dri_render_node_minor();
@@ -278,7 +293,16 @@ PUBLIC int open(const char *path, int flags, ...)
 }
 PUBLIC int open64(const char*, int, ...) __attribute__((alias("open")));
 
-#if __GLIBC__ == 2 && __GLIBC_MINOR__ < 33
+PUBLIC int close(int fd)
+{
+   init_shim();
+
+   drm_shim_fd_unregister(fd);
+
+   return real_close(fd);
+}
+
+#if HAS_XSTAT
 /* Fakes stat to return character device stuff for our fake render node. */
 PUBLIC int __xstat(int ver, const char *path, struct stat *st)
 {
@@ -379,6 +403,106 @@ PUBLIC int __fxstat64(int ver, int fd, struct stat64 *st)
 
    return 0;
 }
+
+#else
+
+PUBLIC int stat(const char* path, struct stat* stat_buf)
+{
+   init_shim();
+
+   /* Note: call real stat if we're in the process of probing for a free
+    * render node!
+    */
+   if (render_node_minor == -1)
+      return real_stat(path, stat_buf);
+
+   /* Fool libdrm's probe of whether the /sys dir for this char dev is
+    * there.
+    */
+   char *sys_dev_drm_dir;
+   nfasprintf(&sys_dev_drm_dir,
+              "/sys/dev/char/%d:%d/device/drm",
+              DRM_MAJOR, render_node_minor);
+   if (strcmp(path, sys_dev_drm_dir) == 0) {
+      free(sys_dev_drm_dir);
+      return 0;
+   }
+   free(sys_dev_drm_dir);
+
+   if (strcmp(path, render_node_path) != 0)
+      return real_stat(path, stat_buf);
+
+   memset(stat_buf, 0, sizeof(*stat_buf));
+   stat_buf->st_rdev = makedev(DRM_MAJOR, render_node_minor);
+   stat_buf->st_mode = S_IFCHR;
+
+   return 0;
+}
+
+PUBLIC int stat64(const char* path, struct stat64* stat_buf)
+{
+   init_shim();
+
+   /* Note: call real stat if we're in the process of probing for a free
+    * render node!
+    */
+   if (render_node_minor == -1)
+      return real_stat64(path, stat_buf);
+
+   /* Fool libdrm's probe of whether the /sys dir for this char dev is
+    * there.
+    */
+   char *sys_dev_drm_dir;
+   nfasprintf(&sys_dev_drm_dir,
+              "/sys/dev/char/%d:%d/device/drm",
+              DRM_MAJOR, render_node_minor);
+   if (strcmp(path, sys_dev_drm_dir) == 0) {
+      free(sys_dev_drm_dir);
+      return 0;
+   }
+   free(sys_dev_drm_dir);
+
+   if (strcmp(path, render_node_path) != 0)
+      return real_stat64(path, stat_buf);
+
+   memset(stat_buf, 0, sizeof(*stat_buf));
+   stat_buf->st_rdev = makedev(DRM_MAJOR, render_node_minor);
+   stat_buf->st_mode = S_IFCHR;
+
+   return 0;
+}
+
+PUBLIC int fstat(int fd, struct stat* stat_buf)
+{
+   init_shim();
+
+   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
+
+   if (!shim_fd)
+      return real_fstat(fd, stat_buf);
+
+   memset(stat_buf, 0, sizeof(*stat_buf));
+   stat_buf->st_rdev = makedev(DRM_MAJOR, render_node_minor);
+   stat_buf->st_mode = S_IFCHR;
+
+   return 0;
+}
+
+PUBLIC int fstat64(int fd, struct stat64* stat_buf)
+{
+   init_shim();
+
+   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
+
+   if (!shim_fd)
+      return real_fstat64(fd, stat_buf);
+
+   memset(stat_buf, 0, sizeof(*stat_buf));
+   stat_buf->st_rdev = makedev(DRM_MAJOR, render_node_minor);
+   stat_buf->st_mode = S_IFCHR;
+
+   return 0;
+}
 #endif
 
 /* Tracks if the opendir was on /dev/dri. */
@@ -405,8 +529,8 @@ opendir(const char *name)
    return dir;
 }
 
-/* If we've reached the end of the real directory list and we're
- * looking at /dev/dri, add our render node to the list.
+/* If we're looking at /dev/dri, add our render node to the list
+ * before the real entries in the directory.
  */
 PUBLIC struct dirent *
 readdir(DIR *dir)
@@ -415,26 +539,25 @@ readdir(DIR *dir)
 
    struct dirent *ent = NULL;
 
-   if (dir != fake_dev_dri)
-      ent = real_readdir(dir);
    static struct dirent render_node_dirent = { 0 };
 
-   if (!ent) {
-      mtx_lock(&shim_lock);
-      if (_mesa_set_search(opendir_set, dir)) {
-         strcpy(render_node_dirent.d_name,
-                render_node_dirent_name);
-         ent = &render_node_dirent;
-         _mesa_set_remove_key(opendir_set, dir);
-      }
-      mtx_unlock(&shim_lock);
+   mtx_lock(&shim_lock);
+   if (_mesa_set_search(opendir_set, dir)) {
+      strcpy(render_node_dirent.d_name,
+             render_node_dirent_name);
+      ent = &render_node_dirent;
+      _mesa_set_remove_key(opendir_set, dir);
    }
+   mtx_unlock(&shim_lock);
+
+   if (!ent && dir != fake_dev_dri)
+      ent = real_readdir(dir);
 
    return ent;
 }
 
-/* If we've reached the end of the real directory list and we're
- * looking at /dev/dri, add our render node to the list.
+/* If we're looking at /dev/dri, add our render node to the list
+ * before the real entries in the directory.
  */
 PUBLIC struct dirent64 *
 readdir64(DIR *dir)
@@ -442,20 +565,20 @@ readdir64(DIR *dir)
    init_shim();
 
    struct dirent64 *ent = NULL;
-   if (dir != fake_dev_dri)
-      ent = real_readdir64(dir);
+
    static struct dirent64 render_node_dirent = { 0 };
 
-   if (!ent) {
-      mtx_lock(&shim_lock);
-      if (_mesa_set_search(opendir_set, dir)) {
-         strcpy(render_node_dirent.d_name,
-                render_node_dirent_name);
-         ent = &render_node_dirent;
-         _mesa_set_remove_key(opendir_set, dir);
-      }
-      mtx_unlock(&shim_lock);
+   mtx_lock(&shim_lock);
+   if (_mesa_set_search(opendir_set, dir)) {
+      strcpy(render_node_dirent.d_name,
+             render_node_dirent_name);
+      ent = &render_node_dirent;
+      _mesa_set_remove_key(opendir_set, dir);
    }
+   mtx_unlock(&shim_lock);
+
+   if (!ent && dir != fake_dev_dri)
+      ent = real_readdir64(dir);
 
    return ent;
 }
@@ -593,5 +716,15 @@ mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 
    return real_mmap(addr, length, prot, flags, fd, offset);
 }
-PUBLIC void *mmap64(void*, size_t, int, int, int, off_t)
-   __attribute__((alias("mmap")));
+
+PUBLIC void *
+mmap64(void* addr, size_t length, int prot, int flags, int fd, off64_t offset)
+{
+   init_shim();
+
+   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
+   if (shim_fd)
+      return drm_shim_mmap(shim_fd, length, prot, flags, fd, offset);
+
+   return real_mmap64(addr, length, prot, flags, fd, offset);
+}

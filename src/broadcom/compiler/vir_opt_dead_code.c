@@ -195,7 +195,7 @@ vir_opt_dead_code(struct v3d_compile *c)
 
         vir_for_each_block(block, c) {
                 struct qinst *last_flags_write = NULL;
-
+                c->cur_block = block;
                 vir_for_each_inst_safe(inst, block) {
                         /* If this instruction reads the flags, we can't
                          * remove the flags generation for it.

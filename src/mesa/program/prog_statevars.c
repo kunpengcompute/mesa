@@ -36,7 +36,6 @@
 #include "main/blend.h"
 
 #include "main/macros.h"
-#include "main/mtypes.h"
 #include "main/fbobject.h"
 #include "prog_statevars.h"
 #include "prog_parameter.h"
@@ -913,6 +912,8 @@ _mesa_program_state_flags(const gl_state_index16 state[STATE_LENGTH])
    case STATE_CLIP_INTERNAL:
       return _NEW_TRANSFORM | _NEW_PROJECTION;
 
+   case STATE_TCS_PATCH_VERTICES_IN:
+   case STATE_TES_PATCH_VERTICES_IN:
    case STATE_INTERNAL_DRIVER:
       return 0; /* internal driver state */
 
@@ -1332,6 +1333,7 @@ _mesa_program_state_string(const gl_state_index16 state[STATE_LENGTH])
    case STATE_PT_BIAS:
    case STATE_FB_SIZE:
    case STATE_FB_WPOS_Y_TRANSFORM:
+   case STATE_FB_PNTC_Y_TRANSFORM:
    case STATE_TCS_PATCH_VERTICES_IN:
    case STATE_TES_PATCH_VERTICES_IN:
    case STATE_ADVANCED_BLENDING_MODE:
@@ -1341,7 +1343,7 @@ _mesa_program_state_string(const gl_state_index16 state[STATE_LENGTH])
       append(str, "not_state");
       break;
    default:
-      _mesa_problem(NULL, "Invalid state in _mesa_program_state_string");
+      _mesa_problem(NULL, "Invalid state in _mesa_program_state_string: %d", state[0]);
       break;
    }
 

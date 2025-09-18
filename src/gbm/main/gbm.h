@@ -94,8 +94,15 @@ enum gbm_bo_format {
 /* 8 bpp Red */
 #define GBM_FORMAT_R8		__gbm_fourcc_code('R', '8', ' ', ' ') /* [7:0] R */
 
+/* 16 bpp Red */
+#define GBM_FORMAT_R16          __gbm_fourcc_code('R', '1', '6', ' ') /* [15:0] R little endian */
+
 /* 16 bpp RG */
 #define GBM_FORMAT_GR88		__gbm_fourcc_code('G', 'R', '8', '8') /* [15:0] G:R 8:8 little endian */
+
+/* 32 bpp RG */
+#define GBM_FORMAT_RG1616	__gbm_fourcc_code('R', 'G', '3', '2') /* [31:0] R:G 16:16 little endian */
+#define GBM_FORMAT_GR1616	__gbm_fourcc_code('G', 'R', '3', '2') /* [31:0] G:R 16:16 little endian */
 
 /* 8 bpp RGB */
 #define GBM_FORMAT_RGB332	__gbm_fourcc_code('R', 'G', 'B', '8') /* [7:0] R:G:B 3:3:2 */
@@ -254,7 +261,7 @@ gbm_device_get_backend_name(struct gbm_device *gbm);
 
 int
 gbm_device_is_format_supported(struct gbm_device *gbm,
-                               uint32_t format, uint32_t usage);
+                               uint32_t format, uint32_t flags);
 
 int
 gbm_device_get_format_modifier_plane_count(struct gbm_device *gbm,
@@ -273,11 +280,26 @@ gbm_bo_create(struct gbm_device *gbm,
               uint32_t format, uint32_t flags);
 
 struct gbm_bo *
+gbm_bo_create_native(struct gbm_device *gbm,
+                     uint32_t width, uint32_t height,
+                     uint32_t format, uint32_t flags,
+                     unsigned long **texture);
+
+struct gbm_bo *
 gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                              uint32_t width, uint32_t height,
                              uint32_t format,
                              const uint64_t *modifiers,
                              const unsigned int count);
+
+struct gbm_bo *
+gbm_bo_create_with_modifiers2(struct gbm_device *gbm,
+                              uint32_t width, uint32_t height,
+                              uint32_t format,
+                              const uint64_t *modifiers,
+                              const unsigned int count,
+                              uint32_t flags);
+
 #define GBM_BO_IMPORT_WL_BUFFER         0x5501
 #define GBM_BO_IMPORT_EGL_IMAGE         0x5502
 #define GBM_BO_IMPORT_FD                0x5503
@@ -306,7 +328,7 @@ struct gbm_import_fd_modifier_data {
 
 struct gbm_bo *
 gbm_bo_import(struct gbm_device *gbm, uint32_t type,
-              void *buffer, uint32_t usage);
+              void *buffer, uint32_t flags);
 
 /**
  * Flags to indicate the type of mapping for the buffer - these are
@@ -339,6 +361,11 @@ void *
 gbm_bo_map(struct gbm_bo *bo,
            uint32_t x, uint32_t y, uint32_t width, uint32_t height,
            uint32_t flags, uint32_t *stride, void **map_data);
+
+void *
+gbm_bo_map_native(struct gbm_bo *bo,
+                  uint32_t x, uint32_t y, uint32_t width, uint32_t height,
+                  uint32_t flags, uint32_t *stride, void **map_data);
 
 void
 gbm_bo_unmap(struct gbm_bo *bo, void *map_data);
@@ -409,6 +436,14 @@ gbm_surface_create_with_modifiers(struct gbm_device *gbm,
                                   uint32_t format,
                                   const uint64_t *modifiers,
                                   const unsigned int count);
+
+struct gbm_surface *
+gbm_surface_create_with_modifiers2(struct gbm_device *gbm,
+                                   uint32_t width, uint32_t height,
+                                   uint32_t format,
+                                   const uint64_t *modifiers,
+                                   const unsigned int count,
+                                   uint32_t flags);
 
 struct gbm_bo *
 gbm_surface_lock_front_buffer(struct gbm_surface *surface);

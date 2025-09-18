@@ -34,8 +34,8 @@
 #include "util/u_dynarray.h"
 #include "util/set.h"
 #include "util/list.h"
+#include "util/u_math.h"
 
-#include "main/mtypes.h"
 #include "compiler/nir_types.h"
 #include "compiler/nir/nir.h"
 #include "panfrost/util/pan_ir.h"
@@ -183,6 +183,8 @@ typedef struct midgard_instruction {
 
                 midgard_branch branch;
         };
+
+        unsigned bundle_id;
 } midgard_instruction;
 
 typedef struct midgard_block {
@@ -304,6 +306,9 @@ typedef struct compiler_context {
         midgard_instruction *writeout_branch[MIDGARD_NUM_RTS][MIDGARD_MAX_SAMPLE_ITER];
 
         struct hash_table_u64 *sysval_to_id;
+
+        /* Mask of UBOs that need to be uploaded */
+        uint32_t ubo_mask;
 } compiler_context;
 
 /* Per-block live_in/live_out */
@@ -511,8 +516,8 @@ void mir_print_shader(compiler_context *ctx);
 bool mir_nontrivial_mod(midgard_instruction *ins, unsigned i, bool check_swizzle);
 bool mir_nontrivial_outmod(midgard_instruction *ins);
 
-void mir_insert_instruction_before_scheduled(compiler_context *ctx, midgard_block *block, midgard_instruction *tag, midgard_instruction ins);
-void mir_insert_instruction_after_scheduled(compiler_context *ctx, midgard_block *block, midgard_instruction *tag, midgard_instruction ins);
+midgard_instruction *mir_insert_instruction_before_scheduled(compiler_context *ctx, midgard_block *block, midgard_instruction *tag, midgard_instruction ins);
+midgard_instruction *mir_insert_instruction_after_scheduled(compiler_context *ctx, midgard_block *block, midgard_instruction *tag, midgard_instruction ins);
 void mir_flip(midgard_instruction *ins);
 void mir_compute_temp_count(compiler_context *ctx);
 
@@ -574,7 +579,7 @@ v_load_store_scratch(
                 .load_store = {
                         /* For register spilling - to thread local storage */
                         .arg_reg = REGISTER_LDST_LOCAL_STORAGE_PTR,
-                        .arg_comp = COMPONENT_Z,
+                        .arg_comp = COMPONENT_X,
                         .bitsize_toggle = true,
                         .index_format = midgard_index_address_u32,
                         .index_reg = REGISTER_LDST_ZERO,

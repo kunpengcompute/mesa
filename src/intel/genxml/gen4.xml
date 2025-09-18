@@ -936,8 +936,8 @@
     <field name="Indirect Object Base Address" start="108" end="127" type="address"/>
     <field name="General State Access Upper Bound Modify Enable" start="128" end="128" type="bool"/>
     <field name="General State Access Upper Bound" start="140" end="159" type="address"/>
-    <field name="Instruction Access Upper Bound Modify Enable" start="160" end="160" type="bool"/>
-    <field name="Instruction Access Upper Bound" start="172" end="191" type="address"/>
+    <field name="Indirect Object Access Upper Bound Modify Enable" start="160" end="160" type="bool"/>
+    <field name="Indirect Object Access Upper Bound" start="172" end="191" type="address"/>
   </instruction>
 
   <instruction name="STATE_SIP" bias="2" length="2" engine="render">
@@ -976,7 +976,7 @@
     <field name="2D Command Opcode" start="22" end="28" type="uint" default="80"/>
     <field name="Command Type" start="29" end="31" type="uint" default="2"/>
     <field name="Destination Pitch" start="32" end="47" type="int"/>
-    <field name="Raster Operation" start="48" end="55" type="int"/>
+    <field name="Raster Operation" start="48" end="55" type="uint"/>
     <field name="Color Depth" start="56" end="57" type="uint" prefix="COLOR_DEPTH">
       <value name="8 bit" value="0"/>
       <value name="565" value="1"/>
@@ -999,7 +999,7 @@
     <field name="2D Command Opcode" start="22" end="28" type="uint" default="1"/>
     <field name="Command Type" start="29" end="31" type="uint" default="2"/>
     <field name="Destination Pitch" start="32" end="47" type="int"/>
-    <field name="Raster Operation" start="48" end="55" type="int"/>
+    <field name="Raster Operation" start="48" end="55" type="uint"/>
     <field name="Color Depth" start="56" end="57" type="uint" prefix="COLOR_DEPTH">
       <value name="8 bit" value="0"/>
       <value name="565" value="1"/>

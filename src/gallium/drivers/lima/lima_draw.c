@@ -72,17 +72,43 @@ lima_clip_scissor_to_viewport(struct lima_context *ctx)
 
    viewport_left = MAX2(ctx->viewport.left, 0);
    cscissor->minx = MAX2(cscissor->minx, viewport_left);
-   viewport_right = MIN2(ctx->viewport.right, fb->base.width);
+   viewport_right = MIN2(MAX2(ctx->viewport.right, 0), fb->base.width);
    cscissor->maxx = MIN2(cscissor->maxx, viewport_right);
    if (cscissor->minx > cscissor->maxx)
       cscissor->minx = cscissor->maxx;
 
    viewport_bottom = MAX2(ctx->viewport.bottom, 0);
    cscissor->miny = MAX2(cscissor->miny, viewport_bottom);
-   viewport_top = MIN2(ctx->viewport.top, fb->base.height);
+   viewport_top = MIN2(MAX2(ctx->viewport.top, 0), fb->base.height);
    cscissor->maxy = MIN2(cscissor->maxy, viewport_top);
    if (cscissor->miny > cscissor->maxy)
       cscissor->miny = cscissor->maxy;
+}
+
+static void
+lima_extend_viewport(struct lima_context *ctx, const struct pipe_draw_info *info)
+{
+   /* restore the original values */
+   ctx->ext_viewport.left = ctx->viewport.left;
+   ctx->ext_viewport.right = ctx->viewport.right;
+   ctx->ext_viewport.bottom = ctx->viewport.bottom;
+   ctx->ext_viewport.top = ctx->viewport.top;
+
+   if (info->mode != PIPE_PRIM_LINES)
+      return;
+
+   if (!ctx->rasterizer)
+      return;
+
+   float line_width = ctx->rasterizer->base.line_width;
+
+   if (line_width == 1.0f)
+      return;
+
+   ctx->ext_viewport.left = ctx->viewport.left - line_width / 2;
+   ctx->ext_viewport.right = ctx->viewport.right + line_width / 2;
+   ctx->ext_viewport.bottom = ctx->viewport.bottom - line_width / 2;
+   ctx->ext_viewport.top = ctx->viewport.top + line_width / 2;
 }
 
 static bool
@@ -195,6 +221,7 @@ enum lima_attrib_type {
    LIMA_ATTRIB_FLOAT = 0x000,
    LIMA_ATTRIB_I32   = 0x001,
    LIMA_ATTRIB_U32   = 0x002,
+   LIMA_ATTRIB_FP16  = 0x003,
    LIMA_ATTRIB_I16   = 0x004,
    LIMA_ATTRIB_U16   = 0x005,
    LIMA_ATTRIB_I8    = 0x006,
@@ -217,7 +244,10 @@ lima_pipe_format_to_attrib_type(enum pipe_format format)
 
    switch (c->type) {
    case UTIL_FORMAT_TYPE_FLOAT:
-      return LIMA_ATTRIB_FLOAT;
+      if (c->size == 16)
+         return LIMA_ATTRIB_FP16;
+      else
+         return LIMA_ATTRIB_FLOAT;
    case UTIL_FORMAT_TYPE_FIXED:
       return LIMA_ATTRIB_FIXED;
    case UTIL_FORMAT_TYPE_SIGNED:
@@ -323,10 +353,10 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info,
    struct lima_job *job = lima_job_get(ctx);
    PLBU_CMD_BEGIN(&job->plbu_cmd_array, 32);
 
-   PLBU_CMD_VIEWPORT_LEFT(fui(ctx->viewport.left));
-   PLBU_CMD_VIEWPORT_RIGHT(fui(ctx->viewport.right));
-   PLBU_CMD_VIEWPORT_BOTTOM(fui(ctx->viewport.bottom));
-   PLBU_CMD_VIEWPORT_TOP(fui(ctx->viewport.top));
+   PLBU_CMD_VIEWPORT_LEFT(fui(ctx->ext_viewport.left));
+   PLBU_CMD_VIEWPORT_RIGHT(fui(ctx->ext_viewport.right));
+   PLBU_CMD_VIEWPORT_BOTTOM(fui(ctx->ext_viewport.bottom));
+   PLBU_CMD_VIEWPORT_TOP(fui(ctx->ext_viewport.top));
 
    if (!info->index_size)
       PLBU_CMD_ARRAYS_SEMAPHORE_BEGIN();
@@ -420,106 +450,55 @@ lima_blend_func(enum pipe_blend_func pipe)
 }
 
 static int
-lima_blend_factor_has_alpha(enum pipe_blendfactor pipe)
-{
-   /* Bit 4 is set if the blendfactor uses alpha */
-   switch (pipe) {
-   case PIPE_BLENDFACTOR_SRC_ALPHA:
-   case PIPE_BLENDFACTOR_DST_ALPHA:
-   case PIPE_BLENDFACTOR_CONST_ALPHA:
-   case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
-   case PIPE_BLENDFACTOR_INV_DST_ALPHA:
-   case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
-      return 1;
-
-   case PIPE_BLENDFACTOR_SRC_COLOR:
-   case PIPE_BLENDFACTOR_INV_SRC_COLOR:
-   case PIPE_BLENDFACTOR_DST_COLOR:
-   case PIPE_BLENDFACTOR_INV_DST_COLOR:
-   case PIPE_BLENDFACTOR_CONST_COLOR:
-   case PIPE_BLENDFACTOR_INV_CONST_COLOR:
-   case PIPE_BLENDFACTOR_ZERO:
-   case PIPE_BLENDFACTOR_ONE:
-   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
-      return 0;
-
-   case PIPE_BLENDFACTOR_SRC1_COLOR:
-   case PIPE_BLENDFACTOR_SRC1_ALPHA:
-   case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
-   case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
-      return -1; /* not supported */
-   }
-   return -1;
-}
-
-static int
-lima_blend_factor_is_inv(enum pipe_blendfactor pipe)
-{
-   /* Bit 3 is set if the blendfactor type is inverted */
-   switch (pipe) {
-   case PIPE_BLENDFACTOR_INV_SRC_COLOR:
-   case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
-   case PIPE_BLENDFACTOR_INV_DST_COLOR:
-   case PIPE_BLENDFACTOR_INV_DST_ALPHA:
-   case PIPE_BLENDFACTOR_INV_CONST_COLOR:
-   case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
-   case PIPE_BLENDFACTOR_ONE:
-      return 1;
-
-   case PIPE_BLENDFACTOR_SRC_COLOR:
-   case PIPE_BLENDFACTOR_SRC_ALPHA:
-   case PIPE_BLENDFACTOR_DST_COLOR:
-   case PIPE_BLENDFACTOR_DST_ALPHA:
-   case PIPE_BLENDFACTOR_CONST_COLOR:
-   case PIPE_BLENDFACTOR_CONST_ALPHA:
-   case PIPE_BLENDFACTOR_ZERO:
-   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
-      return 0;
-
-   case PIPE_BLENDFACTOR_SRC1_COLOR:
-   case PIPE_BLENDFACTOR_SRC1_ALPHA:
-   case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
-   case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
-      return -1; /* not supported */
-   }
-   return -1;
-}
-
-static int
 lima_blend_factor(enum pipe_blendfactor pipe)
 {
-   /* Bits 0-2 indicate the blendfactor type */
+   /* Bits 0-2 indicate the blendfactor type,
+    * Bit 3 is set if blendfactor is inverted
+    * Bit 4 is set if blendfactor has alpha */
    switch (pipe) {
    case PIPE_BLENDFACTOR_SRC_COLOR:
+      return 0 << 4 | 0 << 3 | 0;
    case PIPE_BLENDFACTOR_SRC_ALPHA:
+      return 1 << 4 | 0 << 3 | 0;
    case PIPE_BLENDFACTOR_INV_SRC_COLOR:
+      return 0 << 4 | 1 << 3 | 0;
    case PIPE_BLENDFACTOR_INV_SRC_ALPHA:
-      return 0;
+      return 1 << 4 | 1 << 3 | 0;
 
    case PIPE_BLENDFACTOR_DST_COLOR:
+      return 0 << 4 | 0 << 3 | 1;
    case PIPE_BLENDFACTOR_DST_ALPHA:
+      return 1 << 4 | 0 << 3 | 1;
    case PIPE_BLENDFACTOR_INV_DST_COLOR:
+      return 0 << 4 | 1 << 3 | 1;
    case PIPE_BLENDFACTOR_INV_DST_ALPHA:
-      return 1;
+      return 1 << 4 | 1 << 3 | 1;
 
    case PIPE_BLENDFACTOR_CONST_COLOR:
+      return 0 << 4 | 0 << 3 | 2;
    case PIPE_BLENDFACTOR_CONST_ALPHA:
+      return 1 << 4 | 0 << 3 | 2;
    case PIPE_BLENDFACTOR_INV_CONST_COLOR:
+      return 0 << 4 | 1 << 3 | 2;
    case PIPE_BLENDFACTOR_INV_CONST_ALPHA:
-      return 2;
+      return 1 << 4 | 1 << 3 | 2;
 
    case PIPE_BLENDFACTOR_ZERO:
+      return 0 << 4 | 0 << 3 | 3;
    case PIPE_BLENDFACTOR_ONE:
-      return 3;
+      return 0 << 4 | 1 << 3 | 3;
 
    case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE:
-      return 4;
+      return 0 << 4 | 0 << 3 | 4;
 
    case PIPE_BLENDFACTOR_SRC1_COLOR:
+      return 0 << 4 | 0 << 3 | 5;
    case PIPE_BLENDFACTOR_SRC1_ALPHA:
+      return 1 << 4 | 0 << 3 | 5;
    case PIPE_BLENDFACTOR_INV_SRC1_COLOR:
+      return 0 << 4 | 1 << 3 | 5;
    case PIPE_BLENDFACTOR_INV_SRC1_ALPHA:
-      return -1; /* not supported */
+      return 1 << 4 | 1 << 3 | 5;
    }
    return -1;
 }
@@ -530,27 +509,37 @@ lima_calculate_alpha_blend(enum pipe_blend_func rgb_func, enum pipe_blend_func a
                            enum pipe_blendfactor alpha_src_factor, enum pipe_blendfactor alpha_dst_factor)
 {
    /* PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE has to be changed to PIPE_BLENDFACTOR_ONE
-    * if it is set for alpha_src.
+    * if it is set for alpha_src or alpha_dst.
     */
    if (alpha_src_factor == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE)
       alpha_src_factor = PIPE_BLENDFACTOR_ONE;
 
+   if (alpha_dst_factor == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE)
+      alpha_dst_factor = PIPE_BLENDFACTOR_ONE;
+
+   /* MIN and MAX ops actually do OP(As * S + Ad * D, Ad), so
+    * we need to set S to 1 and D to 0 to get correct result */
+   if (alpha_func == PIPE_BLEND_MIN ||
+       alpha_func == PIPE_BLEND_MAX) {
+      alpha_src_factor = PIPE_BLENDFACTOR_ONE;
+      alpha_dst_factor = PIPE_BLENDFACTOR_ZERO;
+   }
+
+   /* MIN and MAX ops actually do OP(Cs * S + Cd * D, Cd), so
+    * we need to set S to 1 and D to 0 to get correct result */
+   if (rgb_func == PIPE_BLEND_MIN ||
+       rgb_func == PIPE_BLEND_MAX) {
+      rgb_src_factor = PIPE_BLENDFACTOR_ONE;
+      rgb_dst_factor = PIPE_BLENDFACTOR_ZERO;
+   }
+
    return lima_blend_func(rgb_func) |
       (lima_blend_func(alpha_func) << 3) |
-
       (lima_blend_factor(rgb_src_factor) << 6) |
-      (lima_blend_factor_is_inv(rgb_src_factor) << 9) |
-      (lima_blend_factor_has_alpha(rgb_src_factor) << 10) |
-
       (lima_blend_factor(rgb_dst_factor) << 11) |
-      (lima_blend_factor_is_inv(rgb_dst_factor) << 14) |
-      (lima_blend_factor_has_alpha(rgb_dst_factor) << 15) |
-
-      (lima_blend_factor(alpha_src_factor) << 16) |
-      (lima_blend_factor_is_inv(alpha_src_factor) << 19) |
-
-      (lima_blend_factor(alpha_dst_factor) << 20) |
-      (lima_blend_factor_is_inv(alpha_dst_factor) << 23) |
+      /* alpha_src and alpha_dst are 4 bit, so need to mask 5th bit */
+      ((lima_blend_factor(alpha_src_factor) & 0xf) << 16) |
+      ((lima_blend_factor(alpha_dst_factor) & 0xf) << 20) |
       0x0C000000; /* need to check if this is GLESv1 glAlphaFunc */
 }
 
@@ -596,8 +585,7 @@ lima_calculate_depth_test(struct pipe_depth_stencil_alpha_state *depth,
    return (depth->depth_enabled && depth->depth_writemask) |
       ((int)func << 1) |
       (offset_scale << 16) |
-      (offset_units << 24) |
-      0x30; /* find out what is this */
+      (offset_units << 24);
 }
 
 static void
@@ -643,19 +631,21 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
    struct pipe_rasterizer_state *rst = &ctx->rasterizer->base;
    render->depth_test = lima_calculate_depth_test(&ctx->zsa->base, rst);
 
+   if (!rst->depth_clip_near || ctx->viewport.near == 0.0f)
+      render->depth_test |= 0x10; /* don't clip depth near */
+   if (!rst->depth_clip_far || ctx->viewport.far == 1.0f)
+      render->depth_test |= 0x20; /* don't clip depth far */
+
+   if (fs->state.frag_depth_reg != -1) {
+      render->depth_test |= (fs->state.frag_depth_reg << 6);
+      /* Shader writes depth */
+      render->depth_test |= 0x801;
+   }
+
    ushort far, near;
 
    near = float_to_ushort(ctx->viewport.near);
    far = float_to_ushort(ctx->viewport.far);
-
-   /* Insert a small 'epsilon' difference between 'near' and 'far' when
-    * they are equal, to avoid application bugs. */
-   if (far == near) {
-      if (near > 0)
-         near--;
-      if (far < USHRT_MAX)
-         far++;
-   }
 
    /* overlap with plbu? any place can remove one? */
    render->depth_range = near | (far << 16);
@@ -681,11 +671,7 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
             (stencil[1].valuemask << 24);
          render->stencil_test = (stencil[0].writemask & 0xff) | (stencil[1].writemask & 0xff) << 8;
       }
-      /* TODO: Find out, what (render->stecil_test & 0xffff0000) is.
-       * 0x00ff0000 is probably (float_to_ubyte(alpha->ref_value) << 16)
-       * (render->multi_sample & 0x00000007 is probably the compare function
-       * of glAlphaFunc then.
-       */
+      /* TODO: Find out, what (render->stecil_test & 0xff000000) is */
    }
    else {
       /* Default values, when stencil is disabled:
@@ -700,13 +686,28 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
 
    /* need more investigation */
    if (info->mode == PIPE_PRIM_POINTS)
-      render->multi_sample = 0x0000F007;
+      render->multi_sample = 0x0000F000;
    else if (info->mode < PIPE_PRIM_TRIANGLES)
-      render->multi_sample = 0x0000F407;
+      render->multi_sample = 0x0000F400;
    else
-      render->multi_sample = 0x0000F807;
+      render->multi_sample = 0x0000F800;
    if (ctx->framebuffer.base.samples)
       render->multi_sample |= 0x68;
+
+   /* Set gl_FragColor register, need to specify it 4 times */
+   render->multi_sample |= (fs->state.frag_color0_reg << 28) |
+                           (fs->state.frag_color0_reg << 24) |
+                           (fs->state.frag_color0_reg << 20) |
+                           (fs->state.frag_color0_reg << 16);
+
+   /* alpha test */
+   if (ctx->zsa->base.alpha_enabled) {
+      render->multi_sample |= ctx->zsa->base.alpha_func;
+      render->stencil_test |= float_to_ubyte(ctx->zsa->base.alpha_ref_value) << 16;
+   } else {
+      /* func = PIPE_FUNC_ALWAYS */
+      render->multi_sample |= 0x7;
+   }
 
    render->shader_address =
       ctx->fs->bo->va | (((uint32_t *)ctx->fs->bo->map)[0] & 0x1F);
@@ -717,11 +718,16 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
    render->textures_address = 0x00000000;
 
    render->aux0 = (ctx->vs->state.varying_stride >> 3);
-   render->aux1 = 0x00001000;
+   render->aux1 = 0x00000000;
+   if (ctx->rasterizer->base.front_ccw)
+      render->aux1 = 0x00001000;
+
    if (ctx->blend->base.dither)
       render->aux1 |= 0x00002000;
 
-   if (fs->state.uses_discard) {
+   if (fs->state.uses_discard ||
+       ctx->zsa->base.alpha_enabled ||
+       fs->state.frag_depth_reg != -1) {
       early_z = false;
       pixel_kill = false;
    }
@@ -759,6 +765,10 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
       render->aux0 |= 0x80;
       render->aux1 |= 0x10000;
    }
+
+   /* Set secondary output color */
+   if (fs->state.frag_color1_reg != -1)
+      render->aux0 |= (fs->state.frag_color1_reg << 28);
 
    if (ctx->vs->state.num_varyings) {
       render->varying_types = 0x00000000;
@@ -1163,6 +1173,10 @@ lima_draw_vbo(struct pipe_context *pctx,
    if (lima_is_scissor_zero(ctx))
       return;
 
+   /* extend the viewport in case of line draws with a line_width > 1.0f,
+    * otherwise use the original values */
+   lima_extend_viewport(ctx, info);
+
    if (!lima_update_fs_state(ctx) || !lima_update_vs_state(ctx))
       return;
 
@@ -1172,10 +1186,12 @@ lima_draw_vbo(struct pipe_context *pctx,
    lima_dump_command_stream_print(
       job->dump, ctx->vs->bo->map, ctx->vs->state.shader_size, false,
       "add vs at va %x\n", ctx->vs->bo->va);
+   lima_dump_shader(job->dump, ctx->vs->bo->map, ctx->vs->state.shader_size, false);
 
    lima_dump_command_stream_print(
       job->dump, ctx->fs->bo->map, ctx->fs->state.shader_size, false,
       "add fs at va %x\n", ctx->fs->bo->va);
+   lima_dump_shader(job->dump, ctx->fs->bo->map, ctx->fs->state.shader_size, true);
 
    lima_job_add_bo(job, LIMA_PIPE_GP, ctx->vs->bo, LIMA_SUBMIT_BO_READ);
    lima_job_add_bo(job, LIMA_PIPE_PP, ctx->fs->bo, LIMA_SUBMIT_BO_READ);
@@ -1191,7 +1207,6 @@ lima_draw_vbo(struct pipe_context *pctx,
    if (job->draws > MAX_DRAWS_PER_JOB) {
       unsigned resolve = job->resolve;
       lima_do_job(job);
-      job = lima_job_get(ctx);
       /* Subsequent job will need to resolve the same buffers */
       lima_update_job_wb(ctx, resolve);
    }

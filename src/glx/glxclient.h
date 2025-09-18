@@ -53,6 +53,8 @@
 #include "glxconfig.h"
 #include "glxhash.h"
 #include "util/macros.h"
+#include "util/u_thread.h"
+#include "util/set.h"
 #include "loader.h"
 #include "glxextensions.h"
 
@@ -116,6 +118,7 @@ struct __GLXDRIscreenRec {
    __GLXDRIdrawable *(*createDrawable)(struct glx_screen *psc,
 				       XID drawable,
 				       GLXDrawable glxDrawable,
+				       int type,
 				       struct glx_config *config);
 
    int64_t (*swapBuffers)(__GLXDRIdrawable *pdraw, int64_t target_msc,
@@ -134,6 +137,8 @@ struct __GLXDRIscreenRec {
    int (*getBufferAge)(__GLXDRIdrawable *pdraw);
    void (*bindTexImage)(__GLXDRIdrawable *pdraw, int buffer, const int *attribs);
    void (*releaseTexImage)(__GLXDRIdrawable *pdraw, int buffer);
+
+   int maxSwapInterval;
 };
 
 struct __GLXDRIdrawableRec
@@ -153,7 +158,7 @@ struct __GLXDRIdrawableRec
 ** Function to create and DRI display data and initialize the display
 ** dependent methods.
 */
-extern __GLXDRIdisplay *driswCreateDisplay(Display * dpy);
+extern __GLXDRIdisplay *driswCreateDisplay(Display * dpy, bool zink);
 extern __GLXDRIdisplay *dri2CreateDisplay(Display * dpy);
 extern __GLXDRIdisplay *dri3_create_display(Display * dpy);
 extern __GLXDRIdisplay *driwindowsCreateDisplay(Display * dpy);
@@ -442,8 +447,6 @@ glx_context_init(struct glx_context *gc,
       (gc)->error = code;       \
    }
 
-extern void __glFreeAttributeState(struct glx_context *);
-
 /************************************************************************/
 
 /**
@@ -501,6 +504,7 @@ struct glx_screen_vtable {
 struct glx_screen
 {
    const struct glx_screen_vtable *vtable;
+   const struct glx_context_vtable *context_vtable;
 
     /**
      * \name Storage for the GLX vendor, version, and extension strings
@@ -521,6 +525,9 @@ struct glx_screen
 
    Display *dpy;
    int scr;
+   bool force_direct_context;
+   bool allow_invalid_glx_destroy_window;
+   bool keep_native_window_glx_drawable;
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
     /**
@@ -592,6 +599,11 @@ struct glx_display
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
    __glxHashTable *drawHash;
 
+   /**
+    * GLXDrawable created from native window and about to be released.
+    */
+   struct set *zombieGLXDrawable;
+
     /**
      * Per display direct rendering interface functions and data.
      */
@@ -645,8 +657,7 @@ extern void __glXSetCurrentContext(struct glx_context * c);
 
 # if defined( USE_ELF_TLS )
 
-extern __thread void *__glX_tls_Context
-   __attribute__ ((tls_model("initial-exec")));
+extern __THREAD_INITIAL_EXEC void *__glX_tls_Context;
 
 #  define __glXGetCurrentContext() __glX_tls_Context
 
@@ -735,17 +746,6 @@ __glX_send_client_info(struct glx_display *glx_dpy);
 
 /************************************************************************/
 
-/*
-** Declarations that should be in Xlib
-*/
-#ifdef __GL_USE_OUR_PROTOTYPES
-extern void _XFlush(Display *);
-extern Status _XReply(Display *, xReply *, int, Bool);
-extern void _XRead(Display *, void *, long);
-extern void _XSend(Display *, const void *, long);
-#endif
-
-
 extern void __glXInitializeVisualConfigFromTags(struct glx_config * config,
                                                 int count, const INT32 * bp,
                                                 Bool tagged_only,
@@ -766,9 +766,6 @@ __glxGetMscRate(struct glx_screen *psc,
 /* So that dri2.c:DRI2WireToEvent() can access
  * glx_info->codes->first_event */
 XExtDisplayInfo *__glXFindDisplay (Display *dpy);
-
-extern void
-GarbageCollectDRIDrawables(struct glx_screen *psc);
 
 extern __GLXDRIdrawable *
 GetGLXDRIDrawable(Display *dpy, GLXDrawable drawable);

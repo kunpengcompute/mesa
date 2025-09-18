@@ -65,8 +65,7 @@ lower_instr(nir_intrinsic_instr *instr, nir_builder *b, bool dword_packed, bool 
           */
          assert(!dword_packed);
          load_result = nir_load_ubo_vec4(b, instr->num_components, instr->dest.ssa.bit_size,
-                                         ubo_idx,
-                                         nir_iadd_imm(b, uniform_offset, nir_intrinsic_base(instr)));
+                                         ubo_idx, uniform_offset, .base=nir_intrinsic_base(instr));
       } else {
          /* For PIPE_CAP_PACKED_UNIFORMS, the uniforms are packed with the
           * base/offset in dword units instead of vec4 units.
@@ -135,6 +134,8 @@ nir_lower_uniforms_to_ubo(nir_shader *shader, bool dword_packed, bool load_vec4)
       if (!shader->info.first_ubo_is_default_ubo) {
          nir_foreach_variable_with_modes(var, shader, nir_var_mem_ubo) {
             var->data.binding++;
+            if (var->data.driver_location != -1)
+               var->data.driver_location++;
             /* only increment location for ubo arrays */
             if (glsl_without_array(var->type) == var->interface_type &&
                 glsl_type_is_array(var->type))
@@ -145,7 +146,7 @@ nir_lower_uniforms_to_ubo(nir_shader *shader, bool dword_packed, bool load_vec4)
 
       if (shader->num_uniforms > 0) {
          const struct glsl_type *type = glsl_array_type(glsl_vec4_type(),
-                                                        shader->num_uniforms, 0);
+                                                        shader->num_uniforms, 16);
          nir_variable *ubo = nir_variable_create(shader, nir_var_mem_ubo, type,
                                                  "uniform_0");
          ubo->data.binding = 0;

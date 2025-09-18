@@ -63,6 +63,7 @@ struct state {
    bool count_prims;
    bool count_vtx_per_prim;
    bool overwrite_incomplete;
+   bool is_points;
    bool progress;
 };
 
@@ -89,6 +90,8 @@ rewrite_emit_vertex(nir_intrinsic_instr *intrin, struct state *state)
 
    if (state->count_vtx_per_prim)
       count_per_primitive = nir_load_var(b, state->vtxcnt_per_prim_vars[stream]);
+   else if (state->is_points)
+      count_per_primitive = nir_imm_int(b, 0);
    else
       count_per_primitive = nir_ssa_undef(b, 1, 32);
 
@@ -147,14 +150,14 @@ overwrite_incomplete_primitives(struct state *state, unsigned stream)
    assert(state->count_vtx_per_prim);
 
    nir_builder *b = state->builder;
-   unsigned outprim = b->shader->info.gs.output_primitive;
+   enum shader_prim outprim = b->shader->info.gs.output_primitive;
    unsigned outprim_min_vertices;
 
-   if (outprim == GL_POINTS)
+   if (outprim == SHADER_PRIM_POINTS)
       outprim_min_vertices = 1;
-   else if (outprim == GL_LINE_STRIP)
+   else if (outprim == SHADER_PRIM_LINE_STRIP)
       outprim_min_vertices = 2;
-   else if (outprim == GL_TRIANGLE_STRIP)
+   else if (outprim == SHADER_PRIM_TRIANGLE_STRIP)
       outprim_min_vertices = 3;
    else
       unreachable("Invalid GS output primitive type.");
@@ -208,6 +211,8 @@ rewrite_end_primitive(nir_intrinsic_instr *intrin, struct state *state)
 
    if (state->count_vtx_per_prim)
       count_per_primitive = nir_load_var(b, state->vtxcnt_per_prim_vars[stream]);
+   else if (state->is_points)
+      count_per_primitive = nir_imm_int(b, 0);
    else
       count_per_primitive = nir_ssa_undef(b, count->num_components, count->bit_size);
 
@@ -246,9 +251,11 @@ rewrite_intrinsics(nir_block *block, struct state *state)
       nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(instr);
       switch (intrin->intrinsic) {
       case nir_intrinsic_emit_vertex:
+      case nir_intrinsic_emit_vertex_with_counter:
          rewrite_emit_vertex(intrin, state);
          break;
       case nir_intrinsic_end_primitive:
+      case nir_intrinsic_end_primitive_with_counter:
          rewrite_end_primitive(intrin, state);
          break;
       default:
@@ -288,7 +295,7 @@ append_set_vertex_and_primitive_count(nir_block *end_block, struct state *state)
          if (state->per_stream && !(shader->info.gs.active_stream_mask & (1 << stream))) {
             /* Inactive stream: vertex count is 0, primitive count is 0 or undef. */
             vtx_cnt = nir_imm_int(b, 0);
-            prim_cnt = state->count_prims
+            prim_cnt = state->count_prims || state->is_points
                        ? nir_imm_int(b, 0)
                        : nir_ssa_undef(b, 1, 32);
          } else {
@@ -296,14 +303,64 @@ append_set_vertex_and_primitive_count(nir_block *end_block, struct state *state)
                overwrite_incomplete_primitives(state, stream);
 
             vtx_cnt = nir_load_var(b, state->vertex_count_vars[stream]);
-            prim_cnt = state->count_prims
-                       ? nir_load_var(b, state->primitive_count_vars[stream])
-                       : nir_ssa_undef(b, 1, 32);
+
+            if (state->count_prims)
+               prim_cnt = nir_load_var(b, state->primitive_count_vars[stream]);
+            else if (state->is_points)
+               /* EndPrimitive does not affect primitive count for points,
+                * just use vertex count instead
+                */
+               prim_cnt = vtx_cnt;
+            else
+               prim_cnt = nir_ssa_undef(b, 1, 32);
          }
 
          nir_set_vertex_and_primitive_count(b, vtx_cnt, prim_cnt, stream);
+         state->progress = true;
       }
    }
+}
+
+/**
+ * Check to see if there are any blocks that need set_vertex_and_primitive_count
+ *
+ * If every block that could need the set_vertex_and_primitive_count intrinsic
+ * already has one, there is nothing for this pass to do.
+ */
+static bool
+a_block_needs_set_vertex_and_primitive_count(nir_block *end_block, bool per_stream)
+{
+   set_foreach(end_block->predecessors, entry) {
+      nir_block *pred = (nir_block *) entry->key;
+
+
+      for (unsigned stream = 0; stream < NIR_MAX_XFB_STREAMS; ++stream) {
+         /* When it's not per-stream, we only need to write one variable. */
+         if (!per_stream && stream != 0)
+            continue;
+
+         bool found = false;
+
+         nir_foreach_instr_reverse(instr, pred) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            const nir_intrinsic_instr *const intrin =
+               nir_instr_as_intrinsic(instr);
+
+            if (intrin->intrinsic == nir_intrinsic_set_vertex_and_primitive_count &&
+                intrin->const_index[0] == stream) {
+               found = true;
+               break;
+            }
+         }
+
+         if (!found)
+            return true;
+      }
+   }
+
+   return false;
 }
 
 bool
@@ -316,15 +373,29 @@ nir_lower_gs_intrinsics(nir_shader *shader, nir_lower_gs_intrinsics_flags option
       overwrite_incomplete ||
       (options & nir_lower_gs_intrinsics_count_vertices_per_primitive);
 
+   bool is_points = shader->info.gs.output_primitive == SHADER_PRIM_POINTS;
+   /* points are always complete primitives with a single vertex, so these are
+    * not needed when primitive is points.
+    */
+   if (is_points) {
+      count_primitives = false;
+      overwrite_incomplete = false;
+      count_vtx_per_prim = false;
+   }
+
    struct state state;
    state.progress = false;
    state.count_prims = count_primitives;
    state.count_vtx_per_prim = count_vtx_per_prim;
    state.overwrite_incomplete = overwrite_incomplete;
    state.per_stream = per_stream;
+   state.is_points = is_points;
 
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
    assert(impl);
+
+   if (!a_block_needs_set_vertex_and_primitive_count(impl->end_block, per_stream))
+      return false;
 
    nir_builder b;
    nir_builder_init(&b, impl);

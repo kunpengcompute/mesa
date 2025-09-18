@@ -29,6 +29,7 @@
 #include "util/u_helpers.h"
 #include "util/u_debug.h"
 #include "util/u_framebuffer.h"
+#include "util/u_viewport.h"
 
 #include "pipe/p_state.h"
 
@@ -211,18 +212,22 @@ lima_set_viewport_states(struct pipe_context *pctx,
    struct lima_context *ctx = lima_context(pctx);
 
    /* reverse calculate the parameter of glViewport */
-   ctx->viewport.left = viewport->translate[0] - fabsf(viewport->scale[0]);
-   ctx->viewport.right = viewport->translate[0] + fabsf(viewport->scale[0]);
-   ctx->viewport.bottom = viewport->translate[1] - fabsf(viewport->scale[1]);
-   ctx->viewport.top = viewport->translate[1] + fabsf(viewport->scale[1]);
+   ctx->viewport.left = ctx->ext_viewport.left =
+      viewport->translate[0] - fabsf(viewport->scale[0]);
+   ctx->viewport.right = ctx->ext_viewport.right =
+      viewport->translate[0] + fabsf(viewport->scale[0]);
+   ctx->viewport.bottom = ctx->ext_viewport.bottom =
+      viewport->translate[1] - fabsf(viewport->scale[1]);
+   ctx->viewport.top = ctx->ext_viewport.top =
+      viewport->translate[1] + fabsf(viewport->scale[1]);
 
    /* reverse calculate the parameter of glDepthRange */
    float near, far;
-   near = viewport->translate[2] - viewport->scale[2];
-   far = viewport->translate[2] + viewport->scale[2];
+   bool halfz = ctx->rasterizer && ctx->rasterizer->base.clip_halfz;
+   util_viewport_zmin_zmax(viewport, halfz, &near, &far);
 
-   ctx->viewport.near = MIN2(near, far);
-   ctx->viewport.far = MAX2(near, far);
+   ctx->viewport.near = ctx->rasterizer && ctx->rasterizer->base.depth_clip_near ? near : 0.0f;
+   ctx->viewport.far = ctx->rasterizer && ctx->rasterizer->base.depth_clip_far ? far : 1.0f;
 
    ctx->viewport.transform = *viewport;
    ctx->dirty |= LIMA_CONTEXT_DIRTY_VIEWPORT;
@@ -381,6 +386,7 @@ lima_set_sampler_views(struct pipe_context *pctx,
                       enum pipe_shader_type shader,
                       unsigned start, unsigned nr,
                        unsigned unbind_num_trailing_slots,
+                       bool take_ownership,
                       struct pipe_sampler_view **views)
 {
    struct lima_context *ctx = lima_context(pctx);
@@ -393,7 +399,13 @@ lima_set_sampler_views(struct pipe_context *pctx,
    for (i = 0; i < nr; i++) {
       if (views[i])
          new_nr = i + 1;
-      pipe_sampler_view_reference(&lima_tex->textures[i], views[i]);
+
+      if (take_ownership) {
+         pipe_sampler_view_reference(&lima_tex->textures[i], NULL);
+         lima_tex->textures[i] = views[i];
+      } else {
+         pipe_sampler_view_reference(&lima_tex->textures[i], views[i]);
+      }
    }
 
    for (; i < lima_tex->num_textures; i++) {

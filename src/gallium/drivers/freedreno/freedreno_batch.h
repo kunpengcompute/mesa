@@ -31,16 +31,14 @@
 #include "util/simple_mtx.h"
 #include "util/u_inlines.h"
 #include "util/u_queue.h"
-#include "util/u_trace.h"
+#include "util/perf/u_trace.h"
 
 #include "freedreno_context.h"
 #include "freedreno_fence.h"
 #include "freedreno_util.h"
 
-#ifdef DEBUG
-#define BATCH_DEBUG FD_DBG(MSGS)
-#else
-#define BATCH_DEBUG 0
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 struct fd_resource;
@@ -96,8 +94,6 @@ struct fd_batch {
    bool nondraw : 1;
    bool needs_flush : 1;
    bool flushed : 1;
-   bool blit : 1;
-   bool back_blit : 1;    /* only blit so far is resource shadowing back-blit */
    bool tessellation : 1; /* tessellation used in batch */
 
    /* Keep track if WAIT_FOR_IDLE is needed for registers we need
@@ -254,23 +250,11 @@ struct fd_batch {
    struct set *resources;
 
    /** key in batch-cache (if not null): */
-   const struct fd_batch_key *key;
+   struct fd_batch_key *key;
    uint32_t hash;
 
    /** set of dependent batches.. holds refs to dependent batches: */
    uint32_t dependents_mask;
-
-   /* Buffer for tessellation engine input
-    */
-   struct fd_bo *tessfactor_bo;
-   uint32_t tessfactor_size;
-
-   /* Buffer for passing parameters between TCS and TES
-    */
-   struct fd_bo *tessparam_bo;
-   uint32_t tessparam_size;
-
-   struct fd_ringbuffer *tess_addrs_constobj;
 };
 
 struct fd_batch *fd_batch_create(struct fd_context *ctx, bool nondraw);
@@ -347,7 +331,7 @@ fd_batch_unlock_submit(struct fd_batch *batch)
 }
 
 /**
- * Returns true if emit-lock was aquired, false if failed to aquire lock,
+ * Returns true if emit-lock was acquired, false if failed to acquire lock,
  * ie. batch already flushed.
  */
 static inline bool MUST_CHECK
@@ -416,12 +400,18 @@ fd_event_write(struct fd_batch *batch, struct fd_ringbuffer *ring,
 static inline struct fd_ringbuffer *
 fd_batch_get_epilogue(struct fd_batch *batch)
 {
-   if (batch->epilogue == NULL)
-      batch->epilogue = fd_submit_new_ringbuffer(batch->submit, 0x1000, 0);
+   if (batch->epilogue == NULL) {
+      batch->epilogue = fd_submit_new_ringbuffer(batch->submit, 0x1000,
+                                                 FD_RINGBUFFER_GROWABLE);
+   }
 
    return batch->epilogue;
 }
 
 struct fd_ringbuffer *fd_batch_get_prologue(struct fd_batch *batch);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* FREEDRENO_BATCH_H_ */

@@ -28,6 +28,16 @@ option(
   description : 'window systems to support. If this is set to `auto`, all platforms applicable will be enabled.'
 )
 option(
+  'egl-native-platform',
+  type : 'combo',
+  value : 'auto',
+  choices : [
+    'auto', 'x11', 'wayland', 'haiku', 'android', 'windows',
+    'surfaceless', 'drm',
+  ],
+  description : 'the window system EGL assumes for EGL_DEFAULT_DISPLAY',
+)
+option(
   'android-stub',
   type : 'boolean',
   value : false,
@@ -44,9 +54,7 @@ option(
 option(
   'dri-drivers',
   type : 'array',
-  value : ['auto'],
-  choices : ['auto', 'i915', 'i965', 'r100', 'r200', 'nouveau'],
-  description : 'List of dri drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
+  description : 'DEPRECATED: List of dri drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
 option(
   'dri-drivers-path',
@@ -67,7 +75,7 @@ option(
   choices : [
     'auto', 'kmsro', 'radeonsi', 'r300', 'r600', 'nouveau', 'freedreno',
     'swrast', 'v3d', 'vc4', 'etnaviv', 'tegra', 'i915', 'svga', 'virgl',
-    'swr', 'panfrost', 'iris', 'lima', 'zink', 'd3d12', 'asahi'
+    'panfrost', 'iris', 'lima', 'zink', 'd3d12', 'asahi', 'crocus'
   ],
   description : 'List of gallium drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
@@ -143,6 +151,12 @@ option(
   description : 'build gallium "nine" Direct3D 9.x frontend.',
 )
 option(
+  'gallium-d3d10umd',
+  type : 'boolean',
+  value : false,
+  description : 'build gallium D3D10 WDDM UMD frontend.',
+)
+option(
   'gallium-opencl',
   type : 'combo',
   choices : ['icd', 'standalone', 'disabled'],
@@ -178,7 +192,7 @@ option(
   'vulkan-drivers',
   type : 'array',
   value : ['auto'],
-  choices : ['auto', 'amd', 'broadcom', 'freedreno', 'intel', 'swrast', 'virtio-experimental'],
+  choices : ['auto', 'amd', 'broadcom', 'freedreno', 'imagination-experimental', 'intel', 'microsoft-experimental', 'panfrost', 'swrast', 'virtio-experimental'],
   description : 'List of vulkan drivers to build. If this is set to auto all drivers applicable to the target OS/architecture will be built'
 )
 option(
@@ -186,6 +200,18 @@ option(
   type : 'boolean',
   value : false,
   description : 'use kgsl backend for freedreno vulkan driver',
+)
+option(
+  'freedreno-virtio',
+  type : 'boolean',
+  value : false,
+  description : 'use experimental virtio backend for freedreno (currently only gallium driver)',
+)
+option(
+  'imagination-srv',
+  type : 'boolean',
+  value : false,
+  description : 'Enable Services backend for Imagination Technologies vulkan driver',
 )
 option(
   'shader-cache',
@@ -198,15 +224,15 @@ option(
   'shader-cache-default',
   type : 'boolean',
   value : true,
-  description : 'If set to false, the feature is only activated when environment variable MESA_GLSL_CACHE_DISABLE is set to false',
+  description : 'If set to false, the feature is only activated when environment variable MESA_SHADER_CACHE_DISABLE is set to false',
 )
 option(
   'shader-cache-max-size',
   type : 'string',
   value : '',
-  description : '''Default value for MESA_GLSL_CACHE_MAX_SIZE enviroment variable.
+  description : '''Default value for MESA_SHADER_CACHE_MAX_SIZE enviroment variable.
    If set, determines the maximum size of the on-disk cache of compiled
-   GLSL programs, can be overriden by enviroment variable if needed. Should be set to a number optionally followed by
+   shader programs, can be overriden by enviroment variable if needed. Should be set to a number optionally followed by
    ``K``, ``M``, or ``G`` to specify a size in kilobytes, megabytes, or
    gigabytes. By default, gigabytes will be assumed. And if unset, a
    maximum size of 1GB will be used.'''
@@ -216,6 +242,12 @@ option(
   type : 'string',
   value : '',
   description : 'Location relative to prefix to put vulkan icds on install. Default: $datadir/vulkan/icd.d'
+)
+option(
+  'moltenvk-dir',
+  type : 'string',
+  value : '',
+  description : 'Location of the MoltenVk SDK. Default: '
 )
 option(
   'vulkan-layers',
@@ -259,10 +291,16 @@ option(
   description : 'Build support for gbm platform'
 )
 option(
+  'gbm-backends-path',
+  type : 'string',
+  value : '',
+  description : 'Locations to search for gbm backends, passed as colon separated list. Default: $libdir/gbm.'
+)
+option(
   'glx',
   type : 'combo',
   value : 'auto',
-  choices : ['auto', 'disabled', 'dri', 'xlib', 'gallium-xlib'],
+  choices : ['auto', 'disabled', 'dri', 'xlib'],
   description : 'Build support for GLX platform'
 )
 option(
@@ -365,7 +403,13 @@ option(
   'selinux',
   type : 'boolean',
   value : false,
-  description : 'Build an SELinux-aware Mesa'
+  description : 'Build an SELinux-aware Mesa.  This currently disables execmem support at runtime unless SELinux is configured with allow_execmem.'
+)
+option(
+  'execmem',
+  type : 'boolean',
+  value : true,
+  description : 'Enable execmem support.  Without execmem, glapi will fail to generate dynamic glapi stubs when entrypoints unknown to glapi but known to DRI drivers are requested in eglGetProcAddress or glXGetProcAddress.  This should be enabled unless the platform can guarantee glapi and DRI drivers are always built from the same source tree.'
 )
 option(
   'osmesa',
@@ -380,25 +424,12 @@ option(
   choices : ['8', '16', '32'],
   description : 'Number of channel bits for OSMesa.'
 )
-option(
-  'swr-arches',
-  type : 'array',
-  value : ['avx', 'avx2'],
-  choices : ['avx', 'avx2', 'knl', 'skx'],
-  description : 'Architectures to build SWR support for.',
-)
-option(
-  'shared-swr',
-  type : 'boolean',
-  value : true,
-  description : 'Whether to link SWR shared or statically.',
-)
 
 option(
   'tools',
   type : 'array',
   value : [],
-  choices : ['drm-shim', 'etnaviv', 'freedreno', 'glsl', 'intel', 'intel-ui', 'nir', 'nouveau', 'xvmc', 'lima', 'panfrost', 'asahi', 'all'],
+  choices : ['drm-shim', 'etnaviv', 'freedreno', 'glsl', 'intel', 'intel-ui', 'nir', 'nouveau', 'xvmc', 'lima', 'panfrost', 'asahi', 'imagination', 'all', 'dlclose-skip'],
   description : 'List of tools to build. (Note: `intel-ui` selects `intel`)',
 )
 option(
@@ -421,12 +452,6 @@ option(
   value : true,
   description : 'Enable direct rendering in GLX and EGL for DRI',
 )
-option(
-  'prefer-iris',
-  type : 'boolean',
-  value : true,
-  description : 'Prefer new Intel iris driver over older i965 driver'
-)
 option('egl-lib-suffix',
   type : 'string',
   value : '',
@@ -442,7 +467,7 @@ option(
   'platform-sdk-version',
   type : 'integer',
   min : 25,
-  max : 30,
+  max : 10000,
   value : 25,
   description : 'Android Platform SDK version. Default: Nougat version.'
 )
@@ -463,5 +488,42 @@ option(
   'sse2',
   type : 'boolean',
   value : true,
-  description : 'use msse2 flag for mingw x86. Default: true',
+  description : 'use msse2 flag for x86. Uses sse/sse2 instead of x87. Default: true',
+)
+option(
+  'perfetto',
+  type : 'boolean',
+  value : false,
+  description : 'Enable performance analysis with Perfetto. Default: false'
+)
+option(
+  'datasources',
+  type : 'array',
+  value : ['auto'],
+  choices : ['auto', 'panfrost', 'intel', 'freedreno'],
+  description: 'List of Perfetto datasources to build. If this is set to `auto`, datasources that can not be build are skipped. Default: [`auto`]'
+)
+option(
+  'custom-shader-replacement',
+  type : 'string',
+  value : '',
+  description : 'Enable a custom shader replacement mechanism. Note that enabling this option requires adding/generating a shader_replacement.h file that can be included (see shaderapi.c).'
+)
+option(
+  'vmware-mks-stats',
+  type : 'boolean',
+  value : false,
+  description : 'Build gallium VMware/svga driver with mksGuestStats instrumentation.'
+)
+option(
+  'vulkan-beta',
+  type : 'boolean',
+  value : false,
+  description : 'Build vulkan drivers with BETA extensions enabled.'
+)
+option(
+  'intel-clc',
+  type : 'feature',
+  value : 'disabled',
+  description : 'Build the intel-clc compiler (required for ray queries).'
 )

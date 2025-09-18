@@ -33,7 +33,7 @@ key_debug(const struct brw_compiler *c, void *log,
           const char *name, int a, int b)
 {
    if (a != b) {
-      c->shader_perf_log(log, "  %s %d->%d\n", name, a, b);
+      brw_shader_perf_log(c, log, "  %s %d->%d\n", name, a, b);
       return true;
    }
    return false;
@@ -44,7 +44,7 @@ key_debug_float(const struct brw_compiler *c, void *log,
                 const char *name, float a, float b)
 {
    if (a != b) {
-      c->shader_perf_log(log, "  %s %f->%f\n", name, a, b);
+      brw_shader_perf_log(c, log, "  %s %f->%f\n", name, a, b);
       return true;
    }
    return false;
@@ -111,7 +111,7 @@ debug_vs_recompile(const struct brw_compiler *c, void *log,
    found |= check("vertex color clamping", clamp_vertex_color);
 
    if (!found) {
-      c->shader_perf_log(log, "  something else\n");
+      brw_shader_perf_log(c, log, "  something else\n");
    }
 }
 
@@ -125,11 +125,11 @@ debug_tcs_recompile(const struct brw_compiler *c, void *log,
    found |= check("input vertices", input_vertices);
    found |= check("outputs written", outputs_written);
    found |= check("patch outputs written", patch_outputs_written);
-   found |= check("tes primitive mode", tes_primitive_mode);
+   found |= check("tes primitive mode", _tes_primitive_mode);
    found |= check("quads and equal_spacing workaround", quads_workaround);
 
    if (!found) {
-      c->shader_perf_log(log, "  something else\n");
+      brw_shader_perf_log(c, log, "  something else\n");
    }
 }
 
@@ -144,7 +144,7 @@ debug_tes_recompile(const struct brw_compiler *c, void *log,
    found |= check("patch inputs read", patch_inputs_read);
 
    if (!found) {
-      c->shader_perf_log(log, "  something else\n");
+      brw_shader_perf_log(c, log, "  something else\n");
    }
 }
 
@@ -156,7 +156,7 @@ debug_gs_recompile(const struct brw_compiler *c, void *log,
    bool found = debug_base_recompile(c, log, &old_key->base, &key->base);
 
    if (!found) {
-      c->shader_perf_log(log, "  something else\n");
+      brw_shader_perf_log(c, log, "  something else\n");
    }
 }
 
@@ -177,11 +177,11 @@ debug_fs_recompile(const struct brw_compiler *c, void *log,
    found |= check("fragment color clamping", clamp_fragment_color);
    found |= check("per-sample interpolation", persample_interp);
    found |= check("multisampled FBO", multisample_fbo);
-   found |= check("frag coord adds sample pos", frag_coord_adds_sample_pos);
    found |= check("line smoothing", line_aa);
-   found |= check("high quality derivatives", high_quality_derivatives);
    found |= check("force dual color blending", force_dual_color_blend);
    found |= check("coherent fb fetch", coherent_fb_fetch);
+   found |= check("ignore sample mask out", ignore_sample_mask_out);
+   found |= check("coarse pixel", coarse_pixel);
 
    found |= check("input slots valid", input_slots_valid);
    found |= check("mrt alpha test function", alpha_test_func);
@@ -190,7 +190,7 @@ debug_fs_recompile(const struct brw_compiler *c, void *log,
    found |= debug_base_recompile(c, log, &old_key->base, &key->base);
 
    if (!found) {
-      c->shader_perf_log(log, "  something else\n");
+      brw_shader_perf_log(c, log, "  something else\n");
    }
 }
 
@@ -202,7 +202,7 @@ debug_cs_recompile(const struct brw_compiler *c, void *log,
    bool found = debug_base_recompile(c, log, &old_key->base, &key->base);
 
    if (!found) {
-      c->shader_perf_log(log, "  something else\n");
+      brw_shader_perf_log(c, log, "  something else\n");
    }
 }
 
@@ -213,7 +213,7 @@ brw_debug_key_recompile(const struct brw_compiler *c, void *log,
                         const struct brw_base_prog_key *key)
 {
    if (!old_key) {
-      c->shader_perf_log(log, "  No previous compile found...\n");
+      brw_shader_perf_log(c, log, "  No previous compile found...\n");
       return;
    }
 

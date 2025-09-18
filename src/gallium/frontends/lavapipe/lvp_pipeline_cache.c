@@ -33,13 +33,12 @@ VKAPI_ATTR VkResult VKAPI_CALL lvp_CreatePipelineCache(
    struct lvp_pipeline_cache *cache;
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO);
-   assert(pCreateInfo->flags == 0);
 
    cache = vk_alloc2(&device->vk.alloc, pAllocator,
                        sizeof(*cache), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (cache == NULL)
-      return vk_error(device->instance, VK_ERROR_OUT_OF_HOST_MEMORY);
+      return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    vk_object_base_init(&device->vk, &cache->base,
                        VK_OBJECT_TYPE_PIPELINE_CACHE);

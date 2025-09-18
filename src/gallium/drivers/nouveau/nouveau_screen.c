@@ -40,11 +40,8 @@ int nouveau_mesa_debug = 0;
 static const char *
 nouveau_screen_get_name(struct pipe_screen *pscreen)
 {
-   struct nouveau_device *dev = nouveau_screen(pscreen)->device;
-   static char buffer[128];
-
-   snprintf(buffer, sizeof(buffer), "NV%02X", dev->chipset);
-   return buffer;
+   struct nouveau_screen *screen = nouveau_screen(pscreen);
+   return screen->chipset_name;
 }
 
 static const char *
@@ -102,7 +99,7 @@ nouveau_screen_bo_from_handle(struct pipe_screen *pscreen,
                               unsigned *out_stride)
 {
    struct nouveau_device *dev = nouveau_screen(pscreen)->device;
-   struct nouveau_bo *bo = 0;
+   struct nouveau_bo *bo = NULL;
    int ret;
 
    if (whandle->offset != 0) {
@@ -318,6 +315,7 @@ nouveau_screen_init(struct nouveau_screen *screen, struct nouveau_device *dev)
    if (!ret)
       screen->cpu_gpu_time_delta = time - screen->cpu_gpu_time_delta * 1000;
 
+   snprintf(screen->chipset_name, sizeof(screen->chipset_name), "NV%02X", dev->chipset);
    pscreen->get_name = nouveau_screen_get_name;
    pscreen->get_vendor = nouveau_screen_get_vendor;
    pscreen->get_device_vendor = nouveau_screen_get_device_vendor;
@@ -385,7 +383,7 @@ nouveau_screen_fini(struct nouveau_screen *screen)
 
 static void
 nouveau_set_debug_callback(struct pipe_context *pipe,
-                           const struct pipe_debug_callback *cb)
+                           const struct util_debug_callback *cb)
 {
    struct nouveau_context *context = nouveau_context(pipe);
 

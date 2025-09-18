@@ -1,5 +1,3 @@
-from __future__ import print_function
-
 CopyRight = '''
 /**************************************************************************
  *
@@ -92,6 +90,12 @@ def has_access(format):
         'p010',
         'p012',
         'p016',
+        'y210',
+        'y212',
+        'y216',
+        'y410',
+        'y412',
+        'y416',
         'xyuv',
         'ayuv',
         'r8g8_r8b8_unorm',
@@ -105,6 +109,9 @@ def has_access(format):
         'y16_u16v16_422_unorm',
         'y16_u16_v16_444_unorm',
         'r8_g8b8_420_unorm',
+        'g8_b8r8_420_unorm',
+        'g8_b8_r8_420_unorm',
+        'y8_unorm',
     ]
     if format.short_name() in noaccess_formats:
         return False
@@ -133,9 +140,9 @@ def write_format_table(formats):
     print()
 
     write_format_table_header(sys.stdout2)
-    
+
     u_format_pack.generate(formats)
-    
+
     def do_channel_array(channels, swizzles):
         print("   {")
         for i in range(4):

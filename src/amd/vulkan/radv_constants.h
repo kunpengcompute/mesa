@@ -37,7 +37,7 @@
 #define MAX_SCISSORS                   16
 #define MAX_DISCARD_RECTANGLES         4
 #define MAX_SAMPLE_LOCATIONS           32
-#define MAX_PUSH_CONSTANTS_SIZE        128
+#define MAX_PUSH_CONSTANTS_SIZE        256
 #define MAX_PUSH_DESCRIPTORS           32
 #define MAX_DYNAMIC_UNIFORM_BUFFERS    16
 #define MAX_DYNAMIC_STORAGE_BUFFERS    8
@@ -51,10 +51,12 @@
 #define MAX_SO_OUTPUTS                 64
 #define MAX_INLINE_UNIFORM_BLOCK_SIZE  (4ull * 1024 * 1024)
 #define MAX_INLINE_UNIFORM_BLOCK_COUNT 64
-#define MAX_BIND_POINTS                2 /* compute + graphics */
+#define MAX_BIND_POINTS                3 /* compute + graphics + raytracing */
 
-#define NUM_DEPTH_CLEAR_PIPELINES      3
+#define NUM_DEPTH_CLEAR_PIPELINES      2
 #define NUM_DEPTH_DECOMPRESS_PIPELINES 3
+#define MAX_FRAMEBUFFER_WIDTH (1u << 14)
+#define MAX_FRAMEBUFFER_HEIGHT (1u << 14)
 
 /*
  * This is the point we switch from using CP to compute shader
@@ -89,5 +91,19 @@
 
 /* Number of invocations in each subgroup. */
 #define RADV_SUBGROUP_SIZE 64
+
+/* The spec requires this to be 32. */
+#define RADV_RT_HANDLE_SIZE 32
+
+#define RADV_MAX_HIT_ATTRIB_SIZE 32
+
+#define RADV_SHADER_ALLOC_ALIGNMENT      256
+#define RADV_SHADER_ALLOC_MIN_ARENA_SIZE (256 * 1024)
+/* 256 KiB << 5 = 8 MiB */
+#define RADV_SHADER_ALLOC_MAX_ARENA_SIZE_SHIFT 5u
+#define RADV_SHADER_ALLOC_MIN_SIZE_CLASS 8
+#define RADV_SHADER_ALLOC_MAX_SIZE_CLASS 15
+#define RADV_SHADER_ALLOC_NUM_FREE_LISTS                                                           \
+   (RADV_SHADER_ALLOC_MAX_SIZE_CLASS - RADV_SHADER_ALLOC_MIN_SIZE_CLASS + 1)
 
 #endif /* RADV_CONSTANTS_H */

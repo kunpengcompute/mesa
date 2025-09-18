@@ -42,10 +42,12 @@
 #include "util/list.h"
 #include "util/log.h"
 #include "util/simple_mtx.h"
+#include "util/slab.h"
 #include "util/u_atomic.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
 
+#include "freedreno_dev_info.h"
 #include "freedreno_drmif.h"
 #include "freedreno_ringbuffer.h"
 
@@ -55,11 +57,16 @@ extern simple_mtx_t table_lock;
  * Stupid/simple growable array implementation:
  */
 
+#define MAX_ARRAY_SIZE ((unsigned short)~0)
+
 static inline void
 grow(void **ptr, uint16_t nr, uint16_t *max, uint16_t sz)
 {
+   assert((nr + 1) < MAX_ARRAY_SIZE);
    if ((nr + 1) > *max) {
-      if ((*max * 2) < (nr + 1))
+      if (*max > MAX_ARRAY_SIZE/2)
+         *max = MAX_ARRAY_SIZE;
+      else if ((*max * 2) < (nr + 1))
          *max = nr + 5;
       else
          *max = *max * 2;
@@ -83,10 +90,16 @@ grow(void **ptr, uint16_t nr, uint16_t *max, uint16_t sz)
 
 
 struct fd_device_funcs {
-   int (*bo_new_handle)(struct fd_device *dev, uint32_t size, uint32_t flags,
-                        uint32_t *handle);
+   /* Create a new buffer object:
+    */
+   struct fd_bo *(*bo_new)(struct fd_device *dev, uint32_t size, uint32_t flags);
+
+   /* Create a new buffer object from existing handle (ie. dma-buf or
+    * flink import):
+    */
    struct fd_bo *(*bo_from_handle)(struct fd_device *dev, uint32_t size,
                                    uint32_t handle);
+
    struct fd_pipe *(*pipe_new)(struct fd_device *dev, enum fd_pipe_id id,
                                unsigned prio);
    void (*destroy)(struct fd_device *dev);
@@ -124,7 +137,9 @@ struct fd_device {
    struct fd_bo_cache bo_cache;
    struct fd_bo_cache ring_cache;
 
-   int closefd; /* call close(fd) upon destruction */
+   bool has_cached_coherent;
+
+   bool closefd; /* call close(fd) upon destruction */
 
    /* just for valgrind: */
    int bo_size;
@@ -140,6 +155,25 @@ struct fd_device {
    struct list_head deferred_submits;
    unsigned deferred_cmds;
    simple_mtx_t submit_lock;
+
+   /**
+    * BO for suballocating long-lived state objects.
+    *
+    * Note: one would be tempted to put this in fd_pipe to avoid locking.
+    * But that is a bad idea for a couple of reasons:
+    *
+    *  1) With TC, stateobj allocation can happen in either frontend thread
+    *     (ie. most CSOs), and also driver thread (a6xx cached tex state)
+    *  2) It is best for fd_pipe to not hold a reference to a BO that can
+    *     be free'd to bo cache, as that can cause unexpected re-entrancy
+    *     (fd_bo_cache_alloc() -> find_in_bucket() -> fd_bo_state() ->
+    *     cleanup_fences() -> drop pipe ref which free's bo's).
+    */
+   struct fd_bo *suballoc_bo;
+   uint32_t suballoc_offset;
+   simple_mtx_t suballoc_lock;
+
+   struct util_queue submit_queue;
 };
 
 #define foreach_submit(name, list) \
@@ -173,6 +207,8 @@ struct fd_pipe_funcs {
 
    int (*get_param)(struct fd_pipe *pipe, enum fd_param_id param,
                     uint64_t *value);
+   int (*set_param)(struct fd_pipe *pipe, enum fd_param_id param,
+                    uint64_t value);
    int (*wait)(struct fd_pipe *pipe, const struct fd_fence *fence,
                uint64_t timeout);
    void (*destroy)(struct fd_pipe *pipe);
@@ -187,7 +223,7 @@ struct fd_pipe_control {
 struct fd_pipe {
    struct fd_device *dev;
    enum fd_pipe_id id;
-   uint32_t gpu_id;
+   struct fd_dev_id dev_id;
 
    /**
     * Note refcnt is *not* atomic, but protected by table_lock, since the
@@ -204,8 +240,18 @@ struct fd_pipe {
     */
    uint32_t last_fence;
 
+   /**
+    * The last fence seqno that was flushed to kernel (doesn't mean that it
+    * is complete, just that the kernel knows about it)
+    */
+   uint32_t last_submit_fence;
+
+   uint32_t last_enqueue_fence;   /* just for debugging */
+
    struct fd_bo *control_mem;
    volatile struct fd_pipe_control *control;
+
+   struct slab_parent_pool ring_pool;
 
    const struct fd_pipe_funcs *funcs;
 };
@@ -261,6 +307,12 @@ struct fd_bo_funcs {
    uint64_t (*iova)(struct fd_bo *bo);
    void (*set_name)(struct fd_bo *bo, const char *fmt, va_list ap);
    void (*destroy)(struct fd_bo *bo);
+
+   /**
+    * Optional, copy data into bo, falls back to mmap+memcpy.  If not
+    * implemented, it must be possible to mmap all buffers
+    */
+   void (*upload)(struct fd_bo *bo, void *src, unsigned len);
 };
 
 struct fd_bo_fence {
@@ -278,7 +330,8 @@ struct fd_bo {
    uint32_t handle;
    uint32_t name;
    int32_t refcnt;
-   uint32_t flags; /* flags like FD_RELOC_DUMP to use for relocs to this BO */
+   uint32_t reloc_flags; /* flags like FD_RELOC_DUMP to use for relocs to this BO */
+   uint32_t alloc_flags; /* flags that control allocation/mapping, ie. FD_BO_x */
    uint64_t iova;
    void *map;
    const struct fd_bo_funcs *funcs;
@@ -300,6 +353,11 @@ struct fd_bo {
     * a circular reference loop.
     */
    bool nosync : 1;
+
+   /* Most recent index in submit's bo table, used to optimize the common
+    * case where a bo is used many times in the same submit.
+    */
+   uint32_t idx;
 
    struct list_head list; /* bucket-list entry */
    time_t free_time;      /* time when added to bucket-list */

@@ -37,15 +37,15 @@
 
 static void get_rate_control_param(struct rvce_encoder *enc, struct pipe_h264_enc_picture_desc *pic)
 {
-   enc->enc_pic.rc.rc_method = pic->rate_ctrl.rate_ctrl_method;
-   enc->enc_pic.rc.target_bitrate = pic->rate_ctrl.target_bitrate;
-   enc->enc_pic.rc.peak_bitrate = pic->rate_ctrl.peak_bitrate;
+   enc->enc_pic.rc.rc_method = pic->rate_ctrl[0].rate_ctrl_method;
+   enc->enc_pic.rc.target_bitrate = pic->rate_ctrl[0].target_bitrate;
+   enc->enc_pic.rc.peak_bitrate = pic->rate_ctrl[0].peak_bitrate;
    enc->enc_pic.rc.quant_i_frames = pic->quant_i_frames;
    enc->enc_pic.rc.quant_p_frames = pic->quant_p_frames;
    enc->enc_pic.rc.quant_b_frames = pic->quant_b_frames;
    enc->enc_pic.rc.gop_size = pic->gop_size;
-   enc->enc_pic.rc.frame_rate_num = pic->rate_ctrl.frame_rate_num;
-   enc->enc_pic.rc.frame_rate_den = pic->rate_ctrl.frame_rate_den;
+   enc->enc_pic.rc.frame_rate_num = pic->rate_ctrl[0].frame_rate_num;
+   enc->enc_pic.rc.frame_rate_den = pic->rate_ctrl[0].frame_rate_den;
    enc->enc_pic.rc.max_qp = 51;
 
    /* For CBR mode, to guarantee bitrate of generated stream complies with
@@ -53,17 +53,17 @@ static void get_rate_control_param(struct rvce_encoder *enc, struct pipe_h264_en
     * as target bitrate.
     */
    if (enc->enc_pic.rc.rc_method == PIPE_H2645_ENC_RATE_CONTROL_METHOD_CONSTANT) {
-           enc->enc_pic.rc.vbv_buffer_size = pic->rate_ctrl.target_bitrate;
+           enc->enc_pic.rc.vbv_buffer_size = pic->rate_ctrl[0].target_bitrate;
    } else {
-           enc->enc_pic.rc.vbv_buffer_size = pic->rate_ctrl.vbv_buffer_size;
+           enc->enc_pic.rc.vbv_buffer_size = pic->rate_ctrl[0].vbv_buffer_size;
    }
 
-   enc->enc_pic.rc.vbv_buf_lv = pic->rate_ctrl.vbv_buf_lv;
-   enc->enc_pic.rc.fill_data_enable = pic->rate_ctrl.fill_data_enable;
-   enc->enc_pic.rc.enforce_hrd = pic->rate_ctrl.enforce_hrd;
-   enc->enc_pic.rc.target_bits_picture = pic->rate_ctrl.target_bits_picture;
-   enc->enc_pic.rc.peak_bits_picture_integer = pic->rate_ctrl.peak_bits_picture_integer;
-   enc->enc_pic.rc.peak_bits_picture_fraction = pic->rate_ctrl.peak_bits_picture_fraction;
+   enc->enc_pic.rc.vbv_buf_lv = pic->rate_ctrl[0].vbv_buf_lv;
+   enc->enc_pic.rc.fill_data_enable = pic->rate_ctrl[0].fill_data_enable;
+   enc->enc_pic.rc.enforce_hrd = pic->rate_ctrl[0].enforce_hrd;
+   enc->enc_pic.rc.target_bits_picture = pic->rate_ctrl[0].target_bits_picture;
+   enc->enc_pic.rc.peak_bits_picture_integer = pic->rate_ctrl[0].peak_bits_picture_integer;
+   enc->enc_pic.rc.peak_bits_picture_fraction = pic->rate_ctrl[0].peak_bits_picture_fraction;
 }
 
 static void get_motion_estimation_param(struct rvce_encoder *enc,
@@ -101,8 +101,9 @@ static void get_pic_control_param(struct rvce_encoder *enc, struct pipe_h264_enc
    }
    enc->enc_pic.pc.enc_num_mbs_per_slice = encNumMBsPerSlice;
    enc->enc_pic.pc.enc_b_pic_pattern = MAX2(enc->base.max_references, 1) - 1;
-   enc->enc_pic.pc.enc_number_of_reference_frames = MIN2(enc->base.max_references, 2);
+   enc->enc_pic.pc.enc_number_of_reference_frames = MIN2(enc->base.max_references, 1);
    enc->enc_pic.pc.enc_max_num_ref_frames = enc->base.max_references + 1;
+   enc->enc_pic.pc.enc_pic_order_cnt_type = pic->pic_order_cnt_type;
    enc->enc_pic.pc.enc_num_default_active_ref_l0 = 0x00000001;
    enc->enc_pic.pc.enc_num_default_active_ref_l1 = 0x00000001;
    enc->enc_pic.pc.enc_cabac_enable = pic->pic_ctrl.enc_cabac_enable;
@@ -132,8 +133,8 @@ static void get_vui_param(struct rvce_encoder *enc, struct pipe_h264_enc_picture
    enc->enc_pic.vui.transfer_char = 0x00000002;
    enc->enc_pic.vui.matrix_coef = 0x00000002;
    enc->enc_pic.vui.timing_info_present_flag = 0x00000001;
-   enc->enc_pic.vui.num_units_in_tick = pic->rate_ctrl.frame_rate_den;
-   enc->enc_pic.vui.time_scale = pic->rate_ctrl.frame_rate_num * 2;
+   enc->enc_pic.vui.num_units_in_tick = pic->rate_ctrl[0].frame_rate_den;
+   enc->enc_pic.vui.time_scale = pic->rate_ctrl[0].frame_rate_num * 2;
    enc->enc_pic.vui.fixed_frame_rate_flag = 0x00000001;
    enc->enc_pic.vui.bit_rate_scale = 0x00000004;
    enc->enc_pic.vui.cpb_size_scale = 0x00000006;
@@ -169,7 +170,7 @@ void si_vce_52_get_param(struct rvce_encoder *enc, struct pipe_h264_enc_picture_
    enc->enc_pic.pic_order_cnt = pic->pic_order_cnt;
    enc->enc_pic.ref_idx_l0 = pic->ref_idx_l0;
    enc->enc_pic.ref_idx_l1 = pic->ref_idx_l1;
-   enc->enc_pic.not_referenced = pic->not_referenced;
+   enc->enc_pic.not_referenced = false;
    if (enc->dual_inst)
       enc->enc_pic.addrmode_arraymode_disrdo_distwoinstants = 0x00000201;
    else

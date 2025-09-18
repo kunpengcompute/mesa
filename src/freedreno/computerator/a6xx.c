@@ -29,6 +29,8 @@
 #include "adreno_common.xml.h"
 #include "a6xx.xml.h"
 
+#include "common/freedreno_dev_info.h"
+
 #include "ir3_asm.h"
 #include "main.h"
 
@@ -37,6 +39,8 @@ struct a6xx_backend {
 
    struct ir3_compiler *compiler;
    struct fd_device *dev;
+
+   const struct fd_dev_info *info;
 
    unsigned seqno;
    struct fd_bo *control_mem;
@@ -109,6 +113,7 @@ static void
 cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
 {
    struct ir3_kernel *ir3_kernel = to_ir3_kernel(kernel);
+   struct a6xx_backend *a6xx_backend = to_a6xx_backend(ir3_kernel->backend);
    struct ir3_shader_variant *v = ir3_kernel->v;
    const struct ir3_info *i = &v->info;
    enum a6xx_threadsize thrsz = i->double_threadsize ? THREAD128 : THREAD64;
@@ -153,10 +158,16 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
    OUT_PKT4(ring, REG_A6XX_SP_CS_UNKNOWN_A9B1, 1);
    OUT_RING(ring, 0x41);
 
+   if (a6xx_backend->info->a6xx.has_lpac) {
+      OUT_PKT4(ring, REG_A6XX_HLSQ_CS_UNKNOWN_B9D0, 1);
+      OUT_RING(ring, A6XX_HLSQ_CS_UNKNOWN_B9D0_SHARED_SIZE(1) |
+                        A6XX_HLSQ_CS_UNKNOWN_B9D0_UNK6);
+   }
+
    uint32_t local_invocation_id, work_group_id;
    local_invocation_id =
       ir3_find_sysval_regid(v, SYSTEM_VALUE_LOCAL_INVOCATION_ID);
-   work_group_id = ir3_find_sysval_regid(v, SYSTEM_VALUE_WORK_GROUP_ID);
+   work_group_id = ir3_find_sysval_regid(v, SYSTEM_VALUE_WORKGROUP_ID);
 
    OUT_PKT4(ring, REG_A6XX_HLSQ_CS_CNTL_0, 2);
    OUT_RING(ring, A6XX_HLSQ_CS_CNTL_0_WGIDCONSTID(work_group_id) |
@@ -165,6 +176,16 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
                      A6XX_HLSQ_CS_CNTL_0_LOCALIDREGID(local_invocation_id));
    OUT_RING(ring, A6XX_HLSQ_CS_CNTL_1_LINEARLOCALIDREGID(regid(63, 0)) |
                      A6XX_HLSQ_CS_CNTL_1_THREADSIZE(thrsz));
+
+   if (a6xx_backend->info->a6xx.has_lpac) {
+      OUT_PKT4(ring, REG_A6XX_SP_CS_CNTL_0, 2);
+      OUT_RING(ring, A6XX_SP_CS_CNTL_0_WGIDCONSTID(work_group_id) |
+                        A6XX_SP_CS_CNTL_0_WGSIZECONSTID(regid(63, 0)) |
+                        A6XX_SP_CS_CNTL_0_WGOFFSETCONSTID(regid(63, 0)) |
+                        A6XX_SP_CS_CNTL_0_LOCALIDREGID(local_invocation_id));
+      OUT_RING(ring, A6XX_SP_CS_CNTL_1_LINEARLOCALIDREGID(regid(63, 0)) |
+                        A6XX_SP_CS_CNTL_1_THREADSIZE(thrsz));
+   }
 
    OUT_PKT4(ring, REG_A6XX_SP_CS_OBJ_START, 2);
    OUT_RELOC(ring, v->bo, 0, 0, 0); /* SP_CS_OBJ_START_LO/HI */
@@ -175,13 +196,33 @@ cs_program_emit(struct fd_ringbuffer *ring, struct kernel *kernel)
    OUT_PKT4(ring, REG_A6XX_SP_CS_OBJ_START, 2);
    OUT_RELOC(ring, v->bo, 0, 0, 0);
 
+   uint32_t shader_preload_size =
+      MIN2(v->instrlen, a6xx_backend->info->a6xx.instr_cache_size);
    OUT_PKT7(ring, CP_LOAD_STATE6_FRAG, 3);
    OUT_RING(ring, CP_LOAD_STATE6_0_DST_OFF(0) |
                      CP_LOAD_STATE6_0_STATE_TYPE(ST6_SHADER) |
                      CP_LOAD_STATE6_0_STATE_SRC(SS6_INDIRECT) |
                      CP_LOAD_STATE6_0_STATE_BLOCK(SB6_CS_SHADER) |
-                     CP_LOAD_STATE6_0_NUM_UNIT(v->instrlen));
+                     CP_LOAD_STATE6_0_NUM_UNIT(shader_preload_size));
    OUT_RELOC(ring, v->bo, 0, 0, 0);
+
+   if (v->pvtmem_size > 0) {
+      uint32_t per_fiber_size = ALIGN(v->pvtmem_size, 512);
+      uint32_t per_sp_size =
+         ALIGN(per_fiber_size * a6xx_backend->info->a6xx.fibers_per_sp, 1 << 12);
+      uint32_t total_size = per_sp_size * a6xx_backend->info->num_sp_cores;
+
+      struct fd_bo *pvtmem = fd_bo_new(a6xx_backend->dev, total_size, 0, "pvtmem");
+      OUT_PKT4(ring, REG_A6XX_SP_CS_PVT_MEM_PARAM, 4);
+      OUT_RING(ring, A6XX_SP_CS_PVT_MEM_PARAM_MEMSIZEPERITEM(per_fiber_size));
+      OUT_RELOC(ring, pvtmem, 0, 0, 0);
+      OUT_RING(ring, A6XX_SP_CS_PVT_MEM_SIZE_TOTALPVTMEMSIZE(per_sp_size) |
+                     COND(v->pvtmem_per_wave,
+                          A6XX_SP_CS_PVT_MEM_SIZE_PERWAVEMEMLAYOUT));
+
+      OUT_PKT4(ring, REG_A6XX_SP_CS_PVT_MEM_HW_STACK_OFFSET, 1);
+      OUT_RING(ring, A6XX_SP_CS_PVT_MEM_HW_STACK_OFFSET_OFFSET(per_sp_size));
+   }
 }
 
 static void
@@ -232,6 +273,18 @@ cs_const_emit(struct fd_ringbuffer *ring, struct kernel *kernel,
       const_state->immediates[idx * 4 + 2] = grid[2];
    }
 
+   for (int i = 0; i < MAX_BUFS; i++) {
+      if (kernel->buf_addr_regs[i] != INVALID_REG) {
+         assert((kernel->buf_addr_regs[i] & 0x3) == 0);
+         int idx = kernel->buf_addr_regs[i] >> 2;
+
+         uint64_t iova = fd_bo_get_iova(kernel->bufs[i]);
+
+         const_state->immediates[idx * 4 + 1] = iova >> 32;
+         const_state->immediates[idx * 4 + 0] = (iova << 32) >> 32;
+      }
+   }
+
    /* truncate size to avoid writing constants that shader
     * does not use:
     */
@@ -261,11 +314,11 @@ cs_ibo_emit(struct fd_ringbuffer *ring, struct fd_submit *submit,
       unsigned width = sz & MASK(15);
       unsigned height = sz >> 15;
 
-      OUT_RING(state, A6XX_IBO_0_FMT(FMT6_32_UINT) | A6XX_IBO_0_TILE_MODE(0));
-      OUT_RING(state, A6XX_IBO_1_WIDTH(width) | A6XX_IBO_1_HEIGHT(height));
-      OUT_RING(state, A6XX_IBO_2_PITCH(0) | A6XX_IBO_2_UNK4 | A6XX_IBO_2_UNK31 |
-                         A6XX_IBO_2_TYPE(A6XX_TEX_1D));
-      OUT_RING(state, A6XX_IBO_3_ARRAY_PITCH(0));
+      OUT_RING(state, A6XX_TEX_CONST_0_FMT(FMT6_32_UINT) | A6XX_TEX_CONST_0_TILE_MODE(0));
+      OUT_RING(state, A6XX_TEX_CONST_1_WIDTH(width) | A6XX_TEX_CONST_1_HEIGHT(height));
+      OUT_RING(state, A6XX_TEX_CONST_2_PITCH(0) | A6XX_TEX_CONST_2_BUFFER |
+                         A6XX_TEX_CONST_2_TYPE(A6XX_TEX_BUFFER));
+      OUT_RING(state, A6XX_TEX_CONST_3_ARRAY_PITCH(0));
       OUT_RELOC(state, kernel->bufs[i], 0, 0, 0);
       OUT_RING(state, 0x00000000);
       OUT_RING(state, 0x00000000);
@@ -472,7 +525,7 @@ a6xx_read_perfcntrs(struct backend *b, uint64_t *results)
 }
 
 struct backend *
-a6xx_init(struct fd_device *dev, uint32_t gpu_id)
+a6xx_init(struct fd_device *dev, const struct fd_dev_id *dev_id)
 {
    struct a6xx_backend *a6xx_backend = calloc(1, sizeof(*a6xx_backend));
 
@@ -484,8 +537,11 @@ a6xx_init(struct fd_device *dev, uint32_t gpu_id)
       .read_perfcntrs = a6xx_read_perfcntrs,
    };
 
-   a6xx_backend->compiler = ir3_compiler_create(dev, gpu_id, false);
+   a6xx_backend->compiler = ir3_compiler_create(dev, dev_id,
+                                                &(struct ir3_compiler_options){});
    a6xx_backend->dev = dev;
+
+   a6xx_backend->info = fd_dev_info(dev_id);
 
    a6xx_backend->control_mem =
       fd_bo_new(dev, 0x1000, 0, "control");

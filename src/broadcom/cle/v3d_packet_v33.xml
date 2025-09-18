@@ -309,6 +309,11 @@
     <value name="tf_overflow" value="6"/>
   </enum>
 
+  <enum name="Line Rasterization" prefix="V3D_LINE_RASTERIZATION">
+    <value name="diamond exit" value="0"/>
+    <value name="perp end caps" value="1"/>
+  </enum>
+
   <packet code="0" name="Halt"/>
   <packet code="1" name="NOP"/>
   <packet code="4" name="Flush"/>
@@ -834,7 +839,7 @@
     <field name="Depth-Test Function" size="3" start="12" type="Compare Function"/>
     <field name="Direct3D Wireframe triangles mode" size="1" start="11" type="bool"/>
     <field name="Rasterizer Oversample Mode" size="2" start="6" type="uint"/>
-    <field name="Line Rasterization" size="2" start="4" type="uint"/>
+    <field name="Line Rasterization" size="2" start="4" type="Line Rasterization"/>
     <field name="Enable Depth Offset" size="1" start="3" type="bool"/>
     <field name="Clockwise Primitives" size="1" start="2" type="bool"/>
     <field name="Enable Reverse Facing Primitive" size="1" start="1" type="bool"/>
@@ -950,11 +955,7 @@
     <field name="Double-buffer in non-ms mode" size="1" start="15" type="bool"/>
     <field name="Multisample Mode (4x)" size="1" start="14" type="bool"/>
 
-    <field name="Maximum BPP of all render targets" size="2" start="12" type="uint">
-      <value name="Render target maximum 32bpp" value="0"/>
-      <value name="Render target maximum 64bpp" value="1"/>
-      <value name="Render target maximum 128bpp" value="2"/>
-    </field>
+    <field name="Maximum BPP of all render targets" size="2" start="12" type="Internal BPP"/>
 
     <field name="Number of Render Targets" size="4" start="8" type="uint" minus_one="true"/>
 
@@ -992,11 +993,7 @@
     <field name="Double-buffer in non-ms mode" size="1" start="43" type="bool"/>
     <field name="Multisample Mode (4x)" size="1" start="42" type="bool"/>
 
-    <field name="Maximum BPP of all render targets" size="2" start="40" type="uint">
-      <value name="Render target maximum 32bpp" value="0"/>
-      <value name="Render target maximum 64bpp" value="1"/>
-      <value name="Render target maximum 128bpp" value="2"/>
-    </field>
+    <field name="Maximum BPP of all render targets" size="2" start="40" type="Internal BPP"/>
 
     <field name="Image Height (pixels)" size="16" start="24" type="uint"/>
     <field name="Image Width (pixels)" size="16" start="8" type="uint"/>

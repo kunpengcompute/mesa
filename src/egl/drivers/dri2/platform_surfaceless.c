@@ -35,6 +35,7 @@
 
 #include "egl_dri2.h"
 #include "loader.h"
+#include "kopper_interface.h"
 
 static __DRIimage*
 surfaceless_alloc_image(struct dri2_egl_display *dri2_dpy,
@@ -199,6 +200,12 @@ surfaceless_get_capability(void *loaderPrivate, enum dri_loader_cap cap)
    }
 }
 
+static const __DRIkopperLoaderExtension kopper_loader_extension = {
+    .base = { __DRI_KOPPER_LOADER, 1 },
+
+    .SetSurfaceCreateInfo   = NULL,
+};
+
 static const __DRIimageLoaderExtension image_loader_extension = {
    .base             = { __DRI_IMAGE_LOADER, 2 },
    .getBuffers       = surfaceless_image_get_buffers,
@@ -211,6 +218,7 @@ static const __DRIextension *image_loader_extensions[] = {
    &image_lookup_extension.base,
    &use_invalidate.base,
    &background_callable_extension.base,
+   &kopper_loader_extension.base,
    NULL,
 };
 
@@ -219,6 +227,7 @@ static const __DRIextension *swrast_loader_extensions[] = {
    &image_loader_extension.base,
    &image_lookup_extension.base,
    &use_invalidate.base,
+   &kopper_loader_extension.base,
    NULL,
 };
 
@@ -299,7 +308,7 @@ surfaceless_probe_device_sw(_EGLDisplay *disp)
    disp->Device = _eglAddDevice(dri2_dpy->fd, true);
    assert(disp->Device);
 
-   dri2_dpy->driver_name = strdup("swrast");
+   dri2_dpy->driver_name = strdup(disp->Options.Zink ? "zink" : "swrast");
    if (!dri2_dpy->driver_name)
       return false;
 
@@ -327,14 +336,18 @@ dri2_initialize_surfaceless(_EGLDisplay *disp)
    dri2_dpy->fd = -1;
    disp->DriverData = (void *) dri2_dpy;
 
+   /* When ForceSoftware is false, we try the HW driver.  When ForceSoftware
+    * is true, we try kms_swrast and swrast in order.
+    */
    driver_loaded = surfaceless_probe_device(disp, disp->Options.ForceSoftware);
+   if (!driver_loaded && disp->Options.ForceSoftware) {
+      _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
+      driver_loaded = surfaceless_probe_device_sw(disp);
+   }
 
    if (!driver_loaded) {
-      _eglLog(_EGL_DEBUG, "Falling back to surfaceless swrast without DRM.");
-      if (!surfaceless_probe_device_sw(disp)) {
-         err = "DRI2: failed to load driver";
-         goto cleanup;
-      }
+      err = "DRI2: failed to load driver";
+      goto cleanup;
    }
 
    if (!dri2_create_screen(disp)) {

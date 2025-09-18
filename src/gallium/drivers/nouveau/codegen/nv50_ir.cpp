@@ -214,7 +214,7 @@ ValueDef::replace(const ValueRef &repVal, bool doSet)
       set(repVal.get());
 }
 
-Value::Value()
+Value::Value() : id(-1)
 {
   join = this;
   memset(&reg, 0, sizeof(reg));
@@ -749,7 +749,7 @@ Instruction::clone(ClonePolicy<Function>& pol, Instruction *i) const
 {
    if (!i)
       i = new_Instruction(pol.context(), op, dType);
-#ifndef NDEBUG // non-conformant assert, so this is required
+#if !defined(NDEBUG) && defined(__cpp_rtti)
    assert(typeid(*i) == typeid(*this));
 #endif
 

@@ -41,6 +41,8 @@
 #include "brw_reg.h"
 #include "brw_disasm_info.h"
 
+#include "util/bitset.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -200,6 +202,9 @@ void brw_realign(struct brw_codegen *p, unsigned align);
 int brw_append_data(struct brw_codegen *p, void *data,
                     unsigned size, unsigned align);
 brw_inst *brw_next_insn(struct brw_codegen *p, unsigned opcode);
+void brw_add_reloc(struct brw_codegen *p, uint32_t id,
+                   enum brw_shader_reloc_type type,
+                   uint32_t offset, uint32_t delta);
 void brw_set_dest(struct brw_codegen *p, brw_inst *insn, struct brw_reg dest);
 void brw_set_src0(struct brw_codegen *p, brw_inst *insn, struct brw_reg reg);
 
@@ -243,6 +248,7 @@ ALU3(CSEL)
 ALU1(F32TO16)
 ALU1(F16TO32)
 ALU2(ADD)
+ALU3(ADD3)
 ALU2(AVG)
 ALU2(MUL)
 ALU1(FRC)
@@ -257,6 +263,7 @@ ALU2(DP4)
 ALU2(DPH)
 ALU2(DP3)
 ALU2(DP2)
+ALU3(DP4A)
 ALU2(LINE)
 ALU2(PLN)
 ALU3(MAD)
@@ -370,6 +377,13 @@ brw_urb_desc_msg_type(ASSERTED const struct intel_device_info *devinfo,
    return GET_BITS(desc, 3, 0);
 }
 
+static inline uint32_t
+brw_urb_fence_desc(const struct intel_device_info *devinfo)
+{
+   assert(devinfo->has_lsc);
+   return brw_urb_desc(devinfo, GFX125_URB_OPCODE_FENCE, false, false, 0);
+}
+
 /**
  * Construct a message descriptor immediate with the specified sampler
  * function controls.
@@ -384,13 +398,25 @@ brw_sampler_desc(const struct intel_device_info *devinfo,
 {
    const unsigned desc = (SET_BITS(binding_table_index, 7, 0) |
                           SET_BITS(sampler, 11, 8));
+
+   /* From the CHV Bspec: Shared Functions - Message Descriptor -
+    * Sampling Engine:
+    *
+    *   SIMD Mode[2]  29    This field is the upper bit of the 3-bit
+    *                       SIMD Mode field.
+    */
+   if (devinfo->ver >= 8)
+      return desc | SET_BITS(msg_type, 16, 12) |
+             SET_BITS(simd_mode & 0x3, 18, 17) |
+             SET_BITS(simd_mode >> 2, 29, 29) |
+             SET_BITS(return_format, 30, 30);
    if (devinfo->ver >= 7)
       return (desc | SET_BITS(msg_type, 16, 12) |
               SET_BITS(simd_mode, 18, 17));
    else if (devinfo->ver >= 5)
       return (desc | SET_BITS(msg_type, 15, 12) |
               SET_BITS(simd_mode, 17, 16));
-   else if (devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return desc | SET_BITS(msg_type, 15, 12);
    else
       return (desc | SET_BITS(return_format, 13, 12) |
@@ -417,7 +443,7 @@ brw_sampler_desc_msg_type(const struct intel_device_info *devinfo, uint32_t desc
 {
    if (devinfo->ver >= 7)
       return GET_BITS(desc, 16, 12);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return GET_BITS(desc, 15, 12);
    else
       return GET_BITS(desc, 15, 14);
@@ -428,7 +454,9 @@ brw_sampler_desc_simd_mode(const struct intel_device_info *devinfo,
                            uint32_t desc)
 {
    assert(devinfo->ver >= 5);
-   if (devinfo->ver >= 7)
+   if (devinfo->ver >= 8)
+      return GET_BITS(desc, 18, 17) | GET_BITS(desc, 29, 29) << 2;
+   else if (devinfo->ver >= 7)
       return GET_BITS(desc, 18, 17);
    else
       return GET_BITS(desc, 17, 16);
@@ -438,8 +466,11 @@ static  inline unsigned
 brw_sampler_desc_return_format(ASSERTED const struct intel_device_info *devinfo,
                                uint32_t desc)
 {
-   assert(devinfo->ver == 4 && !devinfo->is_g4x);
-   return GET_BITS(desc, 13, 12);
+   assert(devinfo->verx10 == 40 || devinfo->ver >= 8);
+   if (devinfo->ver >= 8)
+      return GET_BITS(desc, 30, 30);
+   else
+      return GET_BITS(desc, 13, 12);
 }
 
 /**
@@ -510,7 +541,7 @@ brw_dp_read_desc(const struct intel_device_info *devinfo,
 {
    if (devinfo->ver >= 6)
       return brw_dp_desc(devinfo, binding_table_index, msg_type, msg_control);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return (SET_BITS(binding_table_index, 7, 0) |
               SET_BITS(msg_control, 10, 8) |
               SET_BITS(msg_type, 13, 11) |
@@ -528,7 +559,7 @@ brw_dp_read_desc_msg_type(const struct intel_device_info *devinfo,
 {
    if (devinfo->ver >= 6)
       return brw_dp_desc_msg_type(devinfo, desc);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return GET_BITS(desc, 13, 11);
    else
       return GET_BITS(desc, 13, 12);
@@ -540,7 +571,7 @@ brw_dp_read_desc_msg_control(const struct intel_device_info *devinfo,
 {
    if (devinfo->ver >= 6)
       return brw_dp_desc_msg_control(devinfo, desc);
-   else if (devinfo->ver >= 5 || devinfo->is_g4x)
+   else if (devinfo->verx10 >= 45)
       return GET_BITS(desc, 10, 8);
    else
       return GET_BITS(desc, 11, 8);
@@ -623,7 +654,7 @@ brw_dp_untyped_atomic_desc(const struct intel_device_info *devinfo,
    assert(exec_size <= 8 || exec_size == 16);
 
    unsigned msg_type;
-   if (devinfo->ver >= 8 || devinfo->is_haswell) {
+   if (devinfo->verx10 >= 75) {
       if (exec_size > 0) {
          msg_type = HSW_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_OP;
       } else {
@@ -668,6 +699,13 @@ brw_mdc_cmask(unsigned num_channels)
    return 0xf & (0xf << num_channels);
 }
 
+static inline unsigned
+lsc_cmask(unsigned num_channels)
+{
+   assert(num_channels > 0 && num_channels <= 4);
+   return BITSET_MASK(num_channels);
+}
+
 static inline uint32_t
 brw_dp_untyped_surface_rw_desc(const struct intel_device_info *devinfo,
                                unsigned exec_size, /**< 0 for SIMD4x2 */
@@ -678,14 +716,14 @@ brw_dp_untyped_surface_rw_desc(const struct intel_device_info *devinfo,
 
    unsigned msg_type;
    if (write) {
-      if (devinfo->ver >= 8 || devinfo->is_haswell) {
+      if (devinfo->verx10 >= 75) {
          msg_type = HSW_DATAPORT_DC_PORT1_UNTYPED_SURFACE_WRITE;
       } else {
          msg_type = GFX7_DATAPORT_DC_UNTYPED_SURFACE_WRITE;
       }
    } else {
       /* Read */
-      if (devinfo->ver >= 8 || devinfo->is_haswell) {
+      if (devinfo->verx10 >= 75) {
          msg_type = HSW_DATAPORT_DC_PORT1_UNTYPED_SURFACE_READ;
       } else {
          msg_type = GFX7_DATAPORT_DC_UNTYPED_SURFACE_READ;
@@ -693,7 +731,7 @@ brw_dp_untyped_surface_rw_desc(const struct intel_device_info *devinfo,
    }
 
    /* SIMD4x2 is only valid for read messages on IVB; use SIMD8 instead */
-   if (write && devinfo->ver == 7 && !devinfo->is_haswell && exec_size == 0)
+   if (write && devinfo->verx10 == 70 && exec_size == 0)
       exec_size = 8;
 
    /* See also MDC_SM3 in the SKL PRM Vol 2d. */
@@ -730,7 +768,7 @@ brw_dp_byte_scattered_rw_desc(const struct intel_device_info *devinfo,
 {
    assert(exec_size <= 8 || exec_size == 16);
 
-   assert(devinfo->ver > 7 || devinfo->is_haswell);
+   assert(devinfo->verx10 >= 75);
    const unsigned msg_type =
       write ? HSW_DATAPORT_DC_PORT0_BYTE_SCATTERED_WRITE :
               HSW_DATAPORT_DC_PORT0_BYTE_SCATTERED_READ;
@@ -760,7 +798,7 @@ brw_dp_dword_scattered_rw_desc(const struct intel_device_info *devinfo,
    } else {
       if (devinfo->ver >= 7) {
          msg_type = GFX7_DATAPORT_DC_DWORD_SCATTERED_READ;
-      } else if (devinfo->ver > 4 || devinfo->is_g4x) {
+      } else if (devinfo->verx10 >= 45) {
          msg_type = G45_DATAPORT_READ_MESSAGE_DWORD_SCATTERED_READ;
       } else {
          msg_type = BRW_DATAPORT_READ_MESSAGE_DWORD_SCATTERED_READ;
@@ -940,7 +978,7 @@ brw_dp_typed_atomic_desc(const struct intel_device_info *devinfo,
    assert(exec_group % 8 == 0);
 
    unsigned msg_type;
-   if (devinfo->ver >= 8 || devinfo->is_haswell) {
+   if (devinfo->verx10 >= 75) {
       if (exec_size == 0) {
          msg_type = HSW_DATAPORT_DC_PORT1_TYPED_ATOMIC_OP_SIMD4X2;
       } else {
@@ -977,13 +1015,13 @@ brw_dp_typed_surface_rw_desc(const struct intel_device_info *devinfo,
 
    unsigned msg_type;
    if (write) {
-      if (devinfo->ver >= 8 || devinfo->is_haswell) {
+      if (devinfo->verx10 >= 75) {
          msg_type = HSW_DATAPORT_DC_PORT1_TYPED_SURFACE_WRITE;
       } else {
          msg_type = GFX7_DATAPORT_RC_TYPED_SURFACE_WRITE;
       }
    } else {
-      if (devinfo->ver >= 8 || devinfo->is_haswell) {
+      if (devinfo->verx10 >= 75) {
          msg_type = HSW_DATAPORT_DC_PORT1_TYPED_SURFACE_READ;
       } else {
          msg_type = GFX7_DATAPORT_RC_TYPED_SURFACE_READ;
@@ -992,7 +1030,7 @@ brw_dp_typed_surface_rw_desc(const struct intel_device_info *devinfo,
 
    /* See also MDC_SG3 in the SKL PRM Vol 2d. */
    unsigned msg_control;
-   if (devinfo->ver >= 8 || devinfo->is_haswell) {
+   if (devinfo->verx10 >= 75) {
       /* See also MDC_SG3 in the SKL PRM Vol 2d. */
       const unsigned slot_group = exec_size == 0 ? 0 : /* SIMD4x2 */
                                   1 + ((exec_group / 8) % 2);
@@ -1149,6 +1187,291 @@ brw_fb_write_desc_coarse_write(const struct intel_device_info *devinfo,
 {
    assert(devinfo->ver >= 10);
    return GET_BITS(desc, 18, 18);
+}
+
+static inline bool
+lsc_opcode_has_cmask(enum lsc_opcode opcode)
+{
+   return opcode == LSC_OP_LOAD_CMASK || opcode == LSC_OP_STORE_CMASK;
+}
+
+static inline bool
+lsc_opcode_has_transpose(enum lsc_opcode opcode)
+{
+   return opcode == LSC_OP_LOAD || opcode == LSC_OP_STORE;
+}
+
+static inline uint32_t
+lsc_data_size_bytes(enum lsc_data_size data_size)
+{
+   switch (data_size) {
+   case LSC_DATA_SIZE_D8:
+      return 1;
+   case LSC_DATA_SIZE_D16:
+      return 2;
+   case LSC_DATA_SIZE_D32:
+   case LSC_DATA_SIZE_D8U32:
+   case LSC_DATA_SIZE_D16U32:
+   case LSC_DATA_SIZE_D16BF32:
+      return 4;
+   case LSC_DATA_SIZE_D64:
+      return 8;
+   default:
+      unreachable("Unsupported data payload size.");
+   }
+}
+
+static inline uint32_t
+lsc_addr_size_bytes(enum lsc_addr_size addr_size)
+{
+   switch (addr_size) {
+   case LSC_ADDR_SIZE_A16: return 2;
+   case LSC_ADDR_SIZE_A32: return 4;
+   case LSC_ADDR_SIZE_A64: return 8;
+   default:
+      unreachable("Unsupported address size.");
+   }
+}
+
+static inline uint32_t
+lsc_vector_length(enum lsc_vect_size vect_size)
+{
+   switch (vect_size) {
+   case LSC_VECT_SIZE_V1: return 1;
+   case LSC_VECT_SIZE_V2: return 2;
+   case LSC_VECT_SIZE_V3: return 3;
+   case LSC_VECT_SIZE_V4: return 4;
+   case LSC_VECT_SIZE_V8: return 8;
+   case LSC_VECT_SIZE_V16: return 16;
+   case LSC_VECT_SIZE_V32: return 32;
+   case LSC_VECT_SIZE_V64: return 64;
+   default:
+      unreachable("Unsupported size of vector");
+   }
+}
+
+static inline enum lsc_vect_size
+lsc_vect_size(unsigned vect_size)
+{
+   switch(vect_size) {
+   case 1:  return LSC_VECT_SIZE_V1;
+   case 2:  return LSC_VECT_SIZE_V2;
+   case 3:  return LSC_VECT_SIZE_V3;
+   case 4:  return LSC_VECT_SIZE_V4;
+   case 8:  return LSC_VECT_SIZE_V8;
+   case 16: return LSC_VECT_SIZE_V16;
+   case 32: return LSC_VECT_SIZE_V32;
+   case 64: return LSC_VECT_SIZE_V64;
+   default:
+      unreachable("Unsupported vector size for dataport");
+   }
+}
+
+static inline uint32_t
+lsc_msg_desc(UNUSED const struct intel_device_info *devinfo,
+             enum lsc_opcode opcode, unsigned simd_size,
+             enum lsc_addr_surface_type addr_type,
+             enum lsc_addr_size addr_sz, unsigned num_coordinates,
+             enum lsc_data_size data_sz, unsigned num_channels,
+             bool transpose, unsigned cache_ctrl, bool has_dest)
+{
+   assert(devinfo->has_lsc);
+
+   unsigned dest_length = !has_dest ? 0 :
+      DIV_ROUND_UP(lsc_data_size_bytes(data_sz) * num_channels * simd_size,
+                   REG_SIZE);
+
+   unsigned src0_length =
+      DIV_ROUND_UP(lsc_addr_size_bytes(addr_sz) * num_coordinates * simd_size,
+                   REG_SIZE);
+
+   assert(!transpose || lsc_opcode_has_transpose(opcode));
+
+   unsigned msg_desc =
+      SET_BITS(opcode, 5, 0) |
+      SET_BITS(addr_sz, 8, 7) |
+      SET_BITS(data_sz, 11, 9) |
+      SET_BITS(transpose, 15, 15) |
+      SET_BITS(cache_ctrl, 19, 17) |
+      SET_BITS(dest_length, 24, 20) |
+      SET_BITS(src0_length, 28, 25) |
+      SET_BITS(addr_type, 30, 29);
+
+   if (lsc_opcode_has_cmask(opcode))
+      msg_desc |= SET_BITS(lsc_cmask(num_channels), 15, 12);
+   else
+      msg_desc |= SET_BITS(lsc_vect_size(num_channels), 14, 12);
+
+   return msg_desc;
+}
+
+static inline enum lsc_opcode
+lsc_msg_desc_opcode(UNUSED const struct intel_device_info *devinfo,
+                    uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return (enum lsc_opcode) GET_BITS(desc, 5, 0);
+}
+
+static inline enum lsc_addr_size
+lsc_msg_desc_addr_size(UNUSED const struct intel_device_info *devinfo,
+                       uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return (enum lsc_addr_size) GET_BITS(desc, 8, 7);
+}
+
+static inline enum lsc_data_size
+lsc_msg_desc_data_size(UNUSED const struct intel_device_info *devinfo,
+                       uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return (enum lsc_data_size) GET_BITS(desc, 11, 9);
+}
+
+static inline enum lsc_vect_size
+lsc_msg_desc_vect_size(UNUSED const struct intel_device_info *devinfo,
+                       uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   assert(!lsc_opcode_has_cmask(lsc_msg_desc_opcode(devinfo, desc)));
+   return (enum lsc_vect_size) GET_BITS(desc, 14, 12);
+}
+
+static inline enum lsc_cmask
+lsc_msg_desc_cmask(UNUSED const struct intel_device_info *devinfo,
+                   uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   assert(lsc_opcode_has_cmask(lsc_msg_desc_opcode(devinfo, desc)));
+   return (enum lsc_cmask) GET_BITS(desc, 15, 12);
+}
+
+static inline bool
+lsc_msg_desc_transpose(UNUSED const struct intel_device_info *devinfo,
+                       uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(desc, 15, 15);
+}
+
+static inline unsigned
+lsc_msg_desc_cache_ctrl(UNUSED const struct intel_device_info *devinfo,
+                        uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(desc, 19, 17);
+}
+
+static inline unsigned
+lsc_msg_desc_dest_len(const struct intel_device_info *devinfo,
+                      uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(desc, 24, 20);
+}
+
+static inline unsigned
+lsc_msg_desc_src0_len(const struct intel_device_info *devinfo,
+                      uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(desc, 28, 25);
+}
+
+static inline enum lsc_addr_surface_type
+lsc_msg_desc_addr_type(UNUSED const struct intel_device_info *devinfo,
+                       uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return (enum lsc_addr_surface_type) GET_BITS(desc, 30, 29);
+}
+
+static inline uint32_t
+lsc_fence_msg_desc(UNUSED const struct intel_device_info *devinfo,
+                   enum lsc_fence_scope scope,
+                   enum lsc_flush_type flush_type,
+                   bool route_to_lsc)
+{
+   assert(devinfo->has_lsc);
+   return SET_BITS(LSC_OP_FENCE, 5, 0) |
+          SET_BITS(LSC_ADDR_SIZE_A32, 8, 7) |
+          SET_BITS(scope, 11, 9) |
+          SET_BITS(flush_type, 14, 12) |
+          SET_BITS(route_to_lsc, 18, 18) |
+          SET_BITS(LSC_ADDR_SURFTYPE_FLAT, 30, 29);
+}
+
+static inline enum lsc_fence_scope
+lsc_fence_msg_desc_scope(UNUSED const struct intel_device_info *devinfo,
+                         uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return (enum lsc_fence_scope) GET_BITS(desc, 11, 9);
+}
+
+static inline enum lsc_flush_type
+lsc_fence_msg_desc_flush_type(UNUSED const struct intel_device_info *devinfo,
+                              uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return (enum lsc_flush_type) GET_BITS(desc, 14, 12);
+}
+
+static inline enum lsc_backup_fence_routing
+lsc_fence_msg_desc_backup_routing(UNUSED const struct intel_device_info *devinfo,
+                                  uint32_t desc)
+{
+   assert(devinfo->has_lsc);
+   return (enum lsc_backup_fence_routing) GET_BITS(desc, 18, 18);
+}
+
+static inline uint32_t
+lsc_bti_ex_desc(const struct intel_device_info *devinfo, unsigned bti)
+{
+   assert(devinfo->has_lsc);
+   return SET_BITS(bti, 31, 24) |
+          SET_BITS(0, 23, 12);  /* base offset */
+}
+
+static inline unsigned
+lsc_bti_ex_desc_base_offset(const struct intel_device_info *devinfo,
+                            uint32_t ex_desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(ex_desc, 23, 12);
+}
+
+static inline unsigned
+lsc_bti_ex_desc_index(const struct intel_device_info *devinfo,
+                      uint32_t ex_desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(ex_desc, 31, 24);
+}
+
+static inline unsigned
+lsc_flat_ex_desc_base_offset(const struct intel_device_info *devinfo,
+                             uint32_t ex_desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(ex_desc, 31, 12);
+}
+
+static inline uint32_t
+lsc_bss_ex_desc(const struct intel_device_info *devinfo,
+                unsigned surface_state_index)
+{
+   assert(devinfo->has_lsc);
+   return SET_BITS(surface_state_index, 31, 6);
+}
+
+static inline unsigned
+lsc_bss_ex_desc_index(const struct intel_device_info *devinfo,
+                      uint32_t ex_desc)
+{
+   assert(devinfo->has_lsc);
+   return GET_BITS(ex_desc, 31, 6);
 }
 
 static inline uint32_t
@@ -1352,10 +1675,6 @@ void gfx7_block_read_scratch(struct brw_codegen *p,
                              int num_regs,
                              unsigned offset);
 
-void brw_shader_time_add(struct brw_codegen *p,
-                         struct brw_reg payload,
-                         uint32_t surf_index);
-
 /**
  * Return the generation-specific jump distance scaling factor.
  *
@@ -1462,6 +1781,7 @@ brw_memory_fence(struct brw_codegen *p,
                  struct brw_reg src,
                  enum opcode send_op,
                  enum brw_message_target sfid,
+                 uint32_t desc,
                  bool commit_enable,
                  unsigned bti);
 
@@ -1479,7 +1799,8 @@ brw_pixel_interpolator_query(struct brw_codegen *p,
 void
 brw_find_live_channel(struct brw_codegen *p,
                       struct brw_reg dst,
-                      struct brw_reg mask);
+                      struct brw_reg mask,
+                      bool last);
 
 void
 brw_broadcast(struct brw_codegen *p,

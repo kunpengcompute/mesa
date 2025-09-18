@@ -118,6 +118,7 @@ struct fd_resource {
    struct threaded_resource b;
    struct fd_bo *bo; /* use fd_resource_set_bo() to write */
    enum pipe_format internal_format;
+   uint32_t hash; /* _mesa_hash_pointer() on this resource's address. */
    struct fdl_layout layout;
 
    /* buffer range that has been initialized */
@@ -209,7 +210,7 @@ pending(struct fd_resource *rsc, bool write)
 }
 
 static inline bool
-fd_resource_busy(struct fd_resource *rsc, unsigned op)
+resource_busy(struct fd_resource *rsc, unsigned op)
 {
    return fd_bo_cpu_prep(rsc->bo, NULL, op | FD_BO_PREP_NOSYNC) != 0;
 }
@@ -322,6 +323,12 @@ fd_resource_tile_mode(struct pipe_resource *prsc, int level)
    return fdl_tile_mode(&fd_resource(prsc)->layout, level);
 }
 
+static inline const char *
+fd_resource_tile_mode_desc(const struct fd_resource *rsc, int level)
+{
+   return fdl_tile_mode_desc(&rsc->layout, level);
+}
+
 static inline bool
 fd_resource_ubwc_enabled(struct fd_resource *rsc, int level)
 {
@@ -344,9 +351,16 @@ uint32_t fd_setup_slices(struct fd_resource *rsc);
 void fd_resource_resize(struct pipe_resource *prsc, uint32_t sz);
 void fd_replace_buffer_storage(struct pipe_context *ctx,
                                struct pipe_resource *dst,
-                               struct pipe_resource *src) in_dt;
+                               struct pipe_resource *src,
+                               unsigned num_rebinds,
+                               uint32_t rebind_mask,
+                               uint32_t delete_buffer_id) in_dt;
+bool fd_resource_busy(struct pipe_screen *pscreen, struct pipe_resource *prsc,
+                      unsigned usage);
+
 void fd_resource_uncompress(struct fd_context *ctx,
-                            struct fd_resource *rsc) assert_dt;
+                            struct fd_resource *rsc,
+                            bool linear) assert_dt;
 void fd_resource_dump(struct fd_resource *rsc, const char *name);
 
 bool fd_render_condition_check(struct pipe_context *pctx) assert_dt;
@@ -376,6 +390,27 @@ fd_batch_resource_read(struct fd_batch *batch,
     */
    if (unlikely(!fd_batch_references_resource(batch, rsc)))
       fd_batch_resource_read_slowpath(batch, rsc);
+}
+
+static inline enum fdl_view_type
+fdl_type_from_pipe_target(enum pipe_texture_target target) {
+   switch (target) {
+   case PIPE_TEXTURE_1D:
+   case PIPE_TEXTURE_1D_ARRAY:
+      return FDL_VIEW_TYPE_1D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+   case PIPE_TEXTURE_2D_ARRAY:
+      return FDL_VIEW_TYPE_2D;
+   case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_CUBE_ARRAY:
+      return FDL_VIEW_TYPE_CUBE;
+   case PIPE_TEXTURE_3D:
+      return FDL_VIEW_TYPE_3D;
+   case PIPE_MAX_TEXTURE_TYPES:
+   default:
+      unreachable("bad texture type");
+   }
 }
 
 #endif /* FREEDRENO_RESOURCE_H_ */

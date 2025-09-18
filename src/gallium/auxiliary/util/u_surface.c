@@ -288,32 +288,59 @@ util_resource_copy_region(struct pipe_context *pipe,
    assert((src_box.width / src_bw) * (src_box.height / src_bh) * src_bs ==
           (dst_box.width / dst_bw) * (dst_box.height / dst_bh) * dst_bs);
 
-   src_map = pipe->transfer_map(pipe,
-                                src,
-                                src_level,
-                                PIPE_MAP_READ,
-                                &src_box, &src_trans);
-   assert(src_map);
-   if (!src_map) {
-      goto no_src_map;
-   }
-
-   dst_map = pipe->transfer_map(pipe,
-                                dst,
-                                dst_level,
-                                PIPE_MAP_WRITE |
-                                PIPE_MAP_DISCARD_RANGE, &dst_box,
-                                &dst_trans);
-   assert(dst_map);
-   if (!dst_map) {
-      goto no_dst_map;
-   }
-
    if (dst->target == PIPE_BUFFER && src->target == PIPE_BUFFER) {
+      src_map = pipe->buffer_map(pipe,
+                                   src,
+                                   src_level,
+                                   PIPE_MAP_READ,
+                                   &src_box, &src_trans);
+      assert(src_map);
+      if (!src_map) {
+         goto no_src_map_buf;
+      }
+
+      dst_map = pipe->buffer_map(pipe,
+                                   dst,
+                                   dst_level,
+                                   PIPE_MAP_WRITE |
+                                   PIPE_MAP_DISCARD_RANGE, &dst_box,
+                                   &dst_trans);
+      assert(dst_map);
+      if (!dst_map) {
+         goto no_dst_map_buf;
+      }
+
       assert(src_box.height == 1);
       assert(src_box.depth == 1);
       memcpy(dst_map, src_map, src_box.width);
+
+      pipe->buffer_unmap(pipe, dst_trans);
+   no_dst_map_buf:
+      pipe->buffer_unmap(pipe, src_trans);
+   no_src_map_buf:
+      ;
    } else {
+      src_map = pipe->texture_map(pipe,
+                                   src,
+                                   src_level,
+                                   PIPE_MAP_READ,
+                                   &src_box, &src_trans);
+      assert(src_map);
+      if (!src_map) {
+         goto no_src_map;
+      }
+
+      dst_map = pipe->texture_map(pipe,
+                                   dst,
+                                   dst_level,
+                                   PIPE_MAP_WRITE |
+                                   PIPE_MAP_DISCARD_RANGE, &dst_box,
+                                   &dst_trans);
+      assert(dst_map);
+      if (!dst_map) {
+         goto no_dst_map;
+      }
+
       util_copy_box(dst_map,
                     src_format,
                     dst_trans->stride, dst_trans->layer_stride,
@@ -322,13 +349,13 @@ util_resource_copy_region(struct pipe_context *pipe,
                     src_map,
                     src_trans->stride, src_trans->layer_stride,
                     0, 0, 0);
-   }
 
-   pipe->transfer_unmap(pipe, dst_trans);
-no_dst_map:
-   pipe->transfer_unmap(pipe, src_trans);
-no_src_map:
-   ;
+      pipe->texture_unmap(pipe, dst_trans);
+   no_dst_map:
+      pipe->texture_unmap(pipe, src_trans);
+   no_src_map:
+      ;
+   }
 }
 
 static void
@@ -361,7 +388,7 @@ util_clear_color_texture(struct pipe_context *pipe,
    struct pipe_transfer *dst_trans;
    ubyte *dst_map;
 
-   dst_map = pipe_transfer_map_3d(pipe,
+   dst_map = pipe_texture_map_3d(pipe,
                                   texture,
                                   level,
                                   PIPE_MAP_WRITE,
@@ -375,7 +402,7 @@ util_clear_color_texture(struct pipe_context *pipe,
       util_clear_color_texture_helper(dst_trans, dst_map, format, color,
                                       width, height, depth);
    }
-   pipe->transfer_unmap(pipe, dst_trans);
+   pipe->texture_unmap(pipe, dst_trans);
 }
 
 
@@ -413,7 +440,7 @@ util_clear_render_target(struct pipe_context *pipe,
       unsigned pixstride = util_format_get_blocksize(dst->format);
       dx = (dst->u.buf.first_element + dstx) * pixstride;
       w = width * pixstride;
-      dst_map = pipe_transfer_map(pipe,
+      dst_map = pipe_texture_map(pipe,
                                   dst->texture,
                                   0, 0,
                                   PIPE_MAP_WRITE,
@@ -422,7 +449,7 @@ util_clear_render_target(struct pipe_context *pipe,
       if (dst_map) {
          util_clear_color_texture_helper(dst_trans, dst_map, dst->format,
                                          color, width, height, 1);
-         pipe->transfer_unmap(pipe, dst_trans);
+         pipe->texture_unmap(pipe, dst_trans);
       }
    }
    else {
@@ -562,7 +589,7 @@ util_clear_depth_stencil_texture(struct pipe_context *pipe,
        util_format_is_depth_and_stencil(format))
       need_rmw = TRUE;
 
-   dst_map = pipe_transfer_map_3d(pipe,
+   dst_map = pipe_texture_map_3d(pipe,
                                   texture,
                                   level,
                                   (need_rmw ? PIPE_MAP_READ_WRITE :
@@ -580,7 +607,7 @@ util_clear_depth_stencil_texture(struct pipe_context *pipe,
                     dst_trans->layer_stride, width, height,
                     depth, zstencil);
 
-   pipe->transfer_unmap(pipe, dst_trans);
+   pipe->texture_unmap(pipe, dst_trans);
 }
 
 
@@ -738,9 +765,10 @@ get_sample_count(const struct pipe_resource *res)
  * the blit src/dst formats are identical, ignoring the resource formats.
  * Otherwise, check for format casting and compatibility.
  */
-boolean
+bool
 util_can_blit_via_copy_region(const struct pipe_blit_info *blit,
-                              boolean tight_format_check)
+                              bool tight_format_check,
+                              bool render_condition_bound)
 {
    const struct util_format_description *src_desc, *dst_desc;
 
@@ -770,7 +798,7 @@ util_can_blit_via_copy_region(const struct pipe_blit_info *blit,
        blit->scissor_enable ||
        blit->num_window_rectangles > 0 ||
        blit->alpha_blend ||
-       blit->render_condition_enable) {
+       (blit->render_condition_enable && render_condition_bound)) {
       return FALSE;
    }
 
@@ -813,11 +841,12 @@ util_can_blit_via_copy_region(const struct pipe_blit_info *blit,
  * It returns FALSE otherwise and the caller must fall back to a more generic
  * codepath for the blit operation. (e.g. by using u_blitter)
  */
-boolean
+bool
 util_try_blit_via_copy_region(struct pipe_context *ctx,
-                              const struct pipe_blit_info *blit)
+                              const struct pipe_blit_info *blit,
+                              bool render_condition_bound)
 {
-   if (util_can_blit_via_copy_region(blit, FALSE)) {
+   if (util_can_blit_via_copy_region(blit, FALSE, render_condition_bound)) {
       ctx->resource_copy_region(ctx, blit->dst.resource, blit->dst.level,
                                 blit->dst.box.x, blit->dst.box.y,
                                 blit->dst.box.z,

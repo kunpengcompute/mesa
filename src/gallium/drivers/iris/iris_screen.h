@@ -45,6 +45,8 @@ struct iris_fs_prog_key;
 struct iris_cs_prog_key;
 enum iris_program_cache_id;
 
+struct u_trace;
+
 #define READ_ONCE(x) (*(volatile __typeof__(x) *)&(x))
 #define WRITE_ONCE(x, v) *(volatile __typeof__(x) *)&(x) = (v)
 
@@ -65,8 +67,8 @@ struct iris_vtable {
                                unsigned drawid_offset,
                                const struct pipe_draw_indirect_info *indirect,
                                const struct pipe_draw_start_count_bias *sc);
-   void (*update_surface_base_address)(struct iris_batch *batch,
-                                       struct iris_binder *binder);
+   void (*update_binder_address)(struct iris_batch *batch,
+                                 struct iris_binder *binder);
    void (*upload_compute_state)(struct iris_context *ice,
                                 struct iris_batch *batch,
                                 const struct pipe_grid_info *grid);
@@ -164,8 +166,6 @@ struct iris_screen {
    /** PCI ID for our GPU device */
    int pci_id;
 
-   bool no_hw;
-
    struct iris_vtable vtbl;
 
    /** Global program_string_id counter (see get_program_string_id()) */
@@ -180,13 +180,12 @@ struct iris_screen {
       bool dual_color_blend_by_location;
       bool disable_throttling;
       bool always_flush_cache;
+      bool sync_compile;
    } driconf;
 
    /** Does the kernel support various features (KERNEL_HAS_* bitfield)? */
    unsigned kernel_features;
 #define KERNEL_HAS_WAIT_FOR_SUBMIT (1<<0)
-
-   unsigned subslice_total;
 
    uint64_t aperture_bytes;
 
@@ -219,9 +218,14 @@ struct iris_screen {
    struct iris_bo *workaround_bo;
    struct iris_address workaround_address;
 
+   struct util_queue shader_compiler_queue;
+
    struct disk_cache *disk_cache;
 
    struct intel_measure_device measure;
+
+   /** Every screen on a bufmgr has an unique ID assigned by the bufmgr. */
+   int id;
 };
 
 struct pipe_screen *

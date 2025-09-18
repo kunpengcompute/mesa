@@ -215,7 +215,7 @@ pb_get_base_buffer(struct pb_buffer *buf,
    assert(buf);
    if (!buf) {
       base_buf = NULL;
-      offset = 0;
+      offset = NULL;
       return;
    }
    assert(pipe_is_referenced(&buf->reference));
@@ -288,7 +288,7 @@ pb_reference_with_winsys(void *winsys,
  * the requested or not.
  */
 static inline boolean
-pb_check_alignment(pb_size requested, pb_size provided)
+pb_check_alignment(uint32_t requested, uint32_t provided)
 {
    if (!requested)
       return TRUE;
@@ -309,16 +309,6 @@ pb_check_usage(unsigned requested, unsigned provided)
 {
    return (requested & provided) == requested ? TRUE : FALSE;
 }
-
-
-/**
- * Malloc-based buffer to store data that can't be used by the graphics
- * hardware.
- */
-struct pb_buffer *
-pb_malloc_buffer_create(pb_size size,
-                        const struct pb_desc *desc);
-
 
 #ifdef __cplusplus
 }

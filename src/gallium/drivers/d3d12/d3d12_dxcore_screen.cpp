@@ -60,20 +60,59 @@ get_dxcore_factory()
 }
 
 static IDXCoreAdapter *
-choose_dxcore_adapter(IDXCoreAdapterFactory *factory, LUID *adapter)
+choose_dxcore_adapter(IDXCoreAdapterFactory *factory, LUID *adapter_luid)
 {
-   IDXCoreAdapter *ret;
-   if (adapter) {
-      if (SUCCEEDED(factory->GetAdapterByLuid(*adapter, &ret)))
-         return ret;
+   IDXCoreAdapter *adapter = nullptr;
+   if (adapter_luid) {
+      if (SUCCEEDED(factory->GetAdapterByLuid(*adapter_luid, &adapter)))
+         return adapter;
       debug_printf("D3D12: requested adapter missing, falling back to auto-detection...\n");
    }
 
-   // The first adapter is the default
    IDXCoreAdapterList *list = nullptr;
    if (SUCCEEDED(factory->CreateAdapterList(1, &DXCORE_ADAPTER_ATTRIBUTE_D3D12_GRAPHICS, &list))) {
-      if (list->GetAdapterCount() > 0 && SUCCEEDED(list->GetAdapter(0, &ret)))
-         return ret;
+
+#ifndef _WIN32
+      // Pick the user selected adapter if any
+      char *adapter_name = getenv("MESA_D3D12_DEFAULT_ADAPTER_NAME");
+      if (adapter_name) {
+         for (unsigned i=0; i<list->GetAdapterCount(); i++) {
+            if (SUCCEEDED(list->GetAdapter(i, &adapter))) {
+
+               size_t desc_size;
+               if (!SUCCEEDED(adapter->GetPropertySize(DXCoreAdapterProperty::DriverDescription, &desc_size))) {
+                  adapter->Release();
+                  continue;
+               }
+
+               char *desc = (char*)malloc(desc_size);
+               if (!desc) {
+                  adapter->Release();
+                  continue;
+               }
+
+               if (!SUCCEEDED(adapter->GetProperty(DXCoreAdapterProperty::DriverDescription, desc_size, desc))) {
+                  free(desc);
+                  adapter->Release();
+                  continue;
+               }
+
+               if (strcasestr(desc, adapter_name)) {
+                  free(desc);
+                  return adapter;
+               } else {
+                  free(desc);
+                  adapter->Release();
+               }
+            }
+         }
+         debug_printf("D3D12: Couldn't find an adapter containing the substring (%s)\n", adapter_name);
+      }
+#endif
+
+      // No adapter specified or not found, pick 0 as the default
+      if (list->GetAdapterCount() > 0 && SUCCEEDED(list->GetAdapter(0, &adapter)))
+         return adapter;
    }
 
    return NULL;
@@ -89,6 +128,19 @@ dxcore_get_name(struct pipe_screen *screen)
 
    snprintf(buf, sizeof(buf), "D3D12 (%s)", dxcore_screen->description);
    return buf;
+}
+
+static void
+dxcore_get_memory_info(struct d3d12_screen *screen, struct d3d12_memory_info *output)
+{
+   struct d3d12_dxcore_screen *dxcore_screen = d3d12_dxcore_screen(screen);
+   DXCoreAdapterMemoryBudget local_info, nonlocal_info;
+   DXCoreAdapterMemoryBudgetNodeSegmentGroup local_node_segment = { 0, DXCoreSegmentGroup::Local };
+   DXCoreAdapterMemoryBudgetNodeSegmentGroup nonlocal_node_segment = { 0, DXCoreSegmentGroup::NonLocal };
+   dxcore_screen->adapter->QueryState(DXCoreAdapterState::AdapterMemoryBudget, &local_node_segment, &local_info);
+   dxcore_screen->adapter->QueryState(DXCoreAdapterState::AdapterMemoryBudget, &nonlocal_node_segment, &nonlocal_info);
+   output->budget = local_info.budget + nonlocal_info.budget;
+   output->usage = local_info.currentUsage + nonlocal_info.currentUsage;
 }
 
 struct pipe_screen *
@@ -117,6 +169,7 @@ d3d12_create_dxcore_screen(struct sw_winsys *winsys, LUID *adapter_luid)
        FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DedicatedAdapterMemory, &dedicated_video_memory)) ||
        FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DedicatedSystemMemory, &dedicated_system_memory)) ||
        FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::SharedSystemMemory, &shared_system_memory)) ||
+       FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DriverVersion, &screen->base.driver_version)) ||
        FAILED(screen->adapter->GetProperty(DXCoreAdapterProperty::DriverDescription,
                                            sizeof(screen->description),
                                            screen->description))) {
@@ -128,6 +181,7 @@ d3d12_create_dxcore_screen(struct sw_winsys *winsys, LUID *adapter_luid)
    screen->base.vendor_id = hardware_ids.vendorID;
    screen->base.memory_size_megabytes = (dedicated_video_memory + dedicated_system_memory + shared_system_memory) >> 20;
    screen->base.base.get_name = dxcore_get_name;
+   screen->base.get_memory_info = dxcore_get_memory_info;
 
    if (!d3d12_init_screen(&screen->base, winsys, screen->adapter)) {
       debug_printf("D3D12: failed to initialize DXCore screen\n");

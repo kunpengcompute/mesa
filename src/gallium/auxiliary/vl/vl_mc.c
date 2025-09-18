@@ -86,7 +86,7 @@ calc_line(struct pipe_screen *screen, struct ureg_program *shader)
 
    tmp = ureg_DECL_temporary(shader);
 
-   if (screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL))
+   if (screen->get_param(screen, PIPE_CAP_FS_POSITION_IS_SYSVAL))
       pos = ureg_DECL_system_value(shader, TGSI_SEMANTIC_POSITION, 0);
    else
       pos = ureg_DECL_fs_input(shader, TGSI_SEMANTIC_POSITION, VS_O_VPOS,
@@ -622,7 +622,7 @@ vl_mc_render_ref(struct vl_mc *renderer, struct vl_mc_buffer *buffer, struct pip
    renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ref);
 
    renderer->pipe->set_sampler_views(renderer->pipe, PIPE_SHADER_FRAGMENT,
-                                     0, 1, 0, &ref);
+                                     0, 1, 0, false, &ref);
    renderer->pipe->bind_sampler_states(renderer->pipe, PIPE_SHADER_FRAGMENT,
                                        0, 1, &renderer->sampler_ref);
 

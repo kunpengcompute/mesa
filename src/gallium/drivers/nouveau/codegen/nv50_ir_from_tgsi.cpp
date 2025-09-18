@@ -1445,7 +1445,7 @@ bool Source::scanDeclaration(const struct tgsi_full_declaration *decl)
       if (info->type == PIPE_SHADER_COMPUTE && info->target < NVISA_GF100_CHIPSET) {
          for (i = first; i <= last; i++) {
             bufferIds.insert(std::make_pair(i, gmemSlot));
-            info_out->prop.cp.gmem[gmemSlot++] = {.valid = 1, .slot = i};
+            info_out->prop.cp.gmem[gmemSlot++] = {.valid = 1, .image = 0, .slot = i};
             assert(gmemSlot < 16);
          }
       }
@@ -2458,7 +2458,7 @@ Converter::handleFBFETCH(Value *dst[4])
    unsigned int c, d;
 
    texi->tex.target = TEX_TARGET_2D_MS_ARRAY;
-   texi->tex.levelZero = 1;
+   texi->tex.levelZero = true;
    texi->tex.useOffsets = 0;
 
    for (c = 0, d = 0; c < 4; ++c) {

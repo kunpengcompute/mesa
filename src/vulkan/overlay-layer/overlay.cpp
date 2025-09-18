@@ -41,6 +41,7 @@
 #include "util/os_time.h"
 #include "util/os_socket.h"
 #include "util/simple_mtx.h"
+#include "util/u_math.h"
 
 #include "vk_enum_to_str.h"
 #include "vk_dispatch_table.h"
@@ -962,6 +963,8 @@ static void compute_swapchain_display(struct swapchain_data *data)
 
    for (uint32_t s = 0; s < OVERLAY_PARAM_ENABLED_MAX; s++) {
       if (!instance_data->params.enabled[s] ||
+          s == OVERLAY_PARAM_ENABLED_device ||
+          s == OVERLAY_PARAM_ENABLED_format ||
           s == OVERLAY_PARAM_ENABLED_fps ||
           s == OVERLAY_PARAM_ENABLED_frame)
          continue;
@@ -1215,8 +1218,8 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
                                           VK_SUBPASS_CONTENTS_INLINE);
 
    /* Create/Resize vertex & index buffers */
-   size_t vertex_size = draw_data->TotalVtxCount * sizeof(ImDrawVert);
-   size_t index_size = draw_data->TotalIdxCount * sizeof(ImDrawIdx);
+   size_t vertex_size = ALIGN(draw_data->TotalVtxCount * sizeof(ImDrawVert), device_data->properties.limits.nonCoherentAtomSize);
+   size_t index_size = ALIGN(draw_data->TotalIdxCount * sizeof(ImDrawIdx), device_data->properties.limits.nonCoherentAtomSize);
    if (draw->vertex_buffer_size < vertex_size) {
       CreateOrResizeBuffer(device_data,
                            &draw->vertex_buffer,
@@ -2449,6 +2452,46 @@ static VkResult overlay_QueueSubmit(
    return device_data->vtable.QueueSubmit(queue, submitCount, pSubmits, fence);
 }
 
+static VkResult overlay_QueueSubmit2KHR(
+    VkQueue                                     queue,
+    uint32_t                                    submitCount,
+    const VkSubmitInfo2KHR*                     pSubmits,
+    VkFence                                     fence)
+{
+   struct queue_data *queue_data = FIND(struct queue_data, queue);
+   struct device_data *device_data = queue_data->device;
+
+   device_data->frame_stats.stats[OVERLAY_PARAM_ENABLED_submit]++;
+
+   for (uint32_t s = 0; s < submitCount; s++) {
+      for (uint32_t c = 0; c < pSubmits[s].commandBufferInfoCount; c++) {
+         struct command_buffer_data *cmd_buffer_data =
+            FIND(struct command_buffer_data, pSubmits[s].pCommandBufferInfos[c].commandBuffer);
+
+         /* Merge the submitted command buffer stats into the device. */
+         for (uint32_t st = 0; st < OVERLAY_PARAM_ENABLED_MAX; st++)
+            device_data->frame_stats.stats[st] += cmd_buffer_data->stats.stats[st];
+
+         /* Attach the command buffer to the queue so we remember to read its
+         * pipeline statistics & timestamps at QueuePresent().
+         */
+         if (!cmd_buffer_data->pipeline_query_pool &&
+            !cmd_buffer_data->timestamp_query_pool)
+            continue;
+
+         if (list_is_empty(&cmd_buffer_data->link)) {
+            list_addtail(&cmd_buffer_data->link,
+                        &queue_data->running_command_buffer);
+         } else {
+            fprintf(stderr, "Command buffer submitted multiple times before present.\n"
+                  "This could lead to invalid data.\n");
+         }
+      }
+   }
+
+   return device_data->vtable.QueueSubmit2KHR(queue, submitCount, pSubmits, fence);
+}
+
 static VkResult overlay_CreateDevice(
     VkPhysicalDevice                            physicalDevice,
     const VkDeviceCreateInfo*                   pCreateInfo,
@@ -2623,6 +2666,7 @@ static const struct {
    ADD_HOOK(AcquireNextImage2KHR),
 
    ADD_HOOK(QueueSubmit),
+   ADD_HOOK(QueueSubmit2KHR),
 
    ADD_HOOK(CreateDevice),
    ADD_HOOK(DestroyDevice),
@@ -2630,6 +2674,7 @@ static const struct {
    ADD_HOOK(CreateInstance),
    ADD_HOOK(DestroyInstance),
 #undef ADD_HOOK
+#undef ADD_ALIAS_HOOK
 };
 
 static void *find_ptr(const char *name)

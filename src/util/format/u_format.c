@@ -740,7 +740,7 @@ util_format_translate(enum pipe_format dst_format,
       unsigned tmp_stride;
       uint8_t *tmp_row;
 
-      if (!unpack->unpack_rgba_8unorm ||
+      if ((!unpack->unpack_rgba_8unorm && !unpack->unpack_rgba_8unorm_rect) ||
           !pack->pack_rgba_8unorm) {
          return FALSE;
       }
@@ -802,7 +802,7 @@ util_format_translate(enum pipe_format dst_format,
       unsigned tmp_stride;
       unsigned int *tmp_row;
 
-      if (!unpack->unpack_rgba ||
+      if ((!unpack->unpack_rgba && !unpack->unpack_rgba_rect) ||
           !pack->pack_rgba_uint) {
          return FALSE;
       }
@@ -832,7 +832,7 @@ util_format_translate(enum pipe_format dst_format,
       unsigned tmp_stride;
       float *tmp_row;
 
-      if (!unpack->unpack_rgba ||
+      if ((!unpack->unpack_rgba && !unpack->unpack_rgba_rect) ||
           !pack->pack_rgba_float) {
          return FALSE;
       }
@@ -1138,7 +1138,7 @@ static void
 util_format_unpack_table_init(void)
 {
    for (enum pipe_format format = PIPE_FORMAT_NONE; format < PIPE_FORMAT_COUNT; format++) {
-#if (defined(PIPE_ARCH_AARCH64) || defined(PIPE_ARCH_ARM)) && !defined NO_FORMAT_ASM
+#if (defined(PIPE_ARCH_AARCH64) || defined(PIPE_ARCH_ARM)) && !defined(NO_FORMAT_ASM) && !defined(__SOFTFP__)
       const struct util_format_unpack_description *unpack = util_format_unpack_description_neon(format);
       if (unpack) {
          util_format_unpack_table[format] = unpack;
@@ -1157,4 +1157,70 @@ util_format_unpack_description(enum pipe_format format)
    call_once(&flag, util_format_unpack_table_init);
 
    return util_format_unpack_table[format];
+}
+
+enum pipe_format
+util_format_snorm_to_unorm(enum pipe_format format)
+{
+#define CASE(x) case PIPE_FORMAT_##x##_SNORM: return PIPE_FORMAT_##x##_UNORM
+
+   switch (format) {
+   CASE(R8G8B8A8);
+   CASE(R8G8B8X8);
+   CASE(B8G8R8A8);
+   CASE(B8G8R8X8);
+   CASE(A8R8G8B8);
+   CASE(X8R8G8B8);
+   CASE(A8B8G8R8);
+   CASE(X8B8G8R8);
+
+   CASE(R10G10B10A2);
+   CASE(R10G10B10X2);
+   CASE(B10G10R10A2);
+   CASE(B10G10R10X2);
+
+   CASE(R8);
+   CASE(R8G8);
+   CASE(G8R8);
+   CASE(R8G8B8);
+   CASE(B8G8R8);
+
+   CASE(R16);
+   CASE(R16G16);
+   CASE(G16R16);
+   CASE(R16G16B16);
+
+   CASE(R16G16B16A16);
+   CASE(R16G16B16X16);
+
+   CASE(R32);
+   CASE(R32G32);
+   CASE(R32G32B32);
+   CASE(R32G32B32A32);
+
+   CASE(RGTC1);
+   CASE(RGTC2);
+   CASE(ETC2_R11);
+   CASE(ETC2_RG11);
+
+   CASE(A8);
+   CASE(A16);
+   CASE(L8);
+   CASE(L16);
+   CASE(I8);
+   CASE(I16);
+
+   CASE(L8A8);
+   CASE(L16A16);
+   CASE(R8A8);
+   CASE(R16A16);
+
+   CASE(LATC1);
+   CASE(LATC2);
+
+   default:
+      return format;
+   }
+
+#undef CASE
 }

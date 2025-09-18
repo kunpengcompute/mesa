@@ -38,6 +38,8 @@
 #include "freedreno_texture.h"
 #include "freedreno_util.h"
 
+#define get_safe(ptr, field) ((ptr) ? (ptr)->field : 0)
+
 /* All the generic state handling.. In case of CSO's that are specific
  * to the GPU version, when the bind and the delete are common they can
  * go in here.
@@ -169,6 +171,13 @@ fd_set_shader_buffers(struct pipe_context *pctx, enum pipe_shader_type shader,
          fd_resource_set_usage(buffers[i].buffer, FD_DIRTY_SSBO);
 
          so->enabled_mask |= BIT(n);
+
+         if (writable_bitmask & BIT(i)) {
+            struct fd_resource *rsc = fd_resource(buf->buffer);
+            util_range_add(&rsc->b.b, &rsc->valid_buffer_range,
+                           buf->buffer_offset,
+                           buf->buffer_offset + buf->buffer_size);
+         }
       } else {
          pipe_resource_reference(&buf->buffer, NULL);
       }
@@ -205,6 +214,15 @@ fd_set_shader_images(struct pipe_context *pctx, enum pipe_shader_type shader,
          if (buf->resource) {
             fd_resource_set_usage(buf->resource, FD_DIRTY_IMAGE);
             so->enabled_mask |= BIT(n);
+
+            if ((buf->access & PIPE_IMAGE_ACCESS_WRITE) &&
+                (buf->resource->target == PIPE_BUFFER)) {
+
+               struct fd_resource *rsc = fd_resource(buf->resource);
+               util_range_add(&rsc->b.b, &rsc->valid_buffer_range,
+                              buf->u.buf.offset,
+                              buf->u.buf.offset + buf->u.buf.size);
+            }
          } else {
             so->enabled_mask &= ~BIT(n);
          }
@@ -231,9 +249,9 @@ fd_set_shader_images(struct pipe_context *pctx, enum pipe_shader_type shader,
    fd_context_dirty_shader(ctx, shader, FD_DIRTY_SHADER_IMAGE);
 }
 
-static void
+void
 fd_set_framebuffer_state(struct pipe_context *pctx,
-                         const struct pipe_framebuffer_state *framebuffer) in_dt
+                         const struct pipe_framebuffer_state *framebuffer)
 {
    struct fd_context *ctx = fd_context(pctx);
    struct pipe_framebuffer_state *cso;
@@ -270,15 +288,6 @@ fd_set_framebuffer_state(struct pipe_context *pctx,
       fd_batch_reference(&ctx->batch, NULL);
       fd_context_all_dirty(ctx);
       ctx->update_active_queries = true;
-
-      if (old_batch && old_batch->blit && !old_batch->back_blit) {
-         /* for blits, there is not really much point in hanging on
-          * to the uncommitted batch (ie. you probably don't blit
-          * multiple times to the same surface), so we might as
-          * well go ahead and flush this one:
-          */
-         fd_batch_flush(old_batch);
-      }
 
       fd_batch_reference(&old_batch, NULL);
    } else if (ctx->batch) {
@@ -345,7 +354,7 @@ fd_set_viewport_states(struct pipe_context *pctx, unsigned start_slot,
       swap(miny, maxy);
    }
 
-   const float max_dims = ctx->screen->gpu_id >= 400 ? 16384.f : 4096.f;
+   const float max_dims = ctx->screen->gen >= 4 ? 16384.f : 4096.f;
 
    /* Clamp, convert to integer and round up the max bounds. */
    scissor->minx = CLAMP(minx, 0.f, max_dims);
@@ -370,12 +379,12 @@ fd_set_vertex_buffers(struct pipe_context *pctx, unsigned start_slot,
     * we need to mark VTXSTATE as dirty as well to trigger patching
     * and re-emitting the vtx shader:
     */
-   if (ctx->screen->gpu_id < 300) {
+   if (ctx->screen->gen < 3) {
       for (i = 0; i < count; i++) {
          bool new_enabled = vb && vb[i].buffer.resource;
-         bool old_enabled = so->vb[i].buffer.resource != NULL;
+         bool old_enabled = so->vb[start_slot + i].buffer.resource != NULL;
          uint32_t new_stride = vb ? vb[i].stride : 0;
-         uint32_t old_stride = so->vb[i].stride;
+         uint32_t old_stride = so->vb[start_slot + i].stride;
          if ((new_enabled != old_enabled) || (new_stride != old_stride)) {
             fd_context_dirty(ctx, FD_DIRTY_VTXSTATE);
             break;
@@ -396,6 +405,14 @@ fd_set_vertex_buffers(struct pipe_context *pctx, unsigned start_slot,
    for (unsigned i = 0; i < count; i++) {
       assert(!vb[i].is_user_buffer);
       fd_resource_set_usage(vb[i].buffer.resource, FD_DIRTY_VTXBUF);
+
+      /* Robust buffer access: Return undefined data (the start of the buffer)
+       * instead of process termination or a GPU hang in case of overflow.
+       */
+      if (vb[i].buffer.resource &&
+          unlikely(vb[i].buffer_offset >= vb[i].buffer.resource->width0)) {
+         so->vb[start_slot + i].buffer_offset = 0;
+      }
    }
 }
 
@@ -427,7 +444,8 @@ fd_rasterizer_state_bind(struct pipe_context *pctx, void *hwcso) in_dt
 {
    struct fd_context *ctx = fd_context(pctx);
    struct pipe_scissor_state *old_scissor = fd_context_get_scissor(ctx);
-   bool discard = ctx->rasterizer && ctx->rasterizer->rasterizer_discard;
+   bool discard = get_safe(ctx->rasterizer, rasterizer_discard);
+   unsigned clip_plane_enable = get_safe(ctx->rasterizer, clip_plane_enable);
 
    ctx->rasterizer = hwcso;
    fd_context_dirty(ctx, FD_DIRTY_RASTERIZER);
@@ -446,8 +464,11 @@ fd_rasterizer_state_bind(struct pipe_context *pctx, void *hwcso) in_dt
    if (old_scissor != fd_context_get_scissor(ctx))
       fd_context_dirty(ctx, FD_DIRTY_SCISSOR);
 
-   if (ctx->rasterizer && (discard != ctx->rasterizer->rasterizer_discard))
+   if (discard != get_safe(ctx->rasterizer, rasterizer_discard))
       fd_context_dirty(ctx, FD_DIRTY_RASTERIZER_DISCARD);
+
+   if (clip_plane_enable != get_safe(ctx->rasterizer, clip_plane_enable))
+      fd_context_dirty(ctx, FD_DIRTY_RASTERIZER_CLIP_PLANE_ENABLE);
 }
 
 static void
@@ -553,7 +574,7 @@ fd_set_stream_output_targets(struct pipe_context *pctx, unsigned num_targets,
    debug_assert(num_targets <= ARRAY_SIZE(so->targets));
 
    /* Older targets need sw stats enabled for streamout emulation in VS: */
-   if (ctx->screen->gpu_id < 500) {
+   if (ctx->screen->gen < 5) {
       if (num_targets && !so->num_targets) {
          ctx->stats_users++;
       } else if (so->num_targets && !num_targets) {
@@ -599,11 +620,36 @@ fd_bind_compute_state(struct pipe_context *pctx, void *state) in_dt
    ctx->dirty_shader[PIPE_SHADER_COMPUTE] |= FD_DIRTY_SHADER_PROG;
 }
 
+/* TODO pipe_context::set_compute_resources() should DIAF and clover
+ * should be updated to use pipe_context::set_constant_buffer() and
+ * pipe_context::set_shader_images().  Until then just directly frob
+ * the UBO/image state to avoid the rest of the driver needing to
+ * know about this bastard api..
+ */
 static void
 fd_set_compute_resources(struct pipe_context *pctx, unsigned start,
                          unsigned count, struct pipe_surface **prscs) in_dt
 {
-   // TODO
+   struct fd_context *ctx = fd_context(pctx);
+   struct fd_constbuf_stateobj *so = &ctx->constbuf[PIPE_SHADER_COMPUTE];
+
+   for (unsigned i = 0; i < count; i++) {
+      const uint32_t index = i + start + 1;   /* UBOs start at index 1 */
+
+      if (!prscs) {
+         util_copy_constant_buffer(&so->cb[index], NULL, false);
+         so->enabled_mask &= ~(1 << index);
+      } else if (prscs[i]->format == PIPE_FORMAT_NONE) {
+         struct pipe_constant_buffer cb = {
+               .buffer = prscs[i]->texture,
+         };
+         util_copy_constant_buffer(&so->cb[index], &cb, false);
+         so->enabled_mask |= (1 << index);
+      } else {
+         // TODO images
+         unreachable("finishme");
+      }
+   }
 }
 
 /* used by clover to bind global objects, returning the bo address
@@ -627,9 +673,11 @@ fd_set_global_binding(struct pipe_context *pctx, unsigned first, unsigned count,
 
          if (so->buf[n]) {
             struct fd_resource *rsc = fd_resource(so->buf[n]);
-            uint64_t iova = fd_bo_get_iova(rsc->bo);
-            // TODO need to scream if iova > 32b or fix gallium API..
-            *handles[i] += iova;
+            uint32_t offset = *handles[i];
+            uint64_t iova = fd_bo_get_iova(rsc->bo) + offset;
+
+            /* Yes, really, despite what the type implies: */
+            memcpy(handles[i], &iova, sizeof(iova));
          }
 
          if (prscs[i])

@@ -157,7 +157,8 @@ opt_peel_loop_initial_if(nir_loop *loop)
       return false;
 
    nir_if *nif = nir_cf_node_as_if(if_node);
-   assert(nif->condition.is_ssa);
+   if (!nif->condition.is_ssa)
+      return false;
 
    nir_ssa_def *cond = nif->condition.ssa;
    if (cond->parent_instr->type != nir_instr_type_phi)
@@ -408,6 +409,10 @@ opt_split_alu_of_phi(nir_builder *b, nir_loop *loop)
    if (header_block->predecessors->entries != 2)
       return false;
 
+   nir_block *continue_block = find_continue_block(loop);
+   if (continue_block == header_block)
+      return false;
+
    nir_foreach_instr_safe(instr, header_block) {
       if (instr->type != nir_instr_type_alu)
          continue;
@@ -499,8 +504,6 @@ opt_split_alu_of_phi(nir_builder *b, nir_loop *loop)
       }
 
       /* Split ALU of Phi */
-      nir_block *const continue_block = find_continue_block(loop);
-
       b->cursor = nir_after_block(prev_block);
       nir_ssa_def *prev_value = clone_alu_and_replace_src_defs(b, alu, prev_srcs);
 
@@ -519,17 +522,8 @@ opt_split_alu_of_phi(nir_builder *b, nir_loop *loop)
        * result of the new instruction from continue_block.
        */
       nir_phi_instr *const phi = nir_phi_instr_create(b->shader);
-      nir_phi_src *phi_src;
-
-      phi_src = ralloc(phi, nir_phi_src);
-      phi_src->pred = prev_block;
-      phi_src->src = nir_src_for_ssa(prev_value);
-      exec_list_push_tail(&phi->srcs, &phi_src->node);
-
-      phi_src = ralloc(phi, nir_phi_src);
-      phi_src->pred = continue_block;
-      phi_src->src = nir_src_for_ssa(alu_copy);
-      exec_list_push_tail(&phi->srcs, &phi_src->node);
+      nir_phi_instr_add_src(phi, prev_block, nir_src_for_ssa(prev_value));
+      nir_phi_instr_add_src(phi, continue_block, nir_src_for_ssa(alu_copy));
 
       nir_ssa_dest_init(&phi->instr, &phi->dest,
                         alu_copy->num_components, alu_copy->bit_size, NULL);
@@ -547,7 +541,7 @@ opt_split_alu_of_phi(nir_builder *b, nir_loop *loop)
        * remove it.
        */
       nir_instr_remove_v(&alu->instr);
-      ralloc_free(alu);
+      nir_instr_free(&alu->instr);
 
       progress = true;
    }
@@ -683,23 +677,15 @@ opt_simplify_bcsel_of_phi(nir_builder *b, nir_loop *loop)
        * continue_block from the other bcsel source.  Both sources have
        * already been verified to be phi nodes.
        */
-      nir_block *const continue_block = find_continue_block(loop);
+      nir_block *continue_block = find_continue_block(loop);
       nir_phi_instr *const phi = nir_phi_instr_create(b->shader);
-      nir_phi_src *phi_src;
+      nir_phi_instr_add_src(phi, prev_block,
+                            nir_phi_get_src_from_block(nir_instr_as_phi(bcsel->src[entry_src].src.ssa->parent_instr),
+                                                       prev_block)->src);
 
-      phi_src = ralloc(phi, nir_phi_src);
-      phi_src->pred = prev_block;
-      phi_src->src =
-         nir_phi_get_src_from_block(nir_instr_as_phi(bcsel->src[entry_src].src.ssa->parent_instr),
-                                    prev_block)->src;
-      exec_list_push_tail(&phi->srcs, &phi_src->node);
-
-      phi_src = ralloc(phi, nir_phi_src);
-      phi_src->pred = continue_block;
-      phi_src->src =
-         nir_phi_get_src_from_block(nir_instr_as_phi(bcsel->src[continue_src].src.ssa->parent_instr),
-                                    continue_block)->src;
-      exec_list_push_tail(&phi->srcs, &phi_src->node);
+      nir_phi_instr_add_src(phi, continue_block,
+                            nir_phi_get_src_from_block(nir_instr_as_phi(bcsel->src[continue_src].src.ssa->parent_instr),
+                                    continue_block)->src);
 
       nir_ssa_dest_init(&phi->instr,
                         &phi->dest,
@@ -720,7 +706,7 @@ opt_simplify_bcsel_of_phi(nir_builder *b, nir_loop *loop)
        * just remove it.
        */
       nir_instr_remove_v(&bcsel->instr);
-      ralloc_free(bcsel);
+      nir_instr_free(&bcsel->instr);
 
       progress = true;
    }
@@ -831,6 +817,11 @@ opt_if_loop_last_continue(nir_loop *loop, bool aggressive_last_continue)
    if (&nif->cf_node == nir_cf_node_prev(&last_block->cf_node) &&
        exec_list_is_empty(&last_block->instr_list))
       return false;
+
+   /* If there are single-source phis in the last block,
+    * get rid of them first
+    */
+   nir_opt_remove_phis_block(last_block);
 
    /* Move the last block of the loop inside the last if-statement */
    nir_cf_list tmp;
@@ -946,6 +937,140 @@ opt_if_simplification(nir_builder *b, nir_if *nif)
 }
 
 /**
+ * This optimization tries to merge two break statements into a single break.
+ * For this purpose, it checks if both branch legs end in a break or
+ * if one branch leg ends in a break, and the other one does so after the
+ * branch.
+ *
+ * This optimization turns
+ *
+ *     loop {
+ *        ...
+ *        if (cond) {
+ *           do_work_1();
+ *           break;
+ *        } else {
+ *           do_work_2();
+ *           break;
+ *        }
+ *     }
+ *
+ * into:
+ *
+ *     loop {
+ *        ...
+ *        if (cond) {
+ *           do_work_1();
+ *        } else {
+ *           do_work_2();
+ *        }
+ *        break;
+ *     }
+ *
+ * but also situations like
+ *
+ *     loop {
+ *        ...
+ *        if (cond1) {
+ *           if (cond2) {
+ *              do_work_1();
+ *              break;
+ *           } else {
+ *              do_work_2();
+ *           }
+ *           do_work_3();
+ *           break;
+ *        } else {
+ *           ...
+ *        }
+ *     }
+ *
+ *  into:
+ *
+ *     loop {
+ *        ...
+ *        if (cond1) {
+ *           if (cond2) {
+ *              do_work_1();
+ *           } else {
+ *              do_work_2();
+ *              do_work_3();
+ *           }
+ *           break;
+ *        } else {
+ *           ...
+ *        }
+ *     }
+ */
+static bool
+opt_merge_breaks(nir_if *nif)
+{
+   nir_block *last_then = nir_if_last_then_block(nif);
+   nir_block *last_else = nir_if_last_else_block(nif);
+   bool then_break = nir_block_ends_in_break(last_then);
+   bool else_break = nir_block_ends_in_break(last_else);
+
+   /* If both branch legs end in a break, merge the break after the branch */
+   if (then_break && else_break) {
+      nir_block *after_if = nir_cf_node_cf_tree_next(&nif->cf_node);
+      /* Make sure that the successor is empty.
+       * If not we let nir_opt_dead_cf() clean it up first.
+       */
+      if (!is_block_empty(after_if))
+         return false;
+
+      nir_lower_phis_to_regs_block(last_then->successors[0]);
+      nir_instr_remove_v(nir_block_last_instr(last_then));
+      nir_instr *jump = nir_block_last_instr(last_else);
+      nir_instr_remove_v(jump);
+      nir_instr_insert(nir_after_block(after_if), jump);
+      return true;
+    }
+
+   /* Single break: If there's a break after the branch and the non-breaking
+    * side of the if falls through to it, then hoist that code after up into
+    * the if and leave just a single break there.
+    */
+   if (then_break || else_break) {
+
+      /* At least one branch leg must fall-through */
+      if (nir_block_ends_in_jump(last_then) && nir_block_ends_in_jump(last_else))
+         return false;
+
+      /* Check if there is a single break after the IF */
+      nir_cf_node *first = nir_cf_node_next(&nif->cf_node);
+      nir_cf_node *last = first;
+      while (!nir_cf_node_is_last(last)) {
+         if (contains_other_jump (last, NULL))
+            return false;
+         last = nir_cf_node_next(last);
+      }
+
+      assert(last->type == nir_cf_node_block);
+      if (!nir_block_ends_in_break(nir_cf_node_as_block(last)))
+         return false;
+
+      /* Hoist the code from after the IF into the falling-through branch leg */
+      nir_opt_remove_phis_block(nir_cf_node_as_block(first));
+      nir_block *break_block = then_break ? last_then : last_else;
+      nir_lower_phis_to_regs_block(break_block->successors[0]);
+
+      nir_cf_list tmp;
+      nir_cf_extract(&tmp, nir_before_cf_node(first),
+                           nir_after_block_before_jump(nir_cf_node_as_block(last)));
+      if (then_break)
+         nir_cf_reinsert(&tmp, nir_after_block(last_else));
+      else
+         nir_cf_reinsert(&tmp, nir_after_block(last_then));
+
+      nir_instr_remove_v(nir_block_last_instr(break_block));
+      return true;
+   }
+
+   return false;
+}
+
+/**
  * This optimization simplifies potential loop terminators which then allows
  * other passes such as opt_if_simplification() and loop unrolling to progress
  * further:
@@ -1041,7 +1166,7 @@ clone_alu_and_replace_src_defs(nir_builder *b, const nir_alu_instr *alu,
 
    nir_ssa_dest_init(&nalu->instr, &nalu->dest.dest,
                      alu->dest.dest.ssa.num_components,
-                     alu->dest.dest.ssa.bit_size, alu->dest.dest.ssa.name);
+                     alu->dest.dest.ssa.bit_size, NULL);
 
    nalu->dest.saturate = alu->dest.saturate;
    nalu->dest.write_mask = alu->dest.write_mask;
@@ -1215,6 +1340,111 @@ opt_if_evaluate_condition_use(nir_builder *b, nir_if *nif)
    return progress;
 }
 
+static bool
+rewrite_comp_uses_within_if(nir_builder *b, nir_if *nif, bool invert,
+                            nir_ssa_scalar scalar, nir_ssa_scalar new_scalar)
+{
+   bool progress = false;
+
+   nir_block *first = invert ? nir_if_first_else_block(nif) : nir_if_first_then_block(nif);
+   nir_block *last = invert ? nir_if_last_else_block(nif) : nir_if_last_then_block(nif);
+
+   nir_ssa_def *new_ssa = NULL;
+   nir_foreach_use_safe(use, scalar.def) {
+      if (use->parent_instr->block->index < first->index ||
+          use->parent_instr->block->index > last->index)
+         continue;
+
+      /* Only rewrite users which use only the new component. This is to avoid a
+       * situation where copy propagation will undo the rewrite and we risk an infinite
+       * loop.
+       *
+       * We could rewrite users which use a mix of the old and new components, but if
+       * nir_src_components_read() is incomplete, then we risk the new component actually being
+       * unused and some optimization later undoing the rewrite.
+       */
+      if (nir_src_components_read(use) != BITFIELD64_BIT(scalar.comp))
+         continue;
+
+      if (!new_ssa) {
+         b->cursor = nir_before_cf_node(&nif->cf_node);
+         new_ssa = nir_channel(b, new_scalar.def, new_scalar.comp);
+         if (scalar.def->num_components > 1) {
+            nir_ssa_def *vec = nir_ssa_undef(b, scalar.def->num_components, scalar.def->bit_size);
+            new_ssa = nir_vector_insert_imm(b, vec, new_ssa, scalar.comp);
+         }
+      }
+
+      nir_instr_rewrite_src_ssa(use->parent_instr, use, new_ssa);
+      progress = true;
+   }
+
+   return progress;
+}
+
+/*
+ * This optimization turns:
+ *
+ *     if (a == (b=readfirstlane(a)))
+ *        use(a)
+ *     if (c == (d=load_const))
+ *        use(c)
+ *
+ * into:
+ *
+ *     if (a == (b=readfirstlane(a)))
+ *        use(b)
+ *     if (c == (d=load_const))
+ *        use(d)
+*/
+static bool
+opt_if_rewrite_uniform_uses(nir_builder *b, nir_if *nif, nir_ssa_scalar cond, bool accept_ine)
+{
+   bool progress = false;
+
+   if (!nir_ssa_scalar_is_alu(cond))
+      return false;
+
+   nir_op op = nir_ssa_scalar_alu_op(cond);
+   if (op == nir_op_iand) {
+      progress |= opt_if_rewrite_uniform_uses(b, nif, nir_ssa_scalar_chase_alu_src(cond, 0), false);
+      progress |= opt_if_rewrite_uniform_uses(b, nif, nir_ssa_scalar_chase_alu_src(cond, 1), false);
+      return progress;
+   }
+
+   if (op != nir_op_ieq && (op != nir_op_ine || !accept_ine))
+      return false;
+
+   for (unsigned i = 0; i < 2; i++) {
+      nir_ssa_scalar src_uni = nir_ssa_scalar_chase_alu_src(cond, i);
+      nir_ssa_scalar src_div = nir_ssa_scalar_chase_alu_src(cond, !i);
+
+      if (src_uni.def->parent_instr->type == nir_instr_type_load_const && src_div.def != src_uni.def)
+         return rewrite_comp_uses_within_if(b, nif, op == nir_op_ine, src_div, src_uni);
+
+      if (src_uni.def->parent_instr->type != nir_instr_type_intrinsic)
+         continue;
+      nir_intrinsic_instr *intrin = nir_instr_as_intrinsic(src_uni.def->parent_instr);
+      if (intrin->intrinsic != nir_intrinsic_read_first_invocation &&
+          (intrin->intrinsic != nir_intrinsic_reduce || nir_intrinsic_cluster_size(intrin)))
+         continue;
+
+      nir_ssa_scalar intrin_src = {intrin->src[0].ssa, src_uni.comp};
+      nir_ssa_scalar resolved_intrin_src = nir_ssa_scalar_resolved(intrin_src.def, intrin_src.comp);
+
+      if (resolved_intrin_src.comp != src_div.comp || resolved_intrin_src.def != src_div.def)
+         continue;
+
+      progress |= rewrite_comp_uses_within_if(b, nif, op == nir_op_ine, resolved_intrin_src, src_uni);
+      if (intrin_src.comp != resolved_intrin_src.comp || intrin_src.def != resolved_intrin_src.def)
+         progress |= rewrite_comp_uses_within_if(b, nif, op == nir_op_ine, intrin_src, src_uni);
+
+      return progress;
+   }
+
+   return false;
+}
+
 static void
 simple_merge_if(nir_if *dest_if, nir_if *src_if, bool dest_if_then,
                 bool src_if_then)
@@ -1353,8 +1583,12 @@ opt_if_cf_list(nir_builder *b, struct exec_list *cf_list,
    return progress;
 }
 
+/**
+ * Optimizations which can create registers are done after other optimizations
+ * which require SSA.
+ */
 static bool
-opt_peel_loop_initial_if_cf_list(struct exec_list *cf_list)
+opt_if_regs_cf_list(struct exec_list *cf_list)
 {
    bool progress = false;
    foreach_list_typed(nir_cf_node, cf_node, node, cf_list) {
@@ -1364,14 +1598,21 @@ opt_peel_loop_initial_if_cf_list(struct exec_list *cf_list)
 
       case nir_cf_node_if: {
          nir_if *nif = nir_cf_node_as_if(cf_node);
-         progress |= opt_peel_loop_initial_if_cf_list(&nif->then_list);
-         progress |= opt_peel_loop_initial_if_cf_list(&nif->else_list);
+         progress |= opt_if_regs_cf_list(&nif->then_list);
+         progress |= opt_if_regs_cf_list(&nif->else_list);
+         if (opt_merge_breaks(nif)) {
+            /* This optimization might move blocks
+             * from after the NIF into the NIF */
+            progress = true;
+            opt_if_regs_cf_list(&nif->then_list);
+            opt_if_regs_cf_list(&nif->else_list);
+         }
          break;
       }
 
       case nir_cf_node_loop: {
          nir_loop *loop = nir_cf_node_as_loop(cf_node);
-         progress |= opt_peel_loop_initial_if_cf_list(&loop->body);
+         progress |= opt_if_regs_cf_list(&loop->body);
          progress |= opt_peel_loop_initial_if(loop);
          break;
       }
@@ -1402,6 +1643,8 @@ opt_if_safe_cf_list(nir_builder *b, struct exec_list *cf_list)
          progress |= opt_if_safe_cf_list(b, &nif->then_list);
          progress |= opt_if_safe_cf_list(b, &nif->else_list);
          progress |= opt_if_evaluate_condition_use(b, nif);
+         nir_ssa_scalar cond = nir_ssa_scalar_resolved(nif->condition.ssa, 0);
+         progress |= opt_if_rewrite_uniform_uses(b, nif, cond, true);
          break;
       }
 
@@ -1445,7 +1688,7 @@ nir_opt_if(nir_shader *shader, bool aggressive_last_continue)
          progress = true;
       }
 
-      if (opt_peel_loop_initial_if_cf_list(&function->impl->body)) {
+      if (opt_if_regs_cf_list(&function->impl->body)) {
          preserve = false;
          progress = true;
 

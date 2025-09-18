@@ -1,28 +1,27 @@
 /*
- * Copyright © 2007-2019 Advanced Micro Devices, Inc.
- * All Rights Reserved.
- *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS, AUTHORS
- * AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- */
+************************************************************************************************************************
+*
+*  Copyright (C) 2007-2022 Advanced Micro Devices, Inc.  All rights reserved.
+*
+* Permission is hereby granted, free of charge, to any person obtaining a
+* copy of this software and associated documentation files (the "Software"),
+* to deal in the Software without restriction, including without limitation
+* the rights to use, copy, modify, merge, publish, distribute, sublicense,
+* and/or sell copies of the Software, and to permit persons to whom the
+* Software is furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in
+* all copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+* THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+* OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+* ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+* OTHER DEALINGS IN THE SOFTWARE
+*
+***********************************************************************************************************************/
 
 /**
 ****************************************************************************************************
@@ -2954,6 +2953,20 @@ typedef struct _ADDR2_COMPUTE_CMASKINFO_INPUT
                                             ///  Only for GFX10
 } ADDR2_COMPUTE_CMASK_INFO_INPUT;
 
+/* DCC addr meta equation for GFX9. */
+struct gfx9_addr_meta_equation {
+   UINT_8 num_bits;
+
+   struct {
+      struct {
+         UINT_8 dim; /* 0..4 as index, 5 means invalid */
+         UINT_8 ord; /* 0..31 */
+      } coord[8]; /* 0..num_coords */
+   } bit[32]; /* 0..num_bits */
+
+   UINT_8 numPipeBits;
+};
+
 /**
 ****************************************************************************************************
 *   ADDR2_COMPUTE_CMASK_INFO_OUTPUT
@@ -2980,6 +2993,21 @@ typedef struct _ADDR2_COMPUTE_CMASK_INFO_OUTPUT
     UINT_32    metaBlkNumPerSlice;  ///< Number of metablock within one slice
 
     ADDR2_META_MIP_INFO* pMipInfo;  ///< CMASK mip information
+
+    /* The equation for doing CMASK address computations in shaders. */
+    union {
+       /* This is chip-specific, and it varies with:
+        * - resource type
+        * - swizzle_mode
+        * - bpp
+        * - pipe_aligned
+        * - rb_aligned
+        */
+       struct gfx9_addr_meta_equation gfx9;
+
+       /* This is chip-specific, it requires 64KB_Z_X. */
+       UINT_16 *gfx10_bits; /* 68 2-byte elements */
+    } equation;
 } ADDR2_COMPUTE_CMASK_INFO_OUTPUT;
 
 /**
@@ -3409,17 +3437,7 @@ typedef struct _ADDR2_COMPUTE_DCCINFO_OUTPUT
         * - pipe_aligned
         * - rb_aligned
         */
-       struct {
-          UINT_8 num_bits;
-
-          struct {
-             struct {
-                UINT_8 dim; /* 0..4 as index, 5 means invalid */
-                UINT_8 ord; /* 0..31 */
-             } coord[8]; /* 0..num_coords */
-          } bit[32]; /* 0..num_bits */
-          UINT_8 numPipeBits;
-       } gfx9;
+       struct gfx9_addr_meta_equation gfx9;
 
        /* This is chip-specific, it requires 64KB_R_X, and it varies with:
         * - bpp

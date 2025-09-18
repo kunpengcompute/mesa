@@ -4,6 +4,8 @@
   variables:
     LIBGL_ALWAYS_SOFTWARE: "true"
     GALLIUM_DRIVER: "llvmpipe"
+    FLAKES_CHANNEL: "#mesa-swrast-ci"
+    GPU_VERSION: llvmpipe
 
 llvmpipe-piglit-cl:
   extends:
@@ -21,51 +23,6 @@ llvmpipe-piglit-cl:
   script:
     - install/piglit/run_cl.sh
 
-llvmpipe-piglit-quick_gl:
-  extends:
-    - .test-gl
-    - .piglit-test
-    - .llvmpipe-test
-  variables:
-    GALLIVM_PERF: "no_filter_hacks"
-    LP_NUM_THREADS: 0
-    PIGLIT_OPTIONS: >
-      --process-isolation false
-    # Can't run gl-2.0-edgeflag* because of assertion failures on loading from
-    # disk cache which flake depending on which one runs first
-    PIGLIT_TESTS: >
-      -x gl-2.0-edgeflag
-      -x egl_ext_device_
-      -x egl_ext_platform_device
-      -x ext_timer_query@time-elapsed
-      -x glx-multithread-clearbuffer
-      -x glx-multithread-shader-compile
-      -x max-texture-size
-      -x maxsize
-    PIGLIT_PROFILES: quick_gl
-    PIGLIT_RESULTS: "llvmpipe-quick_gl"
-
-llvmpipe-piglit-glslparser:
-  extends:
-    - .test-gl
-    - .piglit-test
-    - .llvmpipe-test
-  variables:
-    LP_NUM_THREADS: 0
-    PIGLIT_PROFILES: glslparser
-    PIGLIT_RESULTS: "llvmpipe-glslparser"
-
-llvmpipe-piglit-quick_shader:
-  extends:
-    - .test-gl
-    - .piglit-test
-    - .llvmpipe-test
-  variables:
-    GALLIVM_PERF: "no_filter_hacks"
-    LP_NUM_THREADS: 1
-    PIGLIT_PROFILES: quick_shader
-    PIGLIT_RESULTS: "llvmpipe-quick_shader"
-
 llvmpipe-traces:
   extends:
     - .test-gl
@@ -79,55 +36,31 @@ llvmpipe-traces:
 
 .llvmpipe-deqp-test:
   variables:
-    GALLIVM_PERF: "nopt,no_filter_hacks"
-    # Don't use threads inside llvmpipe, we've already got all cores
-    # busy at the deqp-runner level.
-    LP_NUM_THREADS: 0
-    GPU_VERSION: llvmpipe
-    DEQP_EXPECTED_RENDERER: llvmpipe
+    GALLIVM_PERF: "nopt"
   extends:
     - .test-gl
     - .deqp-test
     - .llvmpipe-test
 
-llvmpipe-gles2:
+llvmpipe:
+  tags:
+    - mesa-swrast
   variables:
-    DEQP_VER: gles2
-  extends:
-    - .llvmpipe-deqp-test
-
-llvmpipe-gles3:
-  variables:
-    DEQP_VER: gles3
-  extends:
-    - .llvmpipe-deqp-test
-
-llvmpipe-gles31:
-  variables:
-    DEQP_VER: gles31
-    # Stress test NIR clone/serialization with significant shaders enabled.
-    # Costs about 30% extra runtime.
-    NIR_TEST_CLONE: "true"
-    NIR_TEST_SERIALIZE: "true"
-  extends:
-    - .llvmpipe-deqp-test
-
-llvmpipe-gl:
-  variables:
-    DEQP_VER: gl45
-  extends:
-    - .llvmpipe-deqp-test
-
-llvmpipe-khr-gles2:
-  variables:
-    DEQP_VER: gles2-khr
-  extends:
-    - .llvmpipe-deqp-test
-
-llvmpipe-egl:
-  variables:
-    DEQP_VER: egl
-  extends:
-    - .llvmpipe-deqp-test
+    DEQP_SUITE: llvmpipe
+  extends: .llvmpipe-deqp-test
   script:
-    - xvfb-run --server-args='-noreset' ./install/deqp-runner.sh
+    - LD_LIBRARY_PATH=`pwd`/install xvfb-run --server-args='-noreset' install/deqp-runner.sh
+
+llvmpipe-deqp-asan:
+  variables:
+    DEQP_SUITE: llvmpipe-asan
+    GPU_VERSION: llvmpipe-asan
+    DEQP_FRACTION: 10
+    # Don't use threads inside llvmpipe, we've already got all cores
+    # busy at the deqp-runner level, and we don't want to overload fd.o
+    # shared runners
+    LP_NUM_THREADS: 0
+  extends: .llvmpipe-deqp-test
+  needs:
+    - debian/x86_test-gl
+    - debian-testing-asan

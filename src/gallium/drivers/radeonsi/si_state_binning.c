@@ -424,26 +424,17 @@ static void si_emit_dpbb_disable(struct si_context *sctx)
             S_028C44_BIN_SIZE_X(bin_size.x == 16) | S_028C44_BIN_SIZE_Y(bin_size.y == 16) |
             S_028C44_BIN_SIZE_X_EXTEND(bin_size_extend.x) |
             S_028C44_BIN_SIZE_Y_EXTEND(bin_size_extend.y) | S_028C44_DISABLE_START_OF_PRIM(1) |
-            S_028C44_FLUSH_ON_BINNING_TRANSITION(sctx->last_binning_enabled != 0));
+            S_028C44_FLUSH_ON_BINNING_TRANSITION(1));
    } else {
       radeon_opt_set_context_reg(
          sctx, R_028C44_PA_SC_BINNER_CNTL_0, SI_TRACKED_PA_SC_BINNER_CNTL_0,
          S_028C44_BINNING_MODE(V_028C44_DISABLE_BINNING_USE_LEGACY_SC) |
             S_028C44_DISABLE_START_OF_PRIM(1) |
-            S_028C44_FLUSH_ON_BINNING_TRANSITION((sctx->family == CHIP_VEGA12 ||
-                                                  sctx->family == CHIP_VEGA20 ||
-                                                  sctx->family >= CHIP_RAVEN2) &&
-                                                 sctx->last_binning_enabled != 0));
+            S_028C44_FLUSH_ON_BINNING_TRANSITION(sctx->family == CHIP_VEGA12 ||
+                                                 sctx->family == CHIP_VEGA20 ||
+                                                 sctx->family >= CHIP_RAVEN2));
    }
-
-   unsigned db_dfsm_control =
-      sctx->chip_class >= GFX10 ? R_028038_DB_DFSM_CONTROL : R_028060_DB_DFSM_CONTROL;
-   radeon_opt_set_context_reg(
-      sctx, db_dfsm_control, SI_TRACKED_DB_DFSM_CONTROL,
-      S_028060_PUNCHOUT_MODE(V_028060_FORCE_OFF) | S_028060_POPS_DRAIN_PS_ON_OVERLAP(1));
    radeon_end_update_context_roll(sctx);
-
-   sctx->last_binning_enabled = false;
 }
 
 void si_emit_dpbb_state(struct si_context *sctx)
@@ -455,7 +446,8 @@ void si_emit_dpbb_state(struct si_context *sctx)
 
    assert(sctx->chip_class >= GFX9);
 
-   if (!sscreen->dpbb_allowed || sctx->dpbb_force_off) {
+   if (!sscreen->dpbb_allowed || sctx->dpbb_force_off ||
+       sctx->dpbb_force_off_profile_vs || sctx->dpbb_force_off_profile_ps) {
       si_emit_dpbb_disable(sctx);
       return;
    }
@@ -498,23 +490,6 @@ void si_emit_dpbb_state(struct si_context *sctx)
       return;
    }
 
-   /* Enable DFSM if it's preferred. */
-   unsigned punchout_mode = V_028060_FORCE_OFF;
-   bool disable_start_of_prim = true;
-   bool zs_eqaa_dfsm_bug =
-      sctx->chip_class == GFX9 && sctx->framebuffer.state.zsbuf &&
-      sctx->framebuffer.nr_samples != MAX2(1, sctx->framebuffer.state.zsbuf->texture->nr_samples);
-
-   if (sscreen->dfsm_allowed && !zs_eqaa_dfsm_bug && cb_target_enabled_4bit &&
-       !G_02880C_KILL_ENABLE(db_shader_control) &&
-       /* These two also imply that DFSM is disabled when PS writes to memory. */
-       !G_02880C_EXEC_ON_HIER_FAIL(db_shader_control) &&
-       !G_02880C_EXEC_ON_NOOP(db_shader_control) &&
-       G_02880C_Z_ORDER(db_shader_control) == V_02880C_EARLY_Z_THEN_LATE_Z) {
-      punchout_mode = V_028060_AUTO;
-      disable_start_of_prim = (cb_target_enabled_4bit & blend->blend_enable_4bit) != 0;
-   }
-
    /* Tunable parameters. */
    unsigned fpovs_per_batch = 63; /* allowed range: [0, 255], 0 = unlimited */
 
@@ -533,19 +508,10 @@ void si_emit_dpbb_state(struct si_context *sctx)
          S_028C44_BIN_SIZE_Y_EXTEND(bin_size_extend.y) |
          S_028C44_CONTEXT_STATES_PER_BIN(sscreen->pbb_context_states_per_bin - 1) |
          S_028C44_PERSISTENT_STATES_PER_BIN(sscreen->pbb_persistent_states_per_bin - 1) |
-         S_028C44_DISABLE_START_OF_PRIM(disable_start_of_prim) |
+         S_028C44_DISABLE_START_OF_PRIM(1) |
          S_028C44_FPOVS_PER_BATCH(fpovs_per_batch) | S_028C44_OPTIMAL_BIN_SELECTION(1) |
-         S_028C44_FLUSH_ON_BINNING_TRANSITION((sctx->family == CHIP_VEGA12 ||
-                                               sctx->family == CHIP_VEGA20 ||
-                                               sctx->family >= CHIP_RAVEN2) &&
-                                              sctx->last_binning_enabled != 1));
-
-   unsigned db_dfsm_control =
-      sctx->chip_class >= GFX10 ? R_028038_DB_DFSM_CONTROL : R_028060_DB_DFSM_CONTROL;
-   radeon_opt_set_context_reg(
-      sctx, db_dfsm_control, SI_TRACKED_DB_DFSM_CONTROL,
-      S_028060_PUNCHOUT_MODE(punchout_mode) | S_028060_POPS_DRAIN_PS_ON_OVERLAP(1));
+         S_028C44_FLUSH_ON_BINNING_TRANSITION(sctx->family == CHIP_VEGA12 ||
+                                              sctx->family == CHIP_VEGA20 ||
+                                              sctx->family >= CHIP_RAVEN2));
    radeon_end_update_context_roll(sctx);
-
-   sctx->last_binning_enabled = true;
 }

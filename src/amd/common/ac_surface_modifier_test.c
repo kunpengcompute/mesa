@@ -42,10 +42,7 @@ struct test_entry {
    unsigned char hash[20];
 
    /* u_vector requires power of two sizing */
-   char padding[8];
-#ifdef PIPE_ARCH_X86
-   char padding2[8];
-#endif
+   char padding[sizeof(void*) == 8 ? 8 : 16];
 };
 
 static uint64_t
@@ -245,7 +242,7 @@ static void test_modifier(const struct radeon_info *info,
                G_0098F8_NUM_SHADER_ENGINES_GFX9(info->gb_addr_config),
          .se = G_0098F8_NUM_SHADER_ENGINES_GFX9(info->gb_addr_config),
          .banks_or_pkrs = info->chip_class >= GFX10 ?
-            (info->gb_addr_config) : G_0098F8_NUM_BANKS(info->gb_addr_config)
+            G_0098F8_NUM_PKRS(info->gb_addr_config) : G_0098F8_NUM_BANKS(info->gb_addr_config)
       };
 
       struct radeon_surf surf = (struct radeon_surf) {
@@ -400,7 +397,7 @@ int main()
    STATIC_ASSERT(sizeof(struct test_entry) == 64);
 
    struct u_vector test_entries;
-   u_vector_init(&test_entries,  sizeof(struct test_entry), 4096);
+   u_vector_init_pow2(&test_entries, 64, sizeof(struct test_entry));
 
    for (unsigned i = 0; i < ARRAY_SIZE(testcases); ++i) {
       struct radeon_info info = get_radeon_info(&testcases[i]);

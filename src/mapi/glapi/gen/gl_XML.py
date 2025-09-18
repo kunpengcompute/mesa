@@ -24,8 +24,6 @@
 # Authors:
 #    Ian Romanick <idr@us.ibm.com>
 
-from __future__ import print_function
-
 from collections import OrderedDict
 from decimal import Decimal
 import xml.etree.ElementTree as ET
@@ -657,6 +655,7 @@ class gl_function( gl_item ):
         assert not alias or not element.get('marshal')
         assert not alias or not element.get('marshal_count')
         assert not alias or not element.get('marshal_sync')
+        assert not alias or not element.get('marshal_call_before')
         assert not alias or not element.get('marshal_call_after')
 
         if name in static_data.functions:

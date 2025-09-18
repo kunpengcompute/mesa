@@ -60,11 +60,63 @@
 #include "program/prog_parameter.h"
 #include "util/ralloc.h"
 #include "util/hash_table.h"
-#include "util/mesa-sha1.h"
 #include "util/crc32.h"
 #include "util/os_file.h"
-#include "util/simple_list.h"
+#include "util/list.h"
+#include "util/u_process.h"
 #include "util/u_string.h"
+#include "api_exec_decl.h"
+
+#include "state_tracker/st_context.h"
+#include "state_tracker/st_program.h"
+
+#ifdef ENABLE_SHADER_CACHE
+#if CUSTOM_SHADER_REPLACEMENT
+#include "shader_replacement.h"
+/* shader_replacement.h must declare a variable like this:
+
+   struct _shader_replacement {
+      // process name. If null, only sha1 is used to match
+      const char *app;
+      // original glsl shader sha1
+      const char *sha1;
+      // shader stage
+      gl_shader_stage stage;
+      ... any other information ...
+   };
+   struct _shader_replacement shader_replacements[...];
+
+   And a method to load a given replacement and return the new
+   glsl source:
+
+   char* load_shader_replacement(struct _shader_replacement *repl);
+
+   And a method to replace the shader without sha1 matching:
+
+   char *try_direct_replace(const char *app, const char *source)
+
+   shader_replacement.h can be generated at build time, or copied
+   from an external folder, or any other method.
+*/
+#else
+struct _shader_replacement {
+   const char *app;
+   const char *sha1;
+   gl_shader_stage stage;
+};
+struct _shader_replacement shader_replacements[0];
+
+static char *try_direct_replace(const char *app, const char *source)
+{
+   return NULL;
+}
+
+static char* load_shader_replacement(struct _shader_replacement *repl)
+{
+   return NULL;
+}
+#endif
+#endif
 
 /**
  * Return mask of GLSL_x flags by examining the MESA_GLSL env var.
@@ -78,10 +130,12 @@ _mesa_get_shader_flags(void)
    if (env) {
       if (strstr(env, "dump_on_error"))
          flags |= GLSL_DUMP_ON_ERROR;
+#ifndef CUSTOM_SHADER_REPLACEMENT
       else if (strstr(env, "dump"))
          flags |= GLSL_DUMP;
       if (strstr(env, "log"))
          flags |= GLSL_LOG;
+#endif
       if (strstr(env, "cache_fb"))
          flags |= GLSL_CACHE_FALLBACK;
       if (strstr(env, "cache_info"))
@@ -101,6 +155,14 @@ _mesa_get_shader_flags(void)
    return flags;
 }
 
+#define ANDROID_SHADER_CAPTURE 0
+
+#if ANDROID_SHADER_CAPTURE
+#include "util/u_process.h"
+#include <sys/stat.h>
+#include <sys/types.h>
+#endif
+
 /**
  * Memoized version of getenv("MESA_SHADER_CAPTURE_PATH").
  */
@@ -113,6 +175,15 @@ _mesa_get_shader_capture_path(void)
    if (!read_env_var) {
       path = getenv("MESA_SHADER_CAPTURE_PATH");
       read_env_var = true;
+
+#if ANDROID_SHADER_CAPTURE
+      if (!path) {
+         char *p;
+         asprintf(&p, "/data/shaders/%s", util_get_process_name());
+         mkdir(p, 0755);
+         path = p;
+      }
+#endif
    }
 
    return path;
@@ -651,12 +722,32 @@ check_tes_query(struct gl_context *ctx, const struct gl_shader_program *shProg)
    return false;
 }
 
-/**
- * Return the length of a string, or 0 if the pointer passed in is NULL
- */
-static size_t strlen_or_zero(const char *s)
+static bool
+get_shader_program_completion_status(struct gl_context *ctx,
+                                     struct gl_shader_program *shprog)
 {
-   return s ? strlen(s) : 0;
+   struct pipe_screen *screen = ctx->screen;
+
+   if (!screen->is_parallel_shader_compilation_finished)
+      return true;
+
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      struct gl_linked_shader *linked = shprog->_LinkedShaders[i];
+      void *sh = NULL;
+
+      if (!linked || !linked->Program)
+         continue;
+
+      if (linked->Program->variants)
+         sh = linked->Program->variants->driver_shader;
+
+      unsigned type = pipe_shader_type_from_mesa(i);
+
+      if (sh &&
+          !screen->is_parallel_shader_compilation_finished(screen, sh, type))
+         return false;
+   }
+   return true;
 }
 
 /**
@@ -701,10 +792,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       *params = shProg->DeletePending;
       return;
    case GL_COMPLETION_STATUS_ARB:
-      if (ctx->Driver.GetShaderProgramCompletionStatus)
-         *params = ctx->Driver.GetShaderProgramCompletionStatus(ctx, shProg);
-      else
-         *params = GL_TRUE;
+      *params = get_shader_program_completion_status(ctx, shProg);
       return;
    case GL_LINK_STATUS:
       *params = shProg->data->LinkStatus ? GL_TRUE : GL_FALSE;
@@ -726,48 +814,13 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       *params = _mesa_longest_attribute_name_length(shProg);
       return;
    case GL_ACTIVE_UNIFORMS: {
-      unsigned i;
-      const unsigned num_uniforms =
-         shProg->data->NumUniformStorage - shProg->data->NumHiddenUniforms;
-      for (*params = 0, i = 0; i < num_uniforms; i++) {
-         if (!shProg->data->UniformStorage[i].is_shader_storage)
-            (*params)++;
-      }
+      _mesa_get_program_interfaceiv(shProg, GL_UNIFORM, GL_ACTIVE_RESOURCES,
+                                    params);
       return;
    }
    case GL_ACTIVE_UNIFORM_MAX_LENGTH: {
-      unsigned i;
-      GLint max_len = 0;
-      const unsigned num_uniforms =
-         shProg->data->NumUniformStorage - shProg->data->NumHiddenUniforms;
-
-      for (i = 0; i < num_uniforms; i++) {
-         if (shProg->data->UniformStorage[i].is_shader_storage)
-            continue;
-
-         /* From ARB_gl_spirv spec:
-          *
-          *   "If pname is ACTIVE_UNIFORM_MAX_LENGTH, the length of the
-          *    longest active uniform name, including a null terminator, is
-          *    returned. If no active uniforms exist, zero is returned. If no
-          *    name reflection information is available, one is returned."
-          *
-          * We are setting 0 here, as below it will add 1 for the NUL character.
-          */
-         const GLint base_len =
-            strlen_or_zero(shProg->data->UniformStorage[i].name);
-
-	 /* Add one for the terminating NUL character for a non-array, and
-	  * 4 for the "[0]" and the NUL for an array.
-	  */
-         const GLint len = base_len + 1 +
-            ((shProg->data->UniformStorage[i].array_elements != 0) ? 3 : 0);
-
-	 if (len > max_len)
-	    max_len = len;
-      }
-
-      *params = max_len;
+      _mesa_get_program_interfaceiv(shProg, GL_UNIFORM, GL_MAX_NAME_LENGTH,
+                                    params);
       return;
    }
    case GL_TRANSFORM_FEEDBACK_VARYINGS:
@@ -786,41 +839,11 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
          *params = shProg->TransformFeedback.NumVarying;
       return;
    case GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH: {
-      unsigned i;
-      GLint max_len = 0;
-      bool in_shader_varyings;
-      int num_varying;
-
       if (!has_xfb)
          break;
 
-      /* Check first if there are transform feedback varyings specified in the
-       * shader (ARB_enhanced_layouts). If there isn't any, use the ones
-       * specified using the API.
-       */
-      in_shader_varyings = shProg->last_vert_prog &&
-         shProg->last_vert_prog->sh.LinkedTransformFeedback->NumVarying > 0;
-
-      num_varying = in_shader_varyings ?
-         shProg->last_vert_prog->sh.LinkedTransformFeedback->NumVarying :
-         shProg->TransformFeedback.NumVarying;
-
-      for (i = 0; i < num_varying; i++) {
-         const char *name = in_shader_varyings ?
-            shProg->last_vert_prog->sh.LinkedTransformFeedback->Varyings[i].Name
-            : shProg->TransformFeedback.VaryingNames[i];
-
-         /* Add one for the terminating NUL character. We have to use
-          * strlen_or_zero, as for shaders constructed from SPIR-V binaries,
-          * it is possible that no name reflection information is available.
-          */
-         const GLint len = strlen_or_zero(name) + 1;
-
-         if (len > max_len)
-            max_len = len;
-      }
-
-      *params = max_len;
+      _mesa_get_program_interfaceiv(shProg, GL_TRANSFORM_FEEDBACK_VARYING,
+                                    GL_MAX_NAME_LENGTH, params);
       return;
    }
    case GL_TRANSFORM_FEEDBACK_BUFFER_MODE:
@@ -863,29 +886,11 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       }
       return;
    case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH: {
-      unsigned i;
-      GLint max_len = 0;
-
       if (!has_ubo)
          break;
 
-      for (i = 0; i < shProg->data->NumUniformBlocks; i++) {
-	 /* Add one for the terminating NUL character. Name can be NULL, in
-          * that case, from ARB_gl_spirv:
-          *   "If pname is ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH, the length of
-          *    the longest active uniform block name, including the null
-          *    terminator, is returned. If no active uniform blocks exist,
-          *    zero is returned. If no name reflection information is
-          *    available, one is returned."
-	  */
-         const GLint len =
-            strlen_or_zero(shProg->data->UniformBlocks[i].Name) + 1;
-
-	 if (len > max_len)
-	    max_len = len;
-      }
-
-      *params = max_len;
+      _mesa_get_program_interfaceiv(shProg, GL_UNIFORM_BLOCK,
+                                    GL_MAX_NAME_LENGTH, params);
       return;
    }
    case GL_ACTIVE_UNIFORM_BLOCKS:
@@ -914,7 +919,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       }
       return;
    case GL_ACTIVE_ATOMIC_COUNTER_BUFFERS:
-      if (!ctx->Extensions.ARB_shader_atomic_counters)
+      if (!ctx->Extensions.ARB_shader_atomic_counters && !_mesa_is_gles31(ctx))
          break;
 
       *params = shProg->data->NumAtomicBuffers;
@@ -935,7 +940,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       }
       for (i = 0; i < 3; i++)
          params[i] = shProg->_LinkedShaders[MESA_SHADER_COMPUTE]->
-            Program->info.cs.local_size[i];
+            Program->info.workgroup_size[i];
       return;
    }
    case GL_PROGRAM_SEPARABLE:
@@ -956,8 +961,22 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       if (!has_tess)
          break;
       if (check_tes_query(ctx, shProg)) {
-         *params = shProg->_LinkedShaders[MESA_SHADER_TESS_EVAL]->
-            Program->info.tess.primitive_mode;
+         const struct gl_linked_shader *tes =
+            shProg->_LinkedShaders[MESA_SHADER_TESS_EVAL];
+         switch (tes->Program->info.tess._primitive_mode) {
+         case TESS_PRIMITIVE_TRIANGLES:
+            *params = GL_TRIANGLES;
+            break;
+         case TESS_PRIMITIVE_QUADS:
+            *params = GL_QUADS;
+            break;
+         case TESS_PRIMITIVE_ISOLINES:
+            *params = GL_ISOLINES;
+            break;
+         case TESS_PRIMITIVE_UNSPECIFIED:
+            *params = 0;
+            break;
+         }
       }
       return;
    case GL_TESS_GEN_SPACING:
@@ -1131,7 +1150,8 @@ get_shader_source(struct gl_context *ctx, GLuint shader, GLsizei maxLength,
  * glShaderSource[ARB].
  */
 static void
-set_shader_source(struct gl_shader *sh, const GLchar *source)
+set_shader_source(struct gl_shader *sh, const GLchar *source,
+                  const uint8_t original_sha1[SHA1_DIGEST_LENGTH])
 {
    assert(sh);
 
@@ -1150,6 +1170,7 @@ set_shader_source(struct gl_shader *sh, const GLchar *source)
        * fallback.
        */
       sh->FallbackSource = sh->Source;
+      memcpy(sh->fallback_source_sha1, sh->source_sha1, SHA1_DIGEST_LENGTH);
       sh->Source = source;
    } else {
       /* free old shader source string and install new one */
@@ -1157,9 +1178,7 @@ set_shader_source(struct gl_shader *sh, const GLchar *source)
       sh->Source = source;
    }
 
-#ifdef DEBUG
-   sh->SourceChecksum = util_hash_crc32(sh->Source, strlen(sh->Source));
-#endif
+   memcpy(sh->source_sha1, original_sha1, SHA1_DIGEST_LENGTH);
 }
 
 static void
@@ -1201,7 +1220,7 @@ _mesa_compile_shader(struct gl_context *ctx, struct gl_shader *sh)
       if (ctx->_Shader->Flags & GLSL_DUMP) {
          _mesa_log("GLSL source for %s shader %d:\n",
                  _mesa_shader_stage_to_string(sh->Stage), sh->Name);
-         _mesa_log("%s\n", sh->Source);
+         _mesa_log_direct(sh->Source);
       }
 
       ensure_builtin_types(ctx);
@@ -1342,6 +1361,7 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
       }
    }
 
+#ifndef CUSTOM_SHADER_REPLACEMENT
    /* Capture .shader_test files. */
    const char *capture_path = _mesa_get_shader_capture_path();
    if (shProg->Name != 0 && shProg->Name != ~0 && capture_path != NULL) {
@@ -1386,6 +1406,7 @@ link_program(struct gl_context *ctx, struct gl_shader_program *shProg,
 
       ralloc_free(filename);
    }
+#endif
 
    if (shProg->data->LinkStatus == LINKING_FAILURE &&
        (ctx->_Shader->Flags & GLSL_REPORT_ERRORS)) {
@@ -1446,16 +1467,9 @@ print_shader_info(const struct gl_shader_program *shProg)
 
    printf("Mesa: glUseProgram(%u)\n", shProg->Name);
    for (i = 0; i < shProg->NumShaders; i++) {
-#ifdef DEBUG
-      printf("  %s shader %u, checksum %u\n",
-             _mesa_shader_stage_to_string(shProg->Shaders[i]->Stage),
-	     shProg->Shaders[i]->Name,
-	     shProg->Shaders[i]->SourceChecksum);
-#else
       printf("  %s shader %u\n",
              _mesa_shader_stage_to_string(shProg->Shaders[i]->Stage),
              shProg->Shaders[i]->Name);
-#endif
    }
    if (shProg->_LinkedShaders[MESA_SHADER_VERTEX])
       printf("  vert prog %u\n",
@@ -1691,7 +1705,7 @@ _mesa_DeleteObjectARB(GLhandleARB obj)
          delete_shader(ctx, obj);
       }
       else {
-         /* error? */
+         _mesa_error(ctx, GL_INVALID_VALUE, "glDeleteObjectARB");
       }
    }
 }
@@ -1915,16 +1929,6 @@ _mesa_LinkProgram(GLuint programObj)
 }
 
 #ifdef ENABLE_SHADER_CACHE
-/**
- * Generate a SHA-1 hash value string for given source string.
- */
-static void
-generate_sha1(const char *source, char sha_str[64])
-{
-   unsigned char sha[20];
-   _mesa_sha1_compute(source, strlen(source), sha);
-   _mesa_sha1_format(sha_str, sha);
-}
 
 /**
  * Construct a full path for shader replacement functionality using
@@ -1934,17 +1938,15 @@ generate_sha1(const char *source, char sha_str[64])
  * <path>/<stage prefix>_<CHECKSUM>.arb
  */
 static char *
-construct_name(const gl_shader_stage stage, const char *source,
-               const char *path)
+construct_name(const gl_shader_stage stage, const char *sha,
+               const char *source, const char *path)
 {
-   char sha[64];
    static const char *types[] = {
       "VS", "TC", "TE", "GS", "FS", "CS",
    };
 
    const char *format = strncmp(source, "!!ARB", 5) ? "glsl" : "arb";
 
-   generate_sha1(source, sha);
    return ralloc_asprintf(NULL, "%s/%s_%s.%s", path, types[stage], sha, format);
 }
 
@@ -1952,11 +1954,14 @@ construct_name(const gl_shader_stage stage, const char *source,
  * Write given shader source to a file in MESA_SHADER_DUMP_PATH.
  */
 void
-_mesa_dump_shader_source(const gl_shader_stage stage, const char *source)
+_mesa_dump_shader_source(const gl_shader_stage stage, const char *source,
+                         const uint8_t sha1[SHA1_DIGEST_LENGTH])
 {
+#ifndef CUSTOM_SHADER_REPLACEMENT
    static bool path_exists = true;
    char *dump_path;
    FILE *f;
+   char sha[64];
 
    if (!path_exists)
       return;
@@ -1967,7 +1972,8 @@ _mesa_dump_shader_source(const gl_shader_stage stage, const char *source)
       return;
    }
 
-   char *name = construct_name(stage, source, dump_path);
+   _mesa_sha1_format(sha, sha1);
+   char *name = construct_name(stage, sha, source, dump_path);
 
    f = fopen(name, "w");
    if (f) {
@@ -1979,6 +1985,7 @@ _mesa_dump_shader_source(const gl_shader_stage stage, const char *source)
                     strerror(errno));
    }
    ralloc_free(name);
+#endif
 }
 
 /**
@@ -1986,13 +1993,39 @@ _mesa_dump_shader_source(const gl_shader_stage stage, const char *source)
  * Useful for debugging to override an app's shader.
  */
 GLcharARB *
-_mesa_read_shader_source(const gl_shader_stage stage, const char *source)
+_mesa_read_shader_source(const gl_shader_stage stage, const char *source,
+                         const uint8_t sha1[SHA1_DIGEST_LENGTH])
 {
    char *read_path;
    static bool path_exists = true;
    int len, shader_size = 0;
    GLcharARB *buffer;
    FILE *f;
+   char sha[64];
+
+   _mesa_sha1_format(sha, sha1);
+
+   if (!debug_get_bool_option("MESA_NO_SHADER_REPLACEMENT", false)) {
+      const char *process_name = util_get_process_name();
+
+      char *new_source = try_direct_replace(process_name, source);
+      if (new_source)
+         return new_source;
+
+      for (size_t i = 0; i < ARRAY_SIZE(shader_replacements); i++) {
+         if (stage != shader_replacements[i].stage)
+            continue;
+
+         if (shader_replacements[i].app &&
+             strcmp(process_name, shader_replacements[i].app) != 0)
+            continue;
+
+         if (memcmp(sha, shader_replacements[i].sha1, 40) != 0)
+            continue;
+
+         return load_shader_replacement(&shader_replacements[i]);
+      }
+   }
 
    if (!path_exists)
       return NULL;
@@ -2003,7 +2036,7 @@ _mesa_read_shader_source(const gl_shader_stage stage, const char *source)
       return NULL;
    }
 
-   char *name = construct_name(stage, source, read_path);
+   char *name = construct_name(stage, sha, source, read_path);
    f = fopen(name, "r");
    ralloc_free(name);
    if (!f)
@@ -2066,7 +2099,7 @@ shader_source(struct gl_context *ctx, GLuint shaderObj, GLsizei count,
     * This array holds offsets of where the appropriate string ends, thus the
     * last element will be set to the total length of the source code.
     */
-   offsets = malloc(count * sizeof(GLint));
+   offsets = calloc(count, sizeof(GLint));
    if (offsets == NULL) {
       _mesa_error(ctx, GL_OUT_OF_MEMORY, "glShaderSourceARB");
       return;
@@ -2108,22 +2141,26 @@ shader_source(struct gl_context *ctx, GLuint shaderObj, GLsizei count,
    source[totalLength - 1] = '\0';
    source[totalLength - 2] = '\0';
 
+   /* Compute the original source sha1 before shader replacement. */
+   uint8_t original_sha1[SHA1_DIGEST_LENGTH];
+   _mesa_sha1_compute(source, strlen(source), original_sha1);
+
 #ifdef ENABLE_SHADER_CACHE
    GLcharARB *replacement;
 
    /* Dump original shader source to MESA_SHADER_DUMP_PATH and replace
     * if corresponding entry found from MESA_SHADER_READ_PATH.
     */
-   _mesa_dump_shader_source(sh->Stage, source);
+   _mesa_dump_shader_source(sh->Stage, source, original_sha1);
 
-   replacement = _mesa_read_shader_source(sh->Stage, source);
+   replacement = _mesa_read_shader_source(sh->Stage, source, original_sha1);
    if (replacement) {
       free(source);
       source = replacement;
    }
 #endif /* ENABLE_SHADER_CACHE */
 
-   set_shader_source(sh, source);
+   set_shader_source(sh, source, original_sha1);
 
    free(offsets);
 }
@@ -2588,7 +2625,6 @@ _mesa_use_program(struct gl_context *ctx, gl_shader_stage stage,
                                      shProg);
       _mesa_reference_program(ctx, target, prog);
       _mesa_update_allow_draw_out_of_order(ctx);
-      _mesa_update_primitive_id_is_unused(ctx);
       _mesa_update_valid_to_render_state(ctx);
       if (stage == MESA_SHADER_VERTEX)
          _mesa_update_vertex_processing_mode(ctx);
@@ -2696,6 +2732,16 @@ _mesa_CreateShaderProgramv(GLenum type, GLsizei count,
 }
 
 
+static void
+set_patch_vertices(struct gl_context *ctx, GLint value)
+{
+   if (ctx->TessCtrlProgram.patch_vertices != value) {
+      FLUSH_VERTICES(ctx, 0, GL_CURRENT_BIT);
+      ctx->NewDriverState |= ST_NEW_TESS_STATE;
+      ctx->TessCtrlProgram.patch_vertices = value;
+   }
+}
+
 /**
  * For GL_ARB_tessellation_shader
  */
@@ -2703,8 +2749,8 @@ void GLAPIENTRY
 _mesa_PatchParameteri_no_error(GLenum pname, GLint value)
 {
    GET_CURRENT_CONTEXT(ctx);
-   FLUSH_VERTICES(ctx, 0, GL_CURRENT_BIT);
-   ctx->TessCtrlProgram.patch_vertices = value;
+
+   set_patch_vertices(ctx, value);
 }
 
 
@@ -2728,8 +2774,7 @@ _mesa_PatchParameteri(GLenum pname, GLint value)
       return;
    }
 
-   FLUSH_VERTICES(ctx, 0, GL_CURRENT_BIT);
-   ctx->TessCtrlProgram.patch_vertices = value;
+   set_patch_vertices(ctx, value);
 }
 
 
@@ -2748,13 +2793,13 @@ _mesa_PatchParameterfv(GLenum pname, const GLfloat *values)
       FLUSH_VERTICES(ctx, 0, 0);
       memcpy(ctx->TessCtrlProgram.patch_default_outer_level, values,
              4 * sizeof(GLfloat));
-      ctx->NewDriverState |= ctx->DriverFlags.NewDefaultTessLevels;
+      ctx->NewDriverState |= ST_NEW_TESS_STATE;
       return;
    case GL_PATCH_DEFAULT_INNER_LEVEL:
       FLUSH_VERTICES(ctx, 0, 0);
       memcpy(ctx->TessCtrlProgram.patch_default_inner_level, values,
              2 * sizeof(GLfloat));
-      ctx->NewDriverState |= ctx->DriverFlags.NewDefaultTessLevels;
+      ctx->NewDriverState |= ST_NEW_TESS_STATE;
       return;
    default:
       _mesa_error(ctx, GL_INVALID_ENUM, "glPatchParameterfv");
@@ -2904,7 +2949,7 @@ _mesa_GetActiveSubroutineUniformiv(GLuint program, GLenum shadertype,
    case GL_UNIFORM_NAME_LENGTH:
       res = _mesa_program_resource_find_index(shProg, resource_type, index);
       if (res) {
-         values[0] = strlen(_mesa_program_resource_name(res)) + 1
+         values[0] = _mesa_program_resource_name_length(res) + 1
             + ((_mesa_program_resource_array_size(res) != 0) ? 3 : 0);
       }
       break;
@@ -3149,7 +3194,7 @@ _mesa_GetProgramStageiv(GLuint program, GLenum shadertype,
       for (i = 0; i < p->sh.NumSubroutineFunctions; i++) {
          res = _mesa_program_resource_find_index(shProg, resource_type, i);
          if (res) {
-            const GLint len = strlen(_mesa_program_resource_name(res)) + 1;
+            const GLint len = _mesa_program_resource_name_length(res) + 1;
             if (len > max_len)
                max_len = len;
          }
@@ -3168,7 +3213,7 @@ _mesa_GetProgramStageiv(GLuint program, GLenum shadertype,
       for (i = 0; i < p->sh.NumSubroutineUniformRemapTable; i++) {
          res = _mesa_program_resource_find_index(shProg, resource_type, i);
          if (res) {
-            const GLint len = strlen(_mesa_program_resource_name(res)) + 1
+            const GLint len = _mesa_program_resource_name_length(res) + 1
                + ((_mesa_program_resource_array_size(res) != 0) ? 3 : 0);
 
             if (len > max_len)
@@ -3190,8 +3235,7 @@ _mesa_GetProgramStageiv(GLuint program, GLenum shadertype,
  */
 struct sh_incl_path_entry
 {
-   struct sh_incl_path_entry *next;
-   struct sh_incl_path_entry *prev;
+   struct list_head list;
 
    char *path;
 };
@@ -3308,8 +3352,8 @@ validate_and_tokenise_sh_incl(struct gl_context *ctx,
    char *path_str = strtok_r(full_path, "/", &save_ptr);
 
    *path_list = rzalloc(mem_ctx, struct sh_incl_path_entry);
-
-   make_empty_list(*path_list);
+   struct sh_incl_path_entry * list = *path_list;
+   list_inithead(&list->list);
 
    while (path_str != NULL) {
       if (strlen(path_str) == 0) {
@@ -3324,14 +3368,13 @@ validate_and_tokenise_sh_incl(struct gl_context *ctx,
       if (strcmp(path_str, ".") == 0) {
          /* Do nothing */
       } else if (strcmp(path_str, "..") == 0) {
-         struct sh_incl_path_entry *last = last_elem(*path_list);
-         remove_from_list(last);
+         list_del(list->list.prev);
       } else {
          struct sh_incl_path_entry *path =
             rzalloc(mem_ctx, struct sh_incl_path_entry);
 
          path->path = strdup(path_str);
-         insert_at_tail(*path_list, path);
+         list_addtail(&path->list, &list->list);
       }
 
       path_str = strtok_r(NULL, "/", &save_ptr);
@@ -3371,7 +3414,7 @@ next_relative_path:
          {
             struct sh_incl_path_entry *rel_path_list =
                ctx->Shared->ShaderIncludes->include_paths[i];
-            foreach(entry, rel_path_list) {
+            LIST_FOR_EACH_ENTRY(entry, &rel_path_list->list, list) {
                struct hash_entry *ht_entry =
                   _mesa_hash_table_search(path_ht, entry->path);
 
@@ -3400,7 +3443,7 @@ next_relative_path:
          }
       }
 
-      foreach(entry, path_list) {
+      LIST_FOR_EACH_ENTRY(entry, &path_list->list, list) {
          struct hash_entry *ht_entry =
             _mesa_hash_table_search(path_ht, entry->path);
 
@@ -3502,13 +3545,13 @@ _mesa_NamedStringARB(GLenum type, GLint namelen, const GLchar *name,
       return;
    }
 
-   mtx_lock(&ctx->Shared->ShaderIncludeMutex);
+   simple_mtx_lock(&ctx->Shared->ShaderIncludeMutex);
 
    struct hash_table *path_ht =
       ctx->Shared->ShaderIncludes->shader_include_tree;
 
    struct sh_incl_path_entry *entry;
-   foreach(entry, path_list) {
+   LIST_FOR_EACH_ENTRY(entry, &path_list->list, list) {
       struct hash_entry *ht_entry =
          _mesa_hash_table_search(path_ht, entry->path);
 
@@ -3525,13 +3568,13 @@ _mesa_NamedStringARB(GLenum type, GLint namelen, const GLchar *name,
 
       path_ht = sh_incl_ht_entry->path;
 
-      if (last_elem(path_list) == entry) {
+      if (list_last_entry(&path_list->list, struct sh_incl_path_entry, list) == entry) {
          free(sh_incl_ht_entry->shader_source);
          sh_incl_ht_entry->shader_source = string_cp;
       }
    }
 
-   mtx_unlock(&ctx->Shared->ShaderIncludeMutex);
+   simple_mtx_unlock(&ctx->Shared->ShaderIncludeMutex);
 
    free(name_cp);
    ralloc_free(mem_ctx);
@@ -3557,12 +3600,12 @@ _mesa_DeleteNamedStringARB(GLint namelen, const GLchar *name)
       return;
    }
 
-   mtx_lock(&ctx->Shared->ShaderIncludeMutex);
+   simple_mtx_lock(&ctx->Shared->ShaderIncludeMutex);
 
    free(shader_include->shader_source);
    shader_include->shader_source = NULL;
 
-   mtx_unlock(&ctx->Shared->ShaderIncludeMutex);
+   simple_mtx_unlock(&ctx->Shared->ShaderIncludeMutex);
 
    free(name_cp);
 }
@@ -3582,7 +3625,7 @@ _mesa_CompileShaderIncludeARB(GLuint shader, GLsizei count,
 
    void *mem_ctx = ralloc_context(NULL);
 
-   mtx_lock(&ctx->Shared->ShaderIncludeMutex);
+   simple_mtx_lock(&ctx->Shared->ShaderIncludeMutex);
 
    ctx->Shared->ShaderIncludes->include_paths =
       ralloc_array_size(mem_ctx, sizeof(struct sh_incl_path_entry *), count);
@@ -3626,7 +3669,7 @@ exit:
    ctx->Shared->ShaderIncludes->relative_path_cursor = 0;
    ctx->Shared->ShaderIncludes->include_paths = NULL;
 
-   mtx_unlock(&ctx->Shared->ShaderIncludeMutex);
+   simple_mtx_unlock(&ctx->Shared->ShaderIncludeMutex);
 
    ralloc_free(mem_ctx);
 }

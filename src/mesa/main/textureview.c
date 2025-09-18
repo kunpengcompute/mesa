@@ -43,6 +43,9 @@
 #include "textureview.h"
 #include "stdbool.h"
 #include "mtypes.h"
+#include "api_exec_decl.h"
+
+#include "state_tracker/st_cb_texture.h"
 
 /* Table 3.X.2 (Compatible internal formats for TextureView)
     ---------------------------------------------------------------------------
@@ -486,6 +489,7 @@ _mesa_set_texture_view_state(struct gl_context *ctx,
     */
 
    texObj->Immutable = GL_TRUE;
+   texObj->External = GL_FALSE;
    texObj->Attrib.ImmutableLevels = levels;
    texObj->Attrib.MinLevel = 0;
    texObj->Attrib.NumLevels = levels;
@@ -619,9 +623,9 @@ texture_view(struct gl_context *ctx, struct gl_texture_object *origTexObj,
          return;
       }
 
-      sizeOK = ctx->Driver.TestProxyTexImage(ctx, target, 1, 0, texFormat,
-                                             origTexImage->NumSamples,
-                                             width, height, depth);
+      sizeOK = st_TestProxyTexImage(ctx, target, 1, 0, texFormat,
+                                    origTexImage->NumSamples,
+                                    width, height, depth);
       if (!sizeOK) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "glTextureView(invalid texture size)");
@@ -692,13 +696,13 @@ texture_view(struct gl_context *ctx, struct gl_texture_object *origTexObj,
    texObj->Attrib.NumLevels = newViewNumLevels;
    texObj->Attrib.NumLayers = newViewNumLayers;
    texObj->Immutable = GL_TRUE;
+   texObj->External = GL_FALSE;
    texObj->Attrib.ImmutableLevels = origTexObj->Attrib.ImmutableLevels;
    texObj->Target = target;
    texObj->TargetIndex = _mesa_tex_target_to_index(ctx, target);
    assert(texObj->TargetIndex < NUM_TEXTURE_TARGETS);
 
-   if (ctx->Driver.TextureView != NULL &&
-       !ctx->Driver.TextureView(ctx, texObj, origTexObj)) {
+   if (!st_TextureView(ctx, texObj, origTexObj)) {
       return; /* driver recorded error */
    }
 }

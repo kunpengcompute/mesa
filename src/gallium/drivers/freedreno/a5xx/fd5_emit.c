@@ -292,7 +292,7 @@ setup_border_colors(struct fd_texture_stateobj *tex,
             else if (c < 3)
                e->rgb565 |= (int)(f_u * 0x1f) << (c ? 11 : 0);
             if (c == 3)
-               e->rgb5a1 |= (f_u > 0.5) ? 0x8000 : 0;
+               e->rgb5a1 |= (f_u > 0.5f) ? 0x8000 : 0;
             else
                e->rgb5a1 |= (int)(f_u * 0x1f) << (c * 5);
             if (c == 3)
@@ -366,7 +366,7 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
          OUT_RING(ring, sampler->texsamp0);
          OUT_RING(ring, sampler->texsamp1);
          OUT_RING(ring, sampler->texsamp2 |
-                           A5XX_TEX_SAMP_2_BCOLOR_OFFSET(bcolor_offset));
+                           A5XX_TEX_SAMP_2_BCOLOR_OFFSET(bcolor_offset + i));
          OUT_RING(ring, sampler->texsamp3);
 
          needs_border |= sampler->needs_border;
@@ -429,33 +429,34 @@ emit_ssbos(struct fd_context *ctx, struct fd_ringbuffer *ring,
 {
    unsigned count = util_last_bit(so->enabled_mask);
 
-   for (unsigned i = 0; i < count; i++) {
-      OUT_PKT7(ring, CP_LOAD_STATE4, 5);
-      OUT_RING(ring, CP_LOAD_STATE4_0_DST_OFF(i) |
-                        CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) |
-                        CP_LOAD_STATE4_0_STATE_BLOCK(sb) |
-                        CP_LOAD_STATE4_0_NUM_UNIT(1));
-      OUT_RING(ring, CP_LOAD_STATE4_1_STATE_TYPE(1) |
-                        CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
-      OUT_RING(ring, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+   OUT_PKT7(ring, CP_LOAD_STATE4, 3 + 2 * count);
+   OUT_RING(ring, CP_LOAD_STATE4_0_DST_OFF(0) |
+                     CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) |
+                     CP_LOAD_STATE4_0_STATE_BLOCK(sb) |
+                     CP_LOAD_STATE4_0_NUM_UNIT(count));
+   OUT_RING(ring, CP_LOAD_STATE4_1_STATE_TYPE(ST4_CONSTANTS) |
+                     CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
+   OUT_RING(ring, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
 
+   for (unsigned i = 0; i < count; i++) {
       struct pipe_shader_buffer *buf = &so->sb[i];
       unsigned sz = buf->buffer_size;
 
-      /* width is in dwords, overflows into height: */
-      sz /= 4;
-
-      OUT_RING(ring, A5XX_SSBO_1_0_WIDTH(sz));
+      /* Unlike a6xx, SSBO size is in bytes. */
+      OUT_RING(ring, A5XX_SSBO_1_0_WIDTH(sz & MASK(16)));
       OUT_RING(ring, A5XX_SSBO_1_1_HEIGHT(sz >> 16));
+   }
 
-      OUT_PKT7(ring, CP_LOAD_STATE4, 5);
-      OUT_RING(ring, CP_LOAD_STATE4_0_DST_OFF(i) |
-                        CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) |
-                        CP_LOAD_STATE4_0_STATE_BLOCK(sb) |
-                        CP_LOAD_STATE4_0_NUM_UNIT(1));
-      OUT_RING(ring, CP_LOAD_STATE4_1_STATE_TYPE(2) |
-                        CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
-      OUT_RING(ring, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+   OUT_PKT7(ring, CP_LOAD_STATE4, 3 + 2 * count);
+   OUT_RING(ring, CP_LOAD_STATE4_0_DST_OFF(0) |
+                     CP_LOAD_STATE4_0_STATE_SRC(SS4_DIRECT) |
+                     CP_LOAD_STATE4_0_STATE_BLOCK(sb) |
+                     CP_LOAD_STATE4_0_NUM_UNIT(count));
+   OUT_RING(ring, CP_LOAD_STATE4_1_STATE_TYPE(ST4_UBO) |
+                     CP_LOAD_STATE4_1_EXT_SRC_ADDR(0));
+   OUT_RING(ring, CP_LOAD_STATE4_2_EXT_SRC_ADDR_HI(0));
+   for (unsigned i = 0; i < count; i++) {
+      struct pipe_shader_buffer *buf = &so->sb[i];
 
       if (buf->buffer) {
          struct fd_resource *rsc = fd_resource(buf->buffer);
@@ -486,16 +487,8 @@ fd5_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd5_emit *emit)
          enum a5xx_vtx_fmt fmt = fd5_pipe2vtx(pfmt);
          bool isint = util_format_is_pure_integer(pfmt);
          uint32_t off = vb->buffer_offset + elem->src_offset;
-         uint32_t size = fd_bo_size(rsc->bo) - off;
+         uint32_t size = vb->buffer.resource->width0 - off;
          debug_assert(fmt != VFMT5_NONE);
-
-#ifdef DEBUG
-         /* see
-          * dEQP-GLES31.stress.vertex_attribute_binding.buffer_bounds.bind_vertex_buffer_offset_near_wrap_10
-          */
-         if (off > fd_bo_size(rsc->bo))
-            continue;
-#endif
 
          OUT_PKT4(ring, REG_A5XX_VFD_FETCH(j), 4);
          OUT_RELOC(ring, rsc->bo, off, 0, 0);
@@ -657,7 +650,7 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
       OUT_RING(ring, A5XX_GRAS_CL_VPORT_ZSCALE_0(ctx->viewport.scale[2]));
    }
 
-   if (dirty & FD_DIRTY_PROG)
+   if (dirty & (FD_DIRTY_PROG | FD_DIRTY_RASTERIZER_CLIP_PLANE_ENABLE))
       fd5_program_emit(ctx, ring, emit);
 
    if (dirty & FD_DIRTY_RASTERIZER) {
@@ -666,7 +659,8 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
       OUT_PKT4(ring, REG_A5XX_GRAS_SU_CNTL, 1);
       OUT_RING(ring, rasterizer->gras_su_cntl |
-                        COND(pfb->samples > 1, A5XX_GRAS_SU_CNTL_MSAA_ENABLE));
+                        A5XX_GRAS_SU_CNTL_LINE_MODE(pfb->samples > 1 ?
+                                                    RECTANGULAR : BRESENHAM));
 
       OUT_PKT4(ring, REG_A5XX_GRAS_SU_POINT_MINMAX, 2);
       OUT_RING(ring, rasterizer->gras_su_point_minmax);
@@ -775,6 +769,21 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
       }
    }
 
+   if (!emit->streamout_mask && info->num_outputs) {
+      OUT_PKT7(ring, CP_CONTEXT_REG_BUNCH, 4);
+      OUT_RING(ring, REG_A5XX_VPC_SO_CNTL);
+      OUT_RING(ring, 0);
+      OUT_RING(ring, REG_A5XX_VPC_SO_BUF_CNTL);
+      OUT_RING(ring, 0);
+   } else if (emit->streamout_mask && !(dirty & FD_DIRTY_PROG)) {
+      /* reemit the program (if we haven't already) to re-enable streamout.  We
+       * really should switch to setting up program state at compile time so we
+       * can separate the SO state from the rest, and not recompute all the
+       * time.
+       */
+      fd5_program_emit(ctx, ring, emit);
+   }
+
    if (dirty & FD_DIRTY_BLEND) {
       struct fd5_blend_stateobj *blend = fd5_blend_stateobj(ctx->blend);
       uint32_t i;
@@ -818,20 +827,20 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
       OUT_PKT4(ring, REG_A5XX_RB_BLEND_RED, 8);
       OUT_RING(ring, A5XX_RB_BLEND_RED_FLOAT(bcolor->color[0]) |
-                        A5XX_RB_BLEND_RED_UINT(bcolor->color[0] * 0xff) |
-                        A5XX_RB_BLEND_RED_SINT(bcolor->color[0] * 0x7f));
+                        A5XX_RB_BLEND_RED_UINT(CLAMP(bcolor->color[0], 0.f, 1.f) * 0xff) |
+                        A5XX_RB_BLEND_RED_SINT(CLAMP(bcolor->color[0], -1.f, 1.f) * 0x7f));
       OUT_RING(ring, A5XX_RB_BLEND_RED_F32(bcolor->color[0]));
       OUT_RING(ring, A5XX_RB_BLEND_GREEN_FLOAT(bcolor->color[1]) |
-                        A5XX_RB_BLEND_GREEN_UINT(bcolor->color[1] * 0xff) |
-                        A5XX_RB_BLEND_GREEN_SINT(bcolor->color[1] * 0x7f));
+                        A5XX_RB_BLEND_GREEN_UINT(CLAMP(bcolor->color[1], 0.f, 1.f) * 0xff) |
+                        A5XX_RB_BLEND_GREEN_SINT(CLAMP(bcolor->color[1], -1.f, 1.f) * 0x7f));
       OUT_RING(ring, A5XX_RB_BLEND_RED_F32(bcolor->color[1]));
       OUT_RING(ring, A5XX_RB_BLEND_BLUE_FLOAT(bcolor->color[2]) |
-                        A5XX_RB_BLEND_BLUE_UINT(bcolor->color[2] * 0xff) |
-                        A5XX_RB_BLEND_BLUE_SINT(bcolor->color[2] * 0x7f));
+                        A5XX_RB_BLEND_BLUE_UINT(CLAMP(bcolor->color[2], 0.f, 1.f) * 0xff) |
+                        A5XX_RB_BLEND_BLUE_SINT(CLAMP(bcolor->color[2], -1.f, 1.f) * 0x7f));
       OUT_RING(ring, A5XX_RB_BLEND_BLUE_F32(bcolor->color[2]));
       OUT_RING(ring, A5XX_RB_BLEND_ALPHA_FLOAT(bcolor->color[3]) |
-                        A5XX_RB_BLEND_ALPHA_UINT(bcolor->color[3] * 0xff) |
-                        A5XX_RB_BLEND_ALPHA_SINT(bcolor->color[3] * 0x7f));
+                        A5XX_RB_BLEND_ALPHA_UINT(CLAMP(bcolor->color[3], 0.f, 1.f) * 0xff) |
+                        A5XX_RB_BLEND_ALPHA_SINT(CLAMP(bcolor->color[3], -1.f, 1.f) * 0x7f));
       OUT_RING(ring, A5XX_RB_BLEND_ALPHA_F32(bcolor->color[3]));
    }
 
@@ -858,12 +867,14 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
    if (needs_border)
       emit_border_color(ctx, ring);
 
-   if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_SSBO)
-      emit_ssbos(ctx, ring, SB4_SSBO, &ctx->shaderbuf[PIPE_SHADER_FRAGMENT],
-                 fp);
+   if (!emit->binning_pass) {
+      if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_SSBO)
+         emit_ssbos(ctx, ring, SB4_SSBO, &ctx->shaderbuf[PIPE_SHADER_FRAGMENT],
+                  fp);
 
-   if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_IMAGE)
-      fd5_emit_images(ctx, ring, PIPE_SHADER_FRAGMENT, fp);
+      if (ctx->dirty_shader[PIPE_SHADER_FRAGMENT] & FD_DIRTY_SHADER_IMAGE)
+         fd5_emit_images(ctx, ring, PIPE_SHADER_FRAGMENT, fp);
+   }
 }
 
 void
@@ -940,9 +951,9 @@ fd5_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
    OUT_RING(ring, 0x00000012);
 
    OUT_PKT4(ring, REG_A5XX_GRAS_SU_POINT_MINMAX, 2);
-   OUT_RING(ring, A5XX_GRAS_SU_POINT_MINMAX_MIN(1.0) |
-                     A5XX_GRAS_SU_POINT_MINMAX_MAX(4092.0));
-   OUT_RING(ring, A5XX_GRAS_SU_POINT_SIZE(0.5));
+   OUT_RING(ring, A5XX_GRAS_SU_POINT_MINMAX_MIN(1.0f) |
+                     A5XX_GRAS_SU_POINT_MINMAX_MAX(4092.0f));
+   OUT_RING(ring, A5XX_GRAS_SU_POINT_SIZE(0.5f));
 
    OUT_PKT4(ring, REG_A5XX_GRAS_SU_CONSERVATIVE_RAS_CNTL, 1);
    OUT_RING(ring, 0x00000000); /* GRAS_SU_CONSERVATIVE_RAS_CNTL */

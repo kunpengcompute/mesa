@@ -28,6 +28,7 @@
 #include "renderonly/renderonly.h"
 #include "os/os_thread.h"
 #include "frontend/drm_driver.h"
+#include "util/disk_cache.h"
 #include "util/list.h"
 #include "util/slab.h"
 #include "broadcom/common/v3d_debug.h"
@@ -76,12 +77,18 @@ struct v3d_screen {
 
         uint32_t bo_size;
         uint32_t bo_count;
+        uint32_t prim_types;
 
         bool has_csd;
         bool has_cache_flush;
+        bool has_perfmon;
         bool nonmsaa_texture_size_limit;
 
         struct v3d_simulator_file *sim_file;
+
+#ifdef ENABLE_SHADER_CACHE
+        struct disk_cache *disk_cache;
+#endif
 };
 
 static inline struct v3d_screen *
@@ -96,5 +103,10 @@ struct pipe_screen *v3d_screen_create(int fd,
 
 void
 v3d_fence_init(struct v3d_screen *screen);
+
+#ifdef ENABLE_SHADER_CACHE
+void
+v3d_disk_cache_init(struct v3d_screen *screen);
+#endif
 
 #endif /* V3D_SCREEN_H */

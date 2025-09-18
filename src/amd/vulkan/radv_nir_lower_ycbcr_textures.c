@@ -33,7 +33,8 @@ struct ycbcr_state {
    nir_ssa_def *image_size;
    nir_tex_instr *origin_tex;
    nir_deref_instr *tex_deref;
-   const struct radv_sampler_ycbcr_conversion *conversion;
+   const struct radv_sampler_ycbcr_conversion_state *conversion;
+   bool unnormalized_coordinates;
 };
 
 static nir_ssa_def *
@@ -68,10 +69,18 @@ implicit_downsampled_coord(nir_builder *b, nir_ssa_def *value, nir_ssa_def *max_
 }
 
 static nir_ssa_def *
+implicit_downsampled_coord_unnormalized(nir_builder *b, nir_ssa_def *value, int div_scale)
+{
+   return nir_fadd(
+      b, value,
+      nir_imm_float(b, 1.0f / (float)div_scale));
+}
+
+static nir_ssa_def *
 implicit_downsampled_coords(struct ycbcr_state *state, nir_ssa_def *old_coords)
 {
    nir_builder *b = state->builder;
-   const struct radv_sampler_ycbcr_conversion *conversion = state->conversion;
+   const struct radv_sampler_ycbcr_conversion_state *conversion = state->conversion;
    nir_ssa_def *image_size = NULL;
    nir_ssa_def *comp[4] = {
       NULL,
@@ -82,15 +91,22 @@ implicit_downsampled_coords(struct ycbcr_state *state, nir_ssa_def *old_coords)
                                  chroma_format <= PIPE_VIDEO_CHROMA_FORMAT_420 ? 2 : 1};
 
    for (int c = 0; c < old_coords->num_components; c++) {
-      if (c < ARRAY_SIZE(divisors) && divisors[c] > 1 &&
-          conversion->chroma_offsets[c] == VK_CHROMA_LOCATION_COSITED_EVEN) {
-         if (!image_size)
-            image_size = get_texture_size(state, state->tex_deref);
+      comp[c] = nir_channel(b, old_coords, c);
 
-         comp[c] = implicit_downsampled_coord(b, nir_channel(b, old_coords, c),
-                                              nir_channel(b, image_size, c), divisors[c]);
-      } else {
-         comp[c] = nir_channel(b, old_coords, c);
+      if (c < ARRAY_SIZE(divisors) && divisors[c] > 1) {
+         if (state->unnormalized_coordinates)
+            comp[c] = nir_fdiv(b, comp[c], nir_imm_float(b, divisors[c]));
+
+         if (conversion->chroma_offsets[c] == VK_CHROMA_LOCATION_COSITED_EVEN) {
+            if (state->unnormalized_coordinates) {
+               comp[c] = implicit_downsampled_coord_unnormalized(b, comp[c], divisors[c]);
+            } else {
+               if (!image_size)
+                  image_size = get_texture_size(state, state->tex_deref);
+
+               comp[c] = implicit_downsampled_coord(b, comp[c], nir_channel(b, image_size, c), divisors[c]);
+            }
+         }
       }
    }
 
@@ -116,7 +132,7 @@ create_plane_tex_instr_implicit(struct ycbcr_state *state, uint32_t plane)
          }
       FALLTHROUGH;
       default:
-         nir_src_copy(&tex->src[i].src, &old_tex->src[i].src, tex);
+         nir_src_copy(&tex->src[i].src, &old_tex->src[i].src);
          break;
       }
    }
@@ -214,11 +230,15 @@ try_lower_tex_ycbcr(const struct radv_pipeline_layout *layout, nir_builder *buil
       layout->set[var->data.descriptor_set].layout;
    const struct radv_descriptor_set_binding_layout *binding =
       &set_layout->binding[var->data.binding];
-   const struct radv_sampler_ycbcr_conversion *ycbcr_samplers =
+   const struct radv_sampler_ycbcr_conversion_state *ycbcr_samplers =
       radv_immutable_ycbcr_samplers(set_layout, var->data.binding);
 
    if (!ycbcr_samplers)
       return false;
+
+   assert(binding->immutable_samplers_offset);
+   const uint32_t *immutable_samplers =
+      radv_immutable_samplers(set_layout, binding);
 
    /* For the following instructions, we don't apply any change and let the
     * instruction apply to the first plane.
@@ -235,16 +255,19 @@ try_lower_tex_ycbcr(const struct radv_pipeline_layout *layout, nir_builder *buil
       array_index = nir_src_as_uint(deref->arr.index);
       array_index = MIN2(array_index, binding->array_size - 1);
    }
-   const struct radv_sampler_ycbcr_conversion *ycbcr_sampler = ycbcr_samplers + array_index;
+   const struct radv_sampler_ycbcr_conversion_state *ycbcr_sampler = ycbcr_samplers + array_index;
 
    if (ycbcr_sampler->format == VK_FORMAT_UNDEFINED)
       return false;
+
+   bool unnormalized_coordinates = immutable_samplers[4 * array_index + 0] & S_008F30_FORCE_UNNORMALIZED(1);
 
    struct ycbcr_state state = {
       .builder = builder,
       .origin_tex = tex,
       .tex_deref = deref,
       .conversion = ycbcr_sampler,
+      .unnormalized_coordinates = unnormalized_coordinates,
    };
 
    builder->cursor = nir_before_instr(&tex->instr);

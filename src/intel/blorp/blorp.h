@@ -38,6 +38,10 @@ extern "C" {
 struct blorp_batch;
 struct blorp_params;
 
+struct blorp_config {
+   bool use_mesh_shading;
+};
+
 struct blorp_context {
    void *driver_ctx;
 
@@ -56,10 +60,12 @@ struct blorp_context {
                          uint32_t prog_data_size,
                          uint32_t *kernel_out, void *prog_data_out);
    void (*exec)(struct blorp_batch *batch, const struct blorp_params *params);
+
+   struct blorp_config config;
 };
 
 void blorp_init(struct blorp_context *blorp, void *driver_ctx,
-                struct isl_device *isl_dev);
+                struct isl_device *isl_dev, const struct blorp_config *config);
 void blorp_finish(struct blorp_context *blorp);
 
 enum blorp_batch_flags {
@@ -78,6 +84,14 @@ enum blorp_batch_flags {
     * color buffer.
     */
    BLORP_BATCH_NO_UPDATE_CLEAR_COLOR = (1 << 2),
+
+   /* This flag indicates that blorp should use a compute program for the
+    * operation.
+    */
+   BLORP_BATCH_USE_COMPUTE = (1 << 3),
+
+   /** Use the hardware blitter to perform any operations in this batch */
+   BLORP_BATCH_USE_BLITTER = (1 << 4),
 };
 
 struct blorp_batch {
@@ -95,6 +109,13 @@ struct blorp_address {
    uint64_t offset;
    unsigned reloc_flags;
    uint32_t mocs;
+
+   /**
+    * True if this buffer is intended to live in device-local memory.
+    * This is only a performance hint; it's OK to set it to true even
+    * if eviction has temporarily forced the buffer to system memory.
+    */
+   bool local_hint;
 };
 
 struct blorp_surf
@@ -168,6 +189,30 @@ blorp_fast_clear(struct blorp_batch *batch,
                  uint32_t level, uint32_t start_layer, uint32_t num_layers,
                  uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1);
 
+bool
+blorp_clear_supports_compute(struct blorp_context *blorp,
+                             uint8_t color_write_disable, bool blend_enabled,
+                             enum isl_aux_usage aux_usage);
+
+bool
+blorp_copy_supports_compute(struct blorp_context *blorp,
+                            const struct isl_surf *src_surf,
+                            const struct isl_surf *dst_surf,
+                            enum isl_aux_usage dst_aux_usage);
+
+bool
+blorp_blit_supports_compute(struct blorp_context *blorp,
+                            const struct isl_surf *src_surf,
+                            const struct isl_surf *dst_surf,
+                            enum isl_aux_usage dst_aux_usage);
+
+bool
+blorp_copy_supports_blitter(struct blorp_context *blorp,
+                            const struct isl_surf *src_surf,
+                            const struct isl_surf *dst_surf,
+                            enum isl_aux_usage src_aux_usage,
+                            enum isl_aux_usage dst_aux_usage);
+
 void
 blorp_clear(struct blorp_batch *batch,
             const struct blorp_surf *surf,
@@ -175,7 +220,7 @@ blorp_clear(struct blorp_batch *batch,
             uint32_t level, uint32_t start_layer, uint32_t num_layers,
             uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
             union isl_color_value clear_color,
-            const bool color_write_disable[4]);
+            uint8_t color_write_disable);
 
 void
 blorp_clear_depth_stencil(struct blorp_batch *batch,

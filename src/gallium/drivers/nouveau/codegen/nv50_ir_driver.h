@@ -73,6 +73,7 @@ struct nv50_ir_prog_symbol
    uint32_t offset;
 };
 
+#define NVISA_G80_CHIPSET      0x50
 #define NVISA_GF100_CHIPSET    0xc0
 #define NVISA_GK104_CHIPSET    0xe0
 #define NVISA_GK20A_CHIPSET    0xea
@@ -244,8 +245,8 @@ extern void nv50_ir_get_target_library(uint32_t chipset,
 #ifdef __cplusplus
 namespace nv50_ir
 {
-   class FixupEntry;
-   class FixupData;
+   struct FixupEntry;
+   struct FixupData;
 
    void
    gk110_interpApply(const nv50_ir::FixupEntry *entry, uint32_t *code,

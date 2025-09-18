@@ -444,6 +444,13 @@ static void *evergreen_create_compute_state(struct pipe_context *ctx,
 	if (shader->ir_type == PIPE_SHADER_IR_TGSI ||
 	    shader->ir_type == PIPE_SHADER_IR_NIR) {
 		shader->sel = r600_create_shader_state_tokens(ctx, cso->prog, cso->ir_type, PIPE_SHADER_COMPUTE);
+
+		/* Precompile the shader with the expected shader key, to reduce jank at
+		 * draw time. Also produces output for shader-db.
+		 */
+		bool dirty;
+		r600_shader_select(ctx, shader->sel, &dirty, true);
+
 		return shader;
 	}
 #ifdef HAVE_OPENCL
@@ -506,7 +513,7 @@ static void evergreen_bind_compute_state(struct pipe_context *ctx, void *state)
 	    cstate->ir_type == PIPE_SHADER_IR_NIR) {
 		bool compute_dirty;
 		cstate->sel->ir_type = cstate->ir_type;
-		if (r600_shader_select(ctx, cstate->sel, &compute_dirty))
+		if (r600_shader_select(ctx, cstate->sel, &compute_dirty, false))
 			R600_ERR("Failed to select compute shader\n");
 	}
 	
@@ -555,7 +562,7 @@ static void evergreen_compute_upload_input(struct pipe_context *ctx,
 	}
 
 	u_box_1d(0, input_size, &box);
-	num_work_groups_start = ctx->transfer_map(ctx,
+	num_work_groups_start = ctx->buffer_map(ctx,
 			(struct pipe_resource*)shader->kernel_param,
 			0, PIPE_MAP_WRITE | PIPE_MAP_DISCARD_RANGE,
 			&box, &transfer);
@@ -582,7 +589,7 @@ static void evergreen_compute_upload_input(struct pipe_context *ctx,
 			((unsigned*)num_work_groups_start)[i]);
 	}
 
-	ctx->transfer_unmap(ctx, transfer);
+	ctx->buffer_unmap(ctx, transfer);
 
 	/* ID=0 and ID=3 are reserved for the parameters.
 	 * LLVM will preferably use ID=0, but it does not work for dynamic
@@ -605,20 +612,15 @@ static void evergreen_emit_dispatch(struct r600_context *rctx,
 	unsigned num_pipes = rctx->screen->b.info.r600_max_quad_pipes;
 	unsigned wave_divisor = (16 * num_pipes);
 	int group_size = 1;
-	int grid_size = 1;
 	unsigned lds_size = shader->local_size / 4;
 
 	if (shader->ir_type != PIPE_SHADER_IR_TGSI &&
 	    shader->ir_type != PIPE_SHADER_IR_NIR)
 		lds_size += shader->bc.nlds_dw;
 	
-	/* Calculate group_size/grid_size */
+	/* Calculate group_size */
 	for (i = 0; i < 3; i++) {
 		group_size *= info->block[i];
-	}
-
-	for (i = 0; i < 3; i++)	{
-		grid_size *= info->grid[i];
 	}
 
 	/* num_waves = ceil((tg_size.x * tg_size.y, tg_size.z) / (16 * num_pipes)) */
@@ -687,7 +689,7 @@ static void compute_setup_cbs(struct r600_context *rctx)
 		struct r600_surface *cb = (struct r600_surface*)rctx->framebuffer.state.cbufs[i];
 		unsigned reloc = radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
 						       (struct r600_resource*)cb->base.texture,
-						       RADEON_USAGE_READWRITE,
+						       RADEON_USAGE_READWRITE |
 						       RADEON_PRIO_SHADER_RW_BUFFER);
 
 		radeon_compute_set_context_reg_seq(cs, R_028C60_CB_COLOR0_BASE + i * 0x3C, 7);
@@ -741,7 +743,7 @@ static void compute_emit_cs(struct r600_context *rctx,
 
 	if (rctx->cs_shader_state.shader->ir_type == PIPE_SHADER_IR_TGSI||
 	    rctx->cs_shader_state.shader->ir_type == PIPE_SHADER_IR_NIR) {
-		if (r600_shader_select(&rctx->b.b, rctx->cs_shader_state.shader->sel, &compute_dirty)) {
+		if (r600_shader_select(&rctx->b.b, rctx->cs_shader_state.shader->sel, &compute_dirty, false)) {
 			R600_ERR("Failed to select compute shader\n");
 			return;
 		}
@@ -918,7 +920,7 @@ void evergreen_emit_cs_shader(struct r600_context *rctx,
 
 	radeon_emit(cs, PKT3C(PKT3_NOP, 0, 0));
 	radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
-					      code_bo, RADEON_USAGE_READ,
+					      code_bo, RADEON_USAGE_READ |
 					      RADEON_PRIO_SHADER_BINARY));
 }
 
@@ -1230,12 +1232,12 @@ void evergreen_init_compute_state_functions(struct r600_context *rctx)
 
 }
 
-static void *r600_compute_global_transfer_map(struct pipe_context *ctx,
-					      struct pipe_resource *resource,
-					      unsigned level,
-					      unsigned usage,
-					      const struct pipe_box *box,
-					      struct pipe_transfer **ptransfer)
+void *r600_compute_global_transfer_map(struct pipe_context *ctx,
+				      struct pipe_resource *resource,
+				      unsigned level,
+				      unsigned usage,
+				      const struct pipe_box *box,
+				      struct pipe_transfer **ptransfer)
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
 	struct compute_memory_pool *pool = rctx->screen->global_pool;
@@ -1281,8 +1283,8 @@ static void *r600_compute_global_transfer_map(struct pipe_context *ctx,
 			offset, box->width, usage, ptransfer);
 }
 
-static void r600_compute_global_transfer_unmap(struct pipe_context *ctx,
-					       struct pipe_transfer *transfer)
+void r600_compute_global_transfer_unmap(struct pipe_context *ctx,
+					struct pipe_transfer *transfer)
 {
 	/* struct r600_resource_global are not real resources, they just map
 	 * to an offset within the compute memory pool.  The function
@@ -1297,15 +1299,8 @@ static void r600_compute_global_transfer_unmap(struct pipe_context *ctx,
 	assert (!"This function should not be called");
 }
 
-static void r600_compute_global_transfer_flush_region(struct pipe_context *ctx,
-						      struct pipe_transfer *transfer,
-						      const struct pipe_box *box)
-{
-	assert(0 && "TODO");
-}
-
-static void r600_compute_global_buffer_destroy(struct pipe_screen *screen,
-					       struct pipe_resource *res)
+void r600_compute_global_buffer_destroy(struct pipe_screen *screen,
+					struct pipe_resource *res)
 {
 	struct r600_resource_global* buffer = NULL;
 	struct r600_screen* rscreen = NULL;
@@ -1321,15 +1316,6 @@ static void r600_compute_global_buffer_destroy(struct pipe_screen *screen,
 	buffer->chunk = NULL;
 	free(res);
 }
-
-static const struct u_resource_vtbl r600_global_buffer_vtbl =
-{
-	u_default_resource_get_handle, /* get_handle */
-	r600_compute_global_buffer_destroy, /* resource_destroy */
-	r600_compute_global_transfer_map, /* transfer_map */
-	r600_compute_global_transfer_flush_region,/* transfer_flush_region */
-	r600_compute_global_transfer_unmap, /* transfer_unmap */
-};
 
 struct pipe_resource *r600_compute_global_buffer_create(struct pipe_screen *screen,
 							const struct pipe_resource *templ)
@@ -1352,9 +1338,9 @@ struct pipe_resource *r600_compute_global_buffer_create(struct pipe_screen *scre
 	COMPUTE_DBG(rscreen, "width = %u array_size = %u\n", templ->width0,
 			templ->array_size);
 
-	result->base.b.vtbl = &r600_global_buffer_vtbl;
 	result->base.b.b = *templ;
 	result->base.b.b.screen = screen;
+	result->base.compute_global_bo = true;
 	pipe_reference_init(&result->base.b.b.reference, 1);
 
 	size_in_dw = (templ->width0+3) / 4;

@@ -49,7 +49,7 @@ fd4_zsa_state_create(struct pipe_context *pctx,
 
    if (cso->depth_enabled)
       so->rb_depth_control |=
-         A4XX_RB_DEPTH_CONTROL_Z_ENABLE | A4XX_RB_DEPTH_CONTROL_Z_TEST_ENABLE;
+         A4XX_RB_DEPTH_CONTROL_Z_TEST_ENABLE | A4XX_RB_DEPTH_CONTROL_Z_READ_ENABLE;
 
    if (cso->depth_writemask)
       so->rb_depth_control |= A4XX_RB_DEPTH_CONTROL_Z_WRITE_ENABLE;
@@ -87,7 +87,7 @@ fd4_zsa_state_create(struct pipe_context *pctx,
    }
 
    if (cso->alpha_enabled) {
-      uint32_t ref = cso->alpha_ref_value * 255.0;
+      uint32_t ref = cso->alpha_ref_value * 255.0f;
       so->gras_alpha_control = A4XX_GRAS_ALPHA_CONTROL_ALPHA_TEST_ENABLE;
       so->rb_alpha_control =
          A4XX_RB_ALPHA_CONTROL_ALPHA_TEST |

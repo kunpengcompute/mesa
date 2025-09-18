@@ -328,20 +328,18 @@ struct vc4_context {
         /** bitfield of VC4_DIRTY_* */
         uint32_t dirty;
 
-        struct primconvert_context *primconvert;
-
         struct hash_table *fs_cache, *vs_cache;
         struct set *fs_inputs_set;
         uint32_t next_uncompiled_program_id;
         uint64_t next_compiled_program_id;
 
         struct ra_regs *regs;
-        unsigned int reg_class_any[2];
-        unsigned int reg_class_a_or_b[2];
-        unsigned int reg_class_a_or_b_or_acc[2];
-        unsigned int reg_class_r0_r3;
-        unsigned int reg_class_r4_or_a[2];
-        unsigned int reg_class_a[2];
+        struct ra_class *reg_class_any[2];
+        struct ra_class *reg_class_a_or_b[2];
+        struct ra_class *reg_class_a_or_b_or_acc[2];
+        struct ra_class *reg_class_r0_r3;
+        struct ra_class *reg_class_r4_or_a[2];
+        struct ra_class *reg_class_a[2];
 
         uint8_t prim_mode;
 
@@ -383,7 +381,7 @@ struct vc4_context {
         struct pipe_viewport_state viewport;
         struct vc4_constbuf_stateobj constbuf[PIPE_SHADER_TYPES];
         struct vc4_vertexbuf_stateobj vertexbuf;
-        struct pipe_debug_callback debug;
+        struct util_debug_callback debug;
 
         struct vc4_hwperfmon *perfmon;
         /** @} */
@@ -431,7 +429,7 @@ struct vc4_depth_stencil_alpha_state {
         if (unlikely(vc4_debug & VC4_DEBUG_PERF))       \
                 fprintf(stderr, __VA_ARGS__);           \
         if (unlikely(vc4->debug.debug_message))         \
-                pipe_debug_message(&vc4->debug, PERF_INFO, __VA_ARGS__);    \
+                util_debug_message(&vc4->debug, PERF_INFO, __VA_ARGS__);    \
 } while (0)
 
 static inline struct vc4_context *

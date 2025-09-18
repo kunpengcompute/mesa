@@ -158,13 +158,12 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
                                        DRM_VC4_PARAM_SUPPORTS_FIXED_RCL_ORDER);
 
                 /* lying for GL 2.0 */
-        case PIPE_CAP_OCCLUSION_QUERY:
         case PIPE_CAP_POINT_SPRITE:
                 return 1;
 
-        case PIPE_CAP_TGSI_FS_COORD_ORIGIN_UPPER_LEFT:
-        case PIPE_CAP_TGSI_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
-        case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+        case PIPE_CAP_FS_COORD_ORIGIN_UPPER_LEFT:
+        case PIPE_CAP_FS_COORD_PIXEL_CENTER_HALF_INTEGER:
+        case PIPE_CAP_FS_FACE_IS_INTEGER_SYSVAL:
                 return 1;
 
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
@@ -202,7 +201,11 @@ vc4_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
         case PIPE_CAP_VERTEX_COLOR_CLAMPED:
         case PIPE_CAP_TWO_SIDED_COLOR:
         case PIPE_CAP_TEXRECT:
+        case PIPE_CAP_IMAGE_STORE_FORMATTED:
                 return 0;
+
+        case PIPE_CAP_SUPPORTED_PRIM_MODES:
+                return screen->prim_types;
 
         default:
                 return u_pipe_screen_get_param_defaults(pscreen, param);
@@ -213,12 +216,22 @@ static float
 vc4_screen_get_paramf(struct pipe_screen *pscreen, enum pipe_capf param)
 {
         switch (param) {
+        case PIPE_CAPF_MIN_LINE_WIDTH:
+        case PIPE_CAPF_MIN_LINE_WIDTH_AA:
+        case PIPE_CAPF_MIN_POINT_SIZE:
+        case PIPE_CAPF_MIN_POINT_SIZE_AA:
+           return 1;
+
+        case PIPE_CAPF_POINT_SIZE_GRANULARITY:
+        case PIPE_CAPF_LINE_WIDTH_GRANULARITY:
+           return 0.1;
+
         case PIPE_CAPF_MAX_LINE_WIDTH:
         case PIPE_CAPF_MAX_LINE_WIDTH_AA:
                 return 32;
 
-        case PIPE_CAPF_MAX_POINT_WIDTH:
-        case PIPE_CAPF_MAX_POINT_WIDTH_AA:
+        case PIPE_CAPF_MAX_POINT_SIZE:
+        case PIPE_CAPF_MAX_POINT_SIZE_AA:
                 return 512.0f;
 
         case PIPE_CAPF_MAX_TEXTURE_ANISOTROPY:
@@ -406,8 +419,8 @@ vc4_screen_is_format_supported(struct pipe_screen *pscreen,
         }
 
         if ((usage & PIPE_BIND_INDEX_BUFFER) &&
-            format != PIPE_FORMAT_I8_UINT &&
-            format != PIPE_FORMAT_I16_UINT) {
+            format != PIPE_FORMAT_R8_UINT &&
+            format != PIPE_FORMAT_R16_UINT) {
                 return false;
         }
 
@@ -605,6 +618,16 @@ vc4_screen_create(int fd, struct renderonly *ro)
                 pscreen->get_driver_query_group_info = vc4_get_driver_query_group_info;
                 pscreen->get_driver_query_info = vc4_get_driver_query_info;
         }
+
+        /* Generate the bitmask of supported draw primitives. */
+        screen->prim_types = BITFIELD_BIT(PIPE_PRIM_POINTS) |
+                             BITFIELD_BIT(PIPE_PRIM_LINES) |
+                             BITFIELD_BIT(PIPE_PRIM_LINE_LOOP) |
+                             BITFIELD_BIT(PIPE_PRIM_LINE_STRIP) |
+                             BITFIELD_BIT(PIPE_PRIM_TRIANGLES) |
+                             BITFIELD_BIT(PIPE_PRIM_TRIANGLE_STRIP) |
+                             BITFIELD_BIT(PIPE_PRIM_TRIANGLE_FAN);
+
 
         return pscreen;
 

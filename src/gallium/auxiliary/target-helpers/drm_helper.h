@@ -112,6 +112,26 @@ DRM_DRIVER_DESCRIPTOR(iris, iris_driconf, ARRAY_SIZE(iris_driconf))
 DRM_DRIVER_DESCRIPTOR_STUB(iris)
 #endif
 
+#ifdef GALLIUM_CROCUS
+#include "crocus/drm/crocus_drm_public.h"
+
+static struct pipe_screen *
+pipe_crocus_create_screen(int fd, const struct pipe_screen_config *config)
+{
+   struct pipe_screen *screen;
+
+   screen = crocus_drm_screen_create(fd, config);
+   return screen ? debug_screen_wrap(screen) : NULL;
+}
+
+const driOptionDescription crocus_driconf[] = {
+      #include "crocus/driinfo_crocus.h"
+};
+DRM_DRIVER_DESCRIPTOR(crocus, crocus_driconf, ARRAY_SIZE(crocus_driconf))
+#else
+DRM_DRIVER_DESCRIPTOR_STUB(crocus)
+#endif
+
 #ifdef GALLIUM_NOUVEAU
 #include "nouveau/drm/nouveau_drm_public.h"
 
@@ -245,7 +265,7 @@ pipe_msm_create_screen(int fd, const struct pipe_screen_config *config)
 {
    struct pipe_screen *screen;
 
-   screen = fd_drm_screen_create(fd, NULL);
+   screen = fd_drm_screen_create(fd, NULL, config);
    return screen ? debug_screen_wrap(screen) : NULL;
 }
 DRM_DRIVER_DESCRIPTOR(msm, NULL, 0)
@@ -254,21 +274,31 @@ DRM_DRIVER_DESCRIPTOR_STUB(msm)
 #endif
 DRM_DRIVER_DESCRIPTOR_ALIAS(msm, kgsl, NULL, 0)
 
-#ifdef GALLIUM_VIRGL
+#if defined(GALLIUM_VIRGL) || (defined(GALLIUM_FREEDRENO) && !defined(PIPE_LOADER_DYNAMIC))
 #include "virgl/drm/virgl_drm_public.h"
 #include "virgl/virgl_public.h"
 
 static struct pipe_screen *
 pipe_virtio_gpu_create_screen(int fd, const struct pipe_screen_config *config)
 {
-   struct pipe_screen *screen;
+   struct pipe_screen *screen = NULL;
 
-   screen = virgl_drm_screen_create(fd, config);
+   /* Try native guest driver(s) first, and then fallback to virgl: */
+#ifdef GALLIUM_FREEDRENO
+   if (!screen)
+      screen = fd_drm_screen_create(fd, NULL, config);
+#endif
+#ifdef GALLIUM_VIRGL
+   if (!screen)
+      screen = virgl_drm_screen_create(fd, config);
+#endif
    return screen ? debug_screen_wrap(screen) : NULL;
 }
 
 const driOptionDescription virgl_driconf[] = {
+#ifdef GALLIUM_VIRGL
       #include "virgl/virgl_driinfo.h.in"
+#endif
 };
 DRM_DRIVER_DESCRIPTOR(virtio_gpu, virgl_driconf, ARRAY_SIZE(virgl_driconf))
 

@@ -52,6 +52,7 @@ struct acp_entry : public exec_node {
    unsigned size_read;
    enum opcode opcode;
    bool saturate;
+   bool is_partial_write;
 };
 
 struct block_data {
@@ -586,8 +587,11 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
     * destination of the copy, and simply replacing the sources would give a
     * program with different semantics.
     */
-   if (type_sz(entry->dst.type) < type_sz(inst->src[arg].type))
+   if ((type_sz(entry->dst.type) < type_sz(inst->src[arg].type) ||
+        entry->is_partial_write) &&
+       inst->opcode != BRW_OPCODE_MOV) {
       return false;
+   }
 
    /* Bail if the result of composing both strides cannot be expressed
     * as another stride. This avoids, for example, trying to transform
@@ -680,7 +684,8 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
    /* Compute the first component of the copy that the instruction is
     * reading, and the base byte offset within that component.
     */
-   assert(entry->dst.offset % REG_SIZE == 0 && entry->dst.stride == 1);
+   assert((entry->dst.offset % REG_SIZE == 0 || inst->opcode == BRW_OPCODE_MOV) &&
+           entry->dst.stride == 1);
    const unsigned component = rel_offset / type_sz(entry->dst.type);
    const unsigned suboffset = rel_offset % type_sz(entry->dst.type);
 
@@ -896,6 +901,7 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
       case FS_OPCODE_TXB_LOGICAL:
       case SHADER_OPCODE_TXF_CMS_LOGICAL:
       case SHADER_OPCODE_TXF_CMS_W_LOGICAL:
+      case SHADER_OPCODE_TXF_CMS_W_GFX12_LOGICAL:
       case SHADER_OPCODE_TXF_UMS_LOGICAL:
       case SHADER_OPCODE_TXF_MCS_LOGICAL:
       case SHADER_OPCODE_LOD_LOGICAL:
@@ -928,6 +934,11 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
          progress = true;
          break;
 
+      case FS_OPCODE_PACK_HALF_2x16_SPLIT:
+         inst->src[i] = val;
+         progress = true;
+         break;
+
       default:
          break;
       }
@@ -950,7 +961,9 @@ can_propagate_from(fs_inst *inst)
             (inst->src[0].file == FIXED_GRF &&
              inst->src[0].is_contiguous())) &&
            inst->src[0].type == inst->dst.type &&
-           !inst->is_partial_write()) ||
+           /* Subset of !is_partial_write() conditions. */
+           !((inst->predicate && inst->opcode != BRW_OPCODE_SEL) ||
+             !inst->dst.is_contiguous())) ||
           is_identity_payload(FIXED_GRF, inst);
 }
 
@@ -1012,13 +1025,13 @@ fs_visitor::opt_copy_propagation_local(void *copy_prop_ctx, bblock_t *block,
             entry->size_read += inst->size_read(i);
          entry->opcode = inst->opcode;
          entry->saturate = inst->saturate;
+         entry->is_partial_write = inst->is_partial_write();
          acp[entry->dst.nr % ACP_HASH_SIZE].push_tail(entry);
       } else if (inst->opcode == SHADER_OPCODE_LOAD_PAYLOAD &&
                  inst->dst.file == VGRF) {
          int offset = 0;
          for (int i = 0; i < inst->sources; i++) {
             int effective_width = i < inst->header_size ? 8 : inst->exec_size;
-            assert(effective_width * type_sz(inst->src[i].type) % REG_SIZE == 0);
             const unsigned size_written = effective_width *
                                           type_sz(inst->src[i].type);
             if (inst->src[i].file == VGRF ||

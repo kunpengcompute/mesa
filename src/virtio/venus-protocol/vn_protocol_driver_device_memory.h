@@ -8,7 +8,7 @@
 #ifndef VN_PROTOCOL_DRIVER_DEVICE_MEMORY_H
 #define VN_PROTOCOL_DRIVER_DEVICE_MEMORY_H
 
-#include "vn_device.h"
+#include "vn_instance.h"
 #include "vn_protocol_driver_structs.h"
 
 /*
@@ -482,35 +482,6 @@ vn_encode_VkMappedMemoryRange(struct vn_cs_encoder *enc, const VkMappedMemoryRan
     vn_encode_VkMappedMemoryRange_self(enc, val);
 }
 
-static inline void
-vn_decode_VkMappedMemoryRange_pnext(struct vn_cs_decoder *dec, const void *val)
-{
-    /* no known/supported struct */
-    if (vn_decode_simple_pointer(dec))
-        assert(false);
-}
-
-static inline void
-vn_decode_VkMappedMemoryRange_self(struct vn_cs_decoder *dec, VkMappedMemoryRange *val)
-{
-    /* skip val->{sType,pNext} */
-    vn_decode_VkDeviceMemory(dec, &val->memory);
-    vn_decode_VkDeviceSize(dec, &val->offset);
-    vn_decode_VkDeviceSize(dec, &val->size);
-}
-
-static inline void
-vn_decode_VkMappedMemoryRange(struct vn_cs_decoder *dec, VkMappedMemoryRange *val)
-{
-    VkStructureType stype;
-    vn_decode_VkStructureType(dec, &stype);
-    assert(stype == VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE);
-
-    assert(val->sType == stype);
-    vn_decode_VkMappedMemoryRange_pnext(dec, val->pNext);
-    vn_decode_VkMappedMemoryRange_self(dec, val);
-}
-
 /* struct VkDeviceMemoryOpaqueCaptureAddressInfo chain */
 
 static inline size_t
@@ -562,33 +533,6 @@ vn_encode_VkDeviceMemoryOpaqueCaptureAddressInfo(struct vn_cs_encoder *enc, cons
     vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_DEVICE_MEMORY_OPAQUE_CAPTURE_ADDRESS_INFO });
     vn_encode_VkDeviceMemoryOpaqueCaptureAddressInfo_pnext(enc, val->pNext);
     vn_encode_VkDeviceMemoryOpaqueCaptureAddressInfo_self(enc, val);
-}
-
-static inline void
-vn_decode_VkDeviceMemoryOpaqueCaptureAddressInfo_pnext(struct vn_cs_decoder *dec, const void *val)
-{
-    /* no known/supported struct */
-    if (vn_decode_simple_pointer(dec))
-        assert(false);
-}
-
-static inline void
-vn_decode_VkDeviceMemoryOpaqueCaptureAddressInfo_self(struct vn_cs_decoder *dec, VkDeviceMemoryOpaqueCaptureAddressInfo *val)
-{
-    /* skip val->{sType,pNext} */
-    vn_decode_VkDeviceMemory(dec, &val->memory);
-}
-
-static inline void
-vn_decode_VkDeviceMemoryOpaqueCaptureAddressInfo(struct vn_cs_decoder *dec, VkDeviceMemoryOpaqueCaptureAddressInfo *val)
-{
-    VkStructureType stype;
-    vn_decode_VkStructureType(dec, &stype);
-    assert(stype == VK_STRUCTURE_TYPE_DEVICE_MEMORY_OPAQUE_CAPTURE_ADDRESS_INFO);
-
-    assert(val->sType == stype);
-    vn_decode_VkDeviceMemoryOpaqueCaptureAddressInfo_pnext(dec, val->pNext);
-    vn_decode_VkDeviceMemoryOpaqueCaptureAddressInfo_self(dec, val);
 }
 
 static inline size_t vn_sizeof_vkAllocateMemory(VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory)
@@ -1147,6 +1091,8 @@ static inline void vn_submit_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_ins
 
 static inline VkResult vn_call_vkAllocateMemory(struct vn_instance *vn_instance, VkDevice device, const VkMemoryAllocateInfo* pAllocateInfo, const VkAllocationCallbacks* pAllocator, VkDeviceMemory* pMemory)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkAllocateMemory(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, pAllocateInfo, pAllocator, pMemory, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -1167,6 +1113,8 @@ static inline void vn_async_vkAllocateMemory(struct vn_instance *vn_instance, Vk
 
 static inline void vn_call_vkFreeMemory(struct vn_instance *vn_instance, VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks* pAllocator)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkFreeMemory(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, memory, pAllocator, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -1184,6 +1132,8 @@ static inline void vn_async_vkFreeMemory(struct vn_instance *vn_instance, VkDevi
 
 static inline void vn_call_vkUnmapMemory(struct vn_instance *vn_instance, VkDevice device, VkDeviceMemory memory)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkUnmapMemory(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, memory, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -1201,6 +1151,8 @@ static inline void vn_async_vkUnmapMemory(struct vn_instance *vn_instance, VkDev
 
 static inline VkResult vn_call_vkFlushMappedMemoryRanges(struct vn_instance *vn_instance, VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkFlushMappedMemoryRanges(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, memoryRangeCount, pMemoryRanges, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -1221,6 +1173,8 @@ static inline void vn_async_vkFlushMappedMemoryRanges(struct vn_instance *vn_ins
 
 static inline VkResult vn_call_vkInvalidateMappedMemoryRanges(struct vn_instance *vn_instance, VkDevice device, uint32_t memoryRangeCount, const VkMappedMemoryRange* pMemoryRanges)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkInvalidateMappedMemoryRanges(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, memoryRangeCount, pMemoryRanges, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -1241,6 +1195,8 @@ static inline void vn_async_vkInvalidateMappedMemoryRanges(struct vn_instance *v
 
 static inline void vn_call_vkGetDeviceMemoryCommitment(struct vn_instance *vn_instance, VkDevice device, VkDeviceMemory memory, VkDeviceSize* pCommittedMemoryInBytes)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkGetDeviceMemoryCommitment(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, memory, pCommittedMemoryInBytes, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
@@ -1258,6 +1214,8 @@ static inline void vn_async_vkGetDeviceMemoryCommitment(struct vn_instance *vn_i
 
 static inline uint64_t vn_call_vkGetDeviceMemoryOpaqueCaptureAddress(struct vn_instance *vn_instance, VkDevice device, const VkDeviceMemoryOpaqueCaptureAddressInfo* pInfo)
 {
+    VN_TRACE_FUNC();
+
     struct vn_instance_submit_command submit;
     vn_submit_vkGetDeviceMemoryOpaqueCaptureAddress(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, pInfo, &submit);
     struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);

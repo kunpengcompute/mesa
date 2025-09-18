@@ -121,7 +121,7 @@ load_glsl(unsigned num_files, char *const *files, gl_shader_stage stage)
    if (!prog)
       errx(1, "couldn't parse `%s'", files[0]);
 
-   nir_shader *nir = glsl_to_nir(&local_ctx, prog, stage, nir_options);
+   nir_shader *nir = glsl_to_nir(&local_ctx.Const, prog, stage, nir_options);
 
    /* required NIR passes: */
    if (nir_options->lower_all_io_to_temps ||
@@ -251,6 +251,12 @@ load_spirv(const char *filename, const char *entry, gl_shader_stage stage)
                       stage, entry, &spirv_options,
                       ir3_get_compiler_options(compiler));
 
+   const struct nir_lower_sysvals_to_varyings_options sysvals_to_varyings = {
+      .frag_coord = true,
+      .point_coord = true,
+   };
+   NIR_PASS_V(nir, nir_lower_sysvals_to_varyings, &sysvals_to_varyings);
+
    nir_print_shader(nir, stdout);
 
    return nir;
@@ -362,7 +368,11 @@ main(int argc, char **argv)
 
    nir_shader *nir;
 
-   compiler = ir3_compiler_create(NULL, gpu_id, false);
+   struct fd_dev_id dev_id = {
+         .gpu_id = gpu_id,
+   };
+   compiler = ir3_compiler_create(NULL, &dev_id,
+                                  &(struct ir3_compiler_options) {});
 
    if (from_tgsi) {
       struct tgsi_token toks[65536];
@@ -405,12 +415,13 @@ main(int argc, char **argv)
 
    ir3_nir_lower_io_to_temporaries(nir);
    ir3_finalize_nir(compiler, nir);
-   ir3_nir_post_finalize(compiler, nir);
 
    struct ir3_shader *shader = rzalloc_size(NULL, sizeof(*shader));
    shader->compiler = compiler;
    shader->type = stage;
    shader->nir = nir;
+
+   ir3_nir_post_finalize(shader);
 
    struct ir3_shader_variant *v = rzalloc_size(shader, sizeof(*v));
    v->type = shader->type;

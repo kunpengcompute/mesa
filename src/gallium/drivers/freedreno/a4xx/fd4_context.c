@@ -27,6 +27,7 @@
 #include "freedreno_query_hw.h"
 
 #include "fd4_blend.h"
+#include "fd4_compute.h"
 #include "fd4_context.h"
 #include "fd4_draw.h"
 #include "fd4_emit.h"
@@ -58,19 +59,6 @@ fd4_context_destroy(struct pipe_context *pctx) in_dt
    free(fd4_ctx);
 }
 
-/* clang-format off */
-static const uint8_t primtypes[] = {
-   [PIPE_PRIM_POINTS]         = DI_PT_POINTLIST,
-   [PIPE_PRIM_LINES]          = DI_PT_LINELIST,
-   [PIPE_PRIM_LINE_STRIP]     = DI_PT_LINESTRIP,
-   [PIPE_PRIM_LINE_LOOP]      = DI_PT_LINELOOP,
-   [PIPE_PRIM_TRIANGLES]      = DI_PT_TRILIST,
-   [PIPE_PRIM_TRIANGLE_STRIP] = DI_PT_TRISTRIP,
-   [PIPE_PRIM_TRIANGLE_FAN]   = DI_PT_TRIFAN,
-   [PIPE_PRIM_MAX]            = DI_PT_RECTLIST,  /* internal clear blits */
-};
-/* clang-format on */
-
 struct pipe_context *
 fd4_context_create(struct pipe_screen *pscreen, void *priv,
                    unsigned flags) in_dt
@@ -85,6 +73,7 @@ fd4_context_create(struct pipe_screen *pscreen, void *priv,
    pctx = &fd4_ctx->base.base;
    pctx->screen = pscreen;
 
+   fd4_ctx->base.flags = flags;
    fd4_ctx->base.dev = fd_device_ref(screen->dev);
    fd4_ctx->base.screen = fd_screen(pscreen);
    fd4_ctx->base.last.key = &fd4_ctx->last_key;
@@ -95,12 +84,13 @@ fd4_context_create(struct pipe_screen *pscreen, void *priv,
    pctx->create_depth_stencil_alpha_state = fd4_zsa_state_create;
 
    fd4_draw_init(pctx);
+   fd4_compute_init(pctx);
    fd4_gmem_init(pctx);
    fd4_texture_init(pctx);
    fd4_prog_init(pctx);
    fd4_emit_init(pctx);
 
-   pctx = fd_context_init(&fd4_ctx->base, pscreen, primtypes, priv, flags);
+   pctx = fd_context_init(&fd4_ctx->base, pscreen, priv, flags);
    if (!pctx)
       return NULL;
 
@@ -121,6 +111,12 @@ fd4_context_create(struct pipe_screen *pscreen, void *priv,
 
    fd4_ctx->border_color_uploader =
       u_upload_create(pctx, 4096, 0, PIPE_USAGE_STREAM, 0);
+
+   for (int i = 0; i < 16; i++) {
+      fd4_ctx->vsampler_swizzles[i] = 0x688;
+      fd4_ctx->fsampler_swizzles[i] = 0x688;
+      fd4_ctx->csampler_swizzles[i] = 0x688;
+   }
 
    return pctx;
 }

@@ -140,7 +140,7 @@ _mesa_update_valid_to_render_state(struct gl_context *ctx)
        */
       const struct gl_program *prog =
          ctx->_Shader->CurrentProgram[MESA_SHADER_FRAGMENT];
-      const GLbitfield blend_support = !prog ? 0 : prog->sh.fs.BlendSupport;
+      const GLbitfield blend_support = !prog ? 0 : prog->info.fs.advanced_blend_modes;
 
       if ((blend_support & BITFIELD_BIT(ctx->Color._AdvancedBlendMode)) == 0)
          return;
@@ -316,7 +316,7 @@ _mesa_update_valid_to_render_state(struct gl_context *ctx)
          if (tes->info.tess.point_mode) {
             if (ctx->TransformFeedback.Mode != GL_POINTS)
                mask = 0;
-         } else if (tes->info.tess.primitive_mode == GL_ISOLINES) {
+         } else if (tes->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES) {
             if (ctx->TransformFeedback.Mode != GL_LINES)
                mask = 0;
          } else {
@@ -388,7 +388,7 @@ _mesa_update_valid_to_render_state(struct gl_context *ctx)
 
          if (tes->info.tess.point_mode)
             valid = geom_mode == GL_POINTS;
-         else if (tes->info.tess.primitive_mode == GL_ISOLINES)
+         else if (tes->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES)
             valid = geom_mode == GL_LINES;
          else
             /* the GL_QUADS mode generates triangles too */

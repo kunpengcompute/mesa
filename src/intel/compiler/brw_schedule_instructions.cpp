@@ -528,6 +528,43 @@ schedule_node::set_latency_gfx7(bool is_haswell)
          }
          break;
 
+      case GFX12_SFID_UGM:
+      case GFX12_SFID_TGM:
+      case GFX12_SFID_SLM:
+         switch (lsc_msg_desc_opcode(devinfo, inst->desc)) {
+         case LSC_OP_LOAD:
+         case LSC_OP_STORE:
+         case LSC_OP_LOAD_CMASK:
+         case LSC_OP_STORE_CMASK:
+            latency = 300;
+            break;
+         case LSC_OP_FENCE:
+         case LSC_OP_ATOMIC_INC:
+         case LSC_OP_ATOMIC_DEC:
+         case LSC_OP_ATOMIC_LOAD:
+         case LSC_OP_ATOMIC_STORE:
+         case LSC_OP_ATOMIC_ADD:
+         case LSC_OP_ATOMIC_SUB:
+         case LSC_OP_ATOMIC_MIN:
+         case LSC_OP_ATOMIC_MAX:
+         case LSC_OP_ATOMIC_UMIN:
+         case LSC_OP_ATOMIC_UMAX:
+         case LSC_OP_ATOMIC_CMPXCHG:
+         case LSC_OP_ATOMIC_FADD:
+         case LSC_OP_ATOMIC_FSUB:
+         case LSC_OP_ATOMIC_FMIN:
+         case LSC_OP_ATOMIC_FMAX:
+         case LSC_OP_ATOMIC_FCMPXCHG:
+         case LSC_OP_ATOMIC_AND:
+         case LSC_OP_ATOMIC_OR:
+         case LSC_OP_ATOMIC_XOR:
+            latency = 1400;
+            break;
+         default:
+            unreachable("unsupported new data port message instruction");
+         }
+         break;
+
       case GEN_RT_SFID_BINDLESS_THREAD_DISPATCH:
       case GEN_RT_SFID_RAY_TRACE_ACCELERATOR:
          /* TODO.
@@ -938,7 +975,7 @@ schedule_node::schedule_node(backend_instruction *inst,
    if (!sched->post_reg_alloc)
       this->latency = 1;
    else if (devinfo->ver >= 6)
-      set_latency_gfx7(devinfo->is_haswell);
+      set_latency_gfx7(devinfo->verx10 == 75);
    else
       set_latency_gfx4();
 }
@@ -1225,7 +1262,7 @@ fs_instruction_scheduler::calculate_deps()
          }
       }
 
-      if (const unsigned mask = inst->flags_written()) {
+      if (const unsigned mask = inst->flags_written(v->devinfo)) {
          assert(mask < (1 << ARRAY_SIZE(last_conditional_mod)));
 
          for (unsigned i = 0; i < ARRAY_SIZE(last_conditional_mod); i++) {
@@ -1347,7 +1384,7 @@ fs_instruction_scheduler::calculate_deps()
          }
       }
 
-      if (const unsigned mask = inst->flags_written()) {
+      if (const unsigned mask = inst->flags_written(v->devinfo)) {
          assert(mask < (1 << ARRAY_SIZE(last_conditional_mod)));
 
          for (unsigned i = 0; i < ARRAY_SIZE(last_conditional_mod); i++) {
@@ -1452,7 +1489,7 @@ vec4_instruction_scheduler::calculate_deps()
          }
       }
 
-      if (inst->writes_flag()) {
+      if (inst->writes_flag(v->devinfo)) {
          add_dep(last_conditional_mod, n, 0);
          last_conditional_mod = n;
       }
@@ -1528,7 +1565,7 @@ vec4_instruction_scheduler::calculate_deps()
          }
       }
 
-      if (inst->writes_flag()) {
+      if (inst->writes_flag(v->devinfo)) {
          last_conditional_mod = n;
       }
 

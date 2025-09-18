@@ -33,6 +33,7 @@ test(
     dependencies : [dep_clock, dep_thread, idep_gtest, idep_mesautil],
   ),
   suite : ['compiler', 'glsl'],
+  protocol : gtest_test_protocol,
 )
 
 test(
@@ -49,6 +50,7 @@ test(
     dependencies : [dep_thread, idep_gtest, idep_mesautil],
   ),
   suite : ['compiler', 'glsl'],
+  protocol : gtest_test_protocol,
 )
 
 test(
@@ -63,6 +65,7 @@ test(
     dependencies : [dep_thread, idep_gtest, idep_mesautil],
   ),
   suite : ['compiler', 'glsl'],
+  protocol : gtest_test_protocol,
 )
 
 test(
@@ -77,31 +80,38 @@ test(
     dependencies : [dep_thread, idep_gtest],
   ),
   suite : ['compiler', 'glsl'],
+  protocol : gtest_test_protocol,
 )
 
-test(
-  'glsl compiler warnings',
-  prog_python,
-  args : [
-    join_paths(meson.current_source_dir(), 'warnings_test.py'),
-    '--glsl-compiler', glsl_compiler,
-    '--test-directory', join_paths(
-      meson.source_root(), 'src', 'compiler', 'glsl', 'tests', 'warnings'
-    ),
-  ],
-  suite : ['compiler', 'glsl'],
-  timeout: 60,
-)
+# Meson can't auto-skip these on cross builds because of the python wrapper
+#
+# TODO: has_exe_wrapper() is deprecated and renamed to can_run_host_binaries()
+# starting with Meson 0.55.0
+if meson.has_exe_wrapper()
+  test(
+    'glsl compiler warnings',
+    prog_python,
+    args : [
+      join_paths(meson.current_source_dir(), 'warnings_test.py'),
+      '--glsl-compiler', glsl_compiler,
+      '--test-directory', join_paths(
+        meson.source_root(), 'src', 'compiler', 'glsl', 'tests', 'warnings'
+      ),
+    ],
+    suite : ['compiler', 'glsl'],
+    timeout: 60,
+  )
 
-test(
-  'glsl optimization',
-  prog_python,
-  args : [
-    join_paths(meson.current_source_dir(), 'optimization_test.py'),
-    '--test-runner', glsl_test
-  ],
-  suite : ['compiler', 'glsl'],
-)
+  test(
+    'glsl optimization',
+    prog_python,
+    args : [
+      join_paths(meson.current_source_dir(), 'optimization_test.py'),
+      '--test-runner', glsl_test
+    ],
+    suite : ['compiler', 'glsl'],
+  )
+endif
 
 if with_tools.contains('glsl')
   test(

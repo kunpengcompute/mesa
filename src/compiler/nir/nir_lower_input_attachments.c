@@ -140,7 +140,7 @@ try_lower_input_load(nir_function_impl *impl, nir_intrinsic_instr *load,
 
    if (tex->is_sparse) {
       unsigned load_result_size = load->dest.ssa.num_components - 1;
-      unsigned load_result_mask = BITFIELD_MASK(load_result_size);
+      nir_component_mask_t load_result_mask = nir_component_mask(load_result_size);
       nir_ssa_def *res = nir_channels(
          &b, &tex->dest.ssa, load_result_mask | 0x10);
 
@@ -197,8 +197,8 @@ nir_lower_input_attachments(nir_shader *shader,
             case nir_instr_type_tex: {
                nir_tex_instr *tex = nir_instr_as_tex(instr);
 
-               if (tex->op == nir_texop_fragment_mask_fetch ||
-                   tex->op == nir_texop_fragment_fetch) {
+               if (tex->op == nir_texop_fragment_mask_fetch_amd ||
+                   tex->op == nir_texop_fragment_fetch_amd) {
                   progress |= try_lower_input_texop(function->impl, tex,
                                                     options);
                }

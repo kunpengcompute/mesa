@@ -118,13 +118,12 @@ delta(uint32_t a, uint32_t b)
 static void
 find_device(void)
 {
-   int ret, fd;
+   int ret;
 
-   fd = drmOpenWithType("msm", NULL, DRM_NODE_RENDER);
-   if (fd < 0)
+   dev.dev = fd_device_open();
+   if (!dev.dev)
       err(1, "could not open drm device");
 
-   dev.dev = fd_device_new(fd);
    dev.pipe = fd_pipe_new(dev.dev, FD_PIPE_3D);
 
    uint64_t val;
@@ -159,6 +158,8 @@ find_device(void)
    if (!dev.io) {
       err(1, "could not map device");
    }
+
+   fd_pipe_set_param(dev.pipe, FD_SYSPROF, 1);
 }
 
 /*
@@ -173,9 +174,14 @@ flush_ring(void)
    if (!dev.submit)
       return;
 
-   ret = fd_submit_flush(dev.submit, -1, NULL);
+   struct fd_submit_fence fence = {};
+   util_queue_fence_init(&fence.ready);
+
+   ret = fd_submit_flush(dev.submit, -1, &fence);
+
    if (ret)
       errx(1, "submit failed: %d", ret);
+   util_queue_fence_wait(&fence.ready);
    fd_ringbuffer_del(dev.ring);
    fd_submit_del(dev.submit);
 
@@ -837,7 +843,10 @@ main(int argc, char **argv)
    find_device();
 
    const struct fd_perfcntr_group *groups;
-   groups = fd_perfcntrs((dev.chipid >> 24) * 100, &dev.ngroups);
+   struct fd_dev_id dev_id = {
+         .gpu_id = (dev.chipid >> 24) * 100,
+   };
+   groups = fd_perfcntrs(&dev_id, &dev.ngroups);
    if (!groups) {
       errx(1, "no perfcntr support");
    }

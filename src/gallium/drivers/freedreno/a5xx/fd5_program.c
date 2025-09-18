@@ -105,7 +105,7 @@ emit_stream_out(struct fd_ringbuffer *ring, const struct ir3_shader_variant *v,
        * a bit less ideal here..
        */
       for (idx = 0; idx < l->cnt; idx++)
-         if (l->var[idx].regid == v->outputs[k].regid)
+         if (l->var[idx].slot == v->outputs[k].slot)
             break;
 
       debug_assert(idx < l->cnt);
@@ -250,8 +250,11 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
    setup_stages(emit, s);
 
    bool do_streamout = (s[VS].v->shader->stream_output.num_outputs > 0);
-   uint8_t clip_mask = s[VS].v->clip_mask, cull_mask = s[VS].v->cull_mask;
+   uint8_t clip_mask = s[VS].v->clip_mask,
+           cull_mask = s[VS].v->cull_mask;
    uint8_t clip_cull_mask = clip_mask | cull_mask;
+
+   clip_mask &= ctx->rasterizer->clip_plane_enable;
 
    fssz = (s[FS].i->double_threadsize) ? FOUR_QUADS : TWO_QUADS;
 
@@ -408,11 +411,11 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
    /* a5xx appends pos/psize to end of the linkage map: */
    if (VALIDREG(pos_regid))
-      ir3_link_add(&l, pos_regid, 0xf, l.max_loc);
+      ir3_link_add(&l, VARYING_SLOT_POS, pos_regid, 0xf, l.max_loc);
 
    if (VALIDREG(psize_regid)) {
       psize_loc = l.max_loc;
-      ir3_link_add(&l, psize_regid, 0x1, l.max_loc);
+      ir3_link_add(&l, VARYING_SLOT_PSIZ, psize_regid, 0x1, l.max_loc);
    }
 
    /* Handle the case where clip/cull distances aren't read by the FS. Make
@@ -422,13 +425,15 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
    if (clip0_loc == 0xff && VALIDREG(clip0_regid) &&
        (clip_cull_mask & 0xf) != 0) {
       clip0_loc = l.max_loc;
-      ir3_link_add(&l, clip0_regid, clip_cull_mask & 0xf, l.max_loc);
+      ir3_link_add(&l, VARYING_SLOT_CLIP_DIST0, clip0_regid,
+                   clip_cull_mask & 0xf, l.max_loc);
    }
 
    if (clip1_loc == 0xff && VALIDREG(clip1_regid) &&
        (clip_cull_mask >> 4) != 0) {
       clip1_loc = l.max_loc;
-      ir3_link_add(&l, clip1_regid, clip_cull_mask >> 4, l.max_loc);
+      ir3_link_add(&l, VARYING_SLOT_CLIP_DIST1, clip1_regid,
+                   clip_cull_mask >> 4, l.max_loc);
    }
 
    /* If we have stream-out, we use the full shader for binning
@@ -542,20 +547,23 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
    OUT_PKT4(ring, REG_A5XX_SP_SP_CNTL, 1);
    OUT_RING(ring, 0x00000010); /* XXX */
 
-   /* XXX: missing enable bits for per-sample bary linear centroid and
-    * IJ_PERSP_SIZE (should be identical to a6xx)
-    */
-
    OUT_PKT4(ring, REG_A5XX_GRAS_CNTL, 1);
    OUT_RING(ring,
             CONDREG(ij_regid[IJ_PERSP_PIXEL], A5XX_GRAS_CNTL_IJ_PERSP_PIXEL) |
                CONDREG(ij_regid[IJ_PERSP_CENTROID],
                        A5XX_GRAS_CNTL_IJ_PERSP_CENTROID) |
+               CONDREG(ij_regid[IJ_PERSP_SAMPLE],
+                       A5XX_GRAS_CNTL_IJ_PERSP_SAMPLE) |
+               CONDREG(ij_regid[IJ_LINEAR_PIXEL], A5XX_GRAS_CNTL_IJ_LINEAR_PIXEL) |
+               CONDREG(ij_regid[IJ_LINEAR_CENTROID],
+                       A5XX_GRAS_CNTL_IJ_LINEAR_CENTROID) |
+               CONDREG(ij_regid[IJ_LINEAR_SAMPLE],
+                       A5XX_GRAS_CNTL_IJ_LINEAR_SAMPLE) |
                COND(s[FS].v->fragcoord_compmask != 0,
                     A5XX_GRAS_CNTL_COORD_MASK(s[FS].v->fragcoord_compmask) |
-                       A5XX_GRAS_CNTL_SIZE) |
-               COND(s[FS].v->frag_face, A5XX_GRAS_CNTL_SIZE) |
-               CONDREG(ij_regid[IJ_LINEAR_PIXEL], A5XX_GRAS_CNTL_SIZE));
+                       A5XX_GRAS_CNTL_IJ_LINEAR_PIXEL) |
+               COND(s[FS].v->frag_face, A5XX_GRAS_CNTL_IJ_LINEAR_PIXEL) |
+               CONDREG(ij_regid[IJ_LINEAR_PIXEL], A5XX_GRAS_CNTL_IJ_LINEAR_PIXEL));
 
    OUT_PKT4(ring, REG_A5XX_RB_RENDER_CONTROL0, 2);
    OUT_RING(
@@ -564,11 +572,19 @@ fd5_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring,
               A5XX_RB_RENDER_CONTROL0_IJ_PERSP_PIXEL) |
          CONDREG(ij_regid[IJ_PERSP_CENTROID],
                  A5XX_RB_RENDER_CONTROL0_IJ_PERSP_CENTROID) |
+         CONDREG(ij_regid[IJ_PERSP_SAMPLE],
+                 A5XX_RB_RENDER_CONTROL0_IJ_PERSP_SAMPLE) |
+         CONDREG(ij_regid[IJ_LINEAR_PIXEL],
+              A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL) |
+         CONDREG(ij_regid[IJ_LINEAR_CENTROID],
+                 A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_CENTROID) |
+         CONDREG(ij_regid[IJ_LINEAR_SAMPLE],
+                 A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_SAMPLE) |
          COND(s[FS].v->fragcoord_compmask != 0,
               A5XX_RB_RENDER_CONTROL0_COORD_MASK(s[FS].v->fragcoord_compmask) |
-                 A5XX_RB_RENDER_CONTROL0_SIZE) |
-         COND(s[FS].v->frag_face, A5XX_RB_RENDER_CONTROL0_SIZE) |
-         CONDREG(ij_regid[IJ_LINEAR_PIXEL], A5XX_RB_RENDER_CONTROL0_SIZE));
+                 A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL) |
+         COND(s[FS].v->frag_face, A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL) |
+         CONDREG(ij_regid[IJ_LINEAR_PIXEL], A5XX_RB_RENDER_CONTROL0_IJ_LINEAR_PIXEL));
    OUT_RING(ring,
             CONDREG(samp_mask_regid, A5XX_RB_RENDER_CONTROL1_SAMPLEMASK) |
                COND(s[FS].v->frag_face, A5XX_RB_RENDER_CONTROL1_FACENESS) |
@@ -700,7 +716,7 @@ fd5_program_create(void *data, struct ir3_shader_variant *bs,
                    struct ir3_shader_variant *vs, struct ir3_shader_variant *hs,
                    struct ir3_shader_variant *ds, struct ir3_shader_variant *gs,
                    struct ir3_shader_variant *fs,
-                   const struct ir3_shader_key *key) in_dt
+                   const struct ir3_cache_key *key) in_dt
 {
    struct fd_context *ctx = fd_context(data);
    struct fd5_program_state *state = CALLOC_STRUCT(fd5_program_state);

@@ -31,12 +31,10 @@
 #include "pan_util.h"
 #include "util/format/u_format.h"
 
-static void
-panfrost_blitter_save(
-        struct panfrost_context *ctx,
-        struct blitter_context *blitter,
-        bool render_cond)
+void
+panfrost_blitter_save(struct panfrost_context *ctx, bool render_cond)
 {
+        struct blitter_context *blitter = ctx->blitter;
 
         util_blitter_save_vertex_buffer_slot(blitter, ctx->vertex_buffers);
         util_blitter_save_vertex_elements(blitter, ctx->vertex);
@@ -49,7 +47,7 @@ panfrost_blitter_save(
         util_blitter_save_depth_stencil_alpha(blitter, ctx->depth_stencil);
         util_blitter_save_stencil_ref(blitter, &ctx->stencil_ref);
         util_blitter_save_so_targets(blitter, 0, NULL);
-        util_blitter_save_sample_mask(blitter, ctx->sample_mask);
+        util_blitter_save_sample_mask(blitter, ctx->sample_mask, ctx->min_samples);
 
         util_blitter_save_framebuffer(blitter, &ctx->pipe_framebuffer);
         util_blitter_save_fragment_sampler_states(blitter,
@@ -69,37 +67,19 @@ panfrost_blitter_save(
 
 }
 
-static bool
-panfrost_u_blitter_blit(struct pipe_context *pipe,
-                        const struct pipe_blit_info *info)
-{
-        struct panfrost_context *ctx = pan_context(pipe);
-
-        if (!util_blitter_is_blit_supported(ctx->blitter, info))
-                unreachable("Unsupported blit\n");
-
-        /* TODO: Scissor */
-
-        panfrost_blitter_save(ctx, ctx->blitter, info->render_condition_enable);
-        util_blitter_blit(ctx->blitter, info);
-
-        return true;
-}
-
 void
 panfrost_blit(struct pipe_context *pipe,
               const struct pipe_blit_info *info)
 {
-        /* We don't have a hardware blit, so we just fake it with
-         * u_blitter. We could do a little better by culling
-         * vertex jobs, though. */
+        struct panfrost_context *ctx = pan_context(pipe);
 
         if (info->render_condition_enable &&
-            !panfrost_render_condition_check(pan_context(pipe)))
+            !panfrost_render_condition_check(ctx))
                 return;
 
-        if (panfrost_u_blitter_blit(pipe, info))
-                return;
+        if (!util_blitter_is_blit_supported(ctx->blitter, info))
+                unreachable("Unsupported blit\n");
 
-        return;
+        panfrost_blitter_save(ctx, info->render_condition_enable);
+        util_blitter_blit(ctx->blitter, info);
 }

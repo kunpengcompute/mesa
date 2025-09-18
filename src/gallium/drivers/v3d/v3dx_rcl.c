@@ -23,7 +23,7 @@
 
 #include "util/format/u_format.h"
 #include "v3d_context.h"
-#include "v3d_tiling.h"
+#include "broadcom/common/v3d_tiling.h"
 #include "broadcom/common/v3d_macros.h"
 #include "broadcom/cle/v3dx_pack.h"
 
@@ -532,6 +532,52 @@ v3d_emit_z_stencil_config(struct v3d_job *job, struct v3d_surface *surf,
 
 #define div_round_up(a, b) (((a) + (b) - 1) / b)
 
+static bool
+supertile_in_job_scissors(struct v3d_job *job,
+                          uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+   if (job->scissor.disabled || job->scissor.count == 0)
+      return true;
+
+   const uint32_t min_x = x * w;
+   const uint32_t min_y = y * h;
+   const uint32_t max_x = min_x + w - 1;
+   const uint32_t max_y = min_y + h - 1;
+
+   for (uint32_t i = 0; i < job->scissor.count; i++) {
+           const uint32_t min_s_x = job->scissor.rects[i].min_x;
+           const uint32_t min_s_y = job->scissor.rects[i].min_y;
+           const uint32_t max_s_x = job->scissor.rects[i].max_x;
+           const uint32_t max_s_y = job->scissor.rects[i].max_y;
+
+           if (max_x < min_s_x || min_x > max_s_x ||
+               max_y < min_s_y || min_y > max_s_y) {
+                   continue;
+           }
+
+           return true;
+   }
+
+   return false;
+}
+
+#if V3D_VERSION >= 40
+static inline bool
+do_double_initial_tile_clear(const struct v3d_job *job)
+{
+        /* Our rendering code emits an initial clear per layer, unlike the
+         * Vulkan driver, which only executes a single initial clear for all
+         * layers. This is because in GL we don't use the
+         * 'clear_buffer_being_stored' bit when storing tiles, so each layer
+         * needs the iniital clear. This is also why this helper, unlike the
+         * Vulkan version, doesn't check the layer count to decide if double
+         * clear for double buffer mode is required.
+         */
+        return job->double_buffer &&
+               (job->draw_tiles_x > 1 || job->draw_tiles_y > 1);
+}
+#endif
+
 static void
 emit_render_layer(struct v3d_job *job, uint32_t layer)
 {
@@ -609,7 +655,7 @@ emit_render_layer(struct v3d_job *job, uint32_t layer)
                 cl_emit(&job->rcl, STORE_TILE_BUFFER_GENERAL, store) {
                         store.buffer_to_store = NONE;
                 }
-                if (i == 0) {
+                if (i == 0 || do_double_initial_tile_clear(job)) {
                         cl_emit(&job->rcl, CLEAR_TILE_BUFFERS, clear) {
                                 clear.clear_z_stencil_buffer = true;
                                 clear.clear_all_render_targets = true;
@@ -641,9 +687,13 @@ emit_render_layer(struct v3d_job *job, uint32_t layer)
 
         for (int y = min_y_supertile; y <= max_y_supertile; y++) {
                 for (int x = min_x_supertile; x <= max_x_supertile; x++) {
-                        cl_emit(&job->rcl, SUPERTILE_COORDINATES, coords) {
-                                coords.column_number_in_supertiles = x;
-                                coords.row_number_in_supertiles = y;
+                        if (supertile_in_job_scissors(job, x, y,
+                                                      supertile_w_in_pixels,
+                                                      supertile_h_in_pixels)) {
+                                cl_emit(&job->rcl, SUPERTILE_COORDINATES, coords) {
+                                      coords.column_number_in_supertiles = x;
+                                      coords.row_number_in_supertiles = y;
+                                }
                         }
                 }
         }
@@ -699,7 +749,9 @@ v3dX(emit_rcl)(struct v3d_job *job)
 
                 config.number_of_render_targets = MAX2(job->nr_cbufs, 1);
 
+                assert(!job->msaa || !job->double_buffer);
                 config.multisample_mode_4x = job->msaa;
+                config.double_buffer_in_non_ms_mode = job->double_buffer;
 
                 config.maximum_bpp_of_all_render_targets = job->internal_bpp;
         }

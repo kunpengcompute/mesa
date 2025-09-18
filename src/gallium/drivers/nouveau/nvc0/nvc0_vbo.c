@@ -96,7 +96,7 @@ nvc0_vertex_state_create(struct pipe_context *pipe,
             }
             so->element[i].state = nvc0_vertex_format[fmt].vtx;
             so->need_conversion = true;
-            pipe_debug_message(&nouveau_context(pipe)->debug, FALLBACK,
+            util_debug_message(&nouveau_context(pipe)->debug, FALLBACK,
                                "Converting vertex element %d, no hw format %s",
                                i, util_format_name(ve->src_format));
         }
@@ -977,8 +977,8 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
    }
 
    if (info->mode == PIPE_PRIM_PATCHES &&
-       nvc0->state.patch_vertices != info->vertices_per_patch) {
-      nvc0->state.patch_vertices = info->vertices_per_patch;
+       nvc0->state.patch_vertices != nvc0->patch_vertices) {
+      nvc0->state.patch_vertices = nvc0->patch_vertices;
       PUSH_SPACE(push, 1);
       IMMED_NVC0(push, NVC0_3D(PATCH_VERTICES), nvc0->state.patch_vertices);
    }

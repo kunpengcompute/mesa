@@ -100,7 +100,7 @@ emit_split_buffer_store(nir_builder *b, nir_ssa_def *d, nir_ssa_def *desc, nir_s
 
          nir_ssa_def *store_val = nir_extract_bits(b, &d, 1, start_byte * 8u, 1, store_bytes * 8u);
          nir_build_store_buffer_amd(b, store_val, desc, v_off, s_off, .is_swizzled = swizzled, .slc_amd = slc,
-                                    .base = start_byte, .write_mask = 1u, .memory_modes = nir_var_shader_out);
+                                    .base = start_byte, .memory_modes = nir_var_shader_out);
 
          start_byte += store_bytes;
          bytes -= store_bytes;
@@ -169,8 +169,8 @@ gs_per_vertex_input_vertex_offset_gfx9(nir_builder *b, nir_src *vertex_src)
 {
    if (nir_src_is_const(*vertex_src)) {
       unsigned vertex = nir_src_as_uint(*vertex_src);
-      return nir_ubfe(b, nir_build_load_gs_vertex_offset_amd(b, .base = vertex / 2u * 2u),
-                      nir_imm_int(b, (vertex % 2u) * 16u), nir_imm_int(b, 16u));
+      return nir_ubfe(b, nir_build_load_gs_vertex_offset_amd(b, .base = vertex / 2u),
+                      nir_imm_int(b, (vertex & 1u) * 16u), nir_imm_int(b, 16u));
    }
 
    nir_ssa_def *vertex_offset = nir_build_load_gs_vertex_offset_amd(b, .base = 0);
@@ -192,7 +192,7 @@ gs_per_vertex_input_offset(nir_builder *b,
                            lower_esgs_io_state *st,
                            nir_intrinsic_instr *instr)
 {
-   nir_src *vertex_src = nir_get_io_vertex_index_src(instr);
+   nir_src *vertex_src = nir_get_io_arrayed_index_src(instr);
    nir_ssa_def *vertex_offset = st->chip_class >= GFX9
                                 ? gs_per_vertex_input_vertex_offset_gfx9(b, vertex_src)
                                 : gs_per_vertex_input_vertex_offset_gfx6(b, vertex_src);
