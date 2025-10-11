@@ -27,22 +27,28 @@ LOCAL_PATH := $(call my-dir)
 MESA3D_TOP := $(dir $(LOCAL_PATH))
 
 LIBDRM_VERSION = $(shell cat external/libdrm/meson.build | grep -o "\<version\>\s*:\s*'\w*\.\w*\.\w*'" | grep -o "\w*\.\w*\.\w*" | head -1)
-LIBVA_VERSION = $(shell cat external/libva/meson.build | grep -o "\<version\>\s*:\s*'\w*\.\w*\.\w*'" | grep -o "\w*\.\w*\.\w*" | head -1)
+LLVM_VERSION_MAJOR = $(shell \
+    if [ -f external/llvm-project/cmake/Modules/LLVMVersion.cmake ]; then \
+        grep 'set.LLVM_VERSION_MAJOR ' external/llvm-project/cmake/Modules/LLVMVersion.cmake | grep -o '[0-9]\+'; \
+    else \
+        grep 'set.LLVM_VERSION_MAJOR ' external/llvm-project/llvm/CMakeLists.txt | grep -o '[0-9]\+'; \
+    fi)
 
 MESA_VK_LIB_SUFFIX_amd := radeon
 MESA_VK_LIB_SUFFIX_intel := intel
+MESA_VK_LIB_SUFFIX_intel_hasvk := intel_hasvk
 MESA_VK_LIB_SUFFIX_freedreno := freedreno
 MESA_VK_LIB_SUFFIX_broadcom := broadcom
 MESA_VK_LIB_SUFFIX_panfrost := panfrost
-MESA_VK_LIB_SUFFIX_virtio-experimental := virtio
+MESA_VK_LIB_SUFFIX_virtio := virtio
 MESA_VK_LIB_SUFFIX_swrast := lvp
 
 include $(CLEAR_VARS)
 
-LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ libnativewindow libsync libhardware libva
+LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ libnativewindow libsync libhardware
 LOCAL_STATIC_LIBRARIES := libexpat libarect libelf
-LOCAL_HEADER_LIBRARIES := libnativebase_headers hwvulkan_headers libbacktrace_headers
-MESON_GEN_PKGCONFIGS := backtrace cutils expat hardware libdrm:$(LIBDRM_VERSION) nativewindow sync zlib:1.2.11 libelf libva:$(LIBVA_VERSION)
+LOCAL_HEADER_LIBRARIES := libnativebase_headers hwvulkan_headers
+MESON_GEN_PKGCONFIGS := log cutils expat hardware libdrm:$(LIBDRM_VERSION) nativewindow sync zlib:1.2.11 libelf
 LOCAL_CFLAGS += $(BOARD_MESA3D_CFLAGS)
 
 ifneq ($(filter swrast,$(BOARD_MESA3D_GALLIUM_DRIVERS) $(BOARD_MESA3D_VULKAN_DRIVERS)),)
@@ -61,9 +67,15 @@ LOCAL_SHARED_LIBRARIES += libdrm_intel
 MESON_GEN_PKGCONFIGS += libdrm_intel:$(LIBDRM_VERSION)
 endif
 
-ifneq ($(filter radeonsi amd,$(BOARD_MESA3D_GALLIUM_DRIVERS) $(BOARD_MESA3D_VULKAN_DRIVERS)),)
-MESON_GEN_LLVM_STUB := true
+ifneq ($(filter radeonsi,$(BOARD_MESA3D_GALLIUM_DRIVERS)),)
+ifneq ($(MESON_GEN_LLVM_STUB),)
 LOCAL_CFLAGS += -DFORCE_BUILD_AMDGPU   # instructs LLVM to declare LLVMInitializeAMDGPU* functions
+# The flag is required for the Android-x86 LLVM port that follows the AOSP LLVM porting rules
+# https://osdn.net/projects/android-x86/scm/git/external-llvm-project
+endif
+endif
+
+ifneq ($(filter radeonsi amd,$(BOARD_MESA3D_GALLIUM_DRIVERS) $(BOARD_MESA3D_VULKAN_DRIVERS)),)
 LOCAL_SHARED_LIBRARIES += libdrm_amdgpu
 MESON_GEN_PKGCONFIGS += libdrm_amdgpu:$(LIBDRM_VERSION)
 endif
@@ -73,11 +85,6 @@ LOCAL_SHARED_LIBRARIES += libdrm_radeon
 MESON_GEN_PKGCONFIGS += libdrm_radeon:$(LIBDRM_VERSION)
 endif
 
-ifneq ($(filter nouveau,$(BOARD_MESA3D_GALLIUM_DRIVERS)),)
-LOCAL_SHARED_LIBRARIES += libdrm_nouveau
-MESON_GEN_PKGCONFIGS += libdrm_nouveau:$(LIBDRM_VERSION)
-endif
-
 ifneq ($(filter d3d12,$(BOARD_MESA3D_GALLIUM_DRIVERS)),)
 LOCAL_HEADER_LIBRARIES += DirectX-Headers
 LOCAL_STATIC_LIBRARIES += DirectX-Guids
@@ -85,8 +92,8 @@ MESON_GEN_PKGCONFIGS += DirectX-Headers
 endif
 
 ifneq ($(MESON_GEN_LLVM_STUB),)
-MESON_LLVM_VERSION := 13.0.1
-LOCAL_SHARED_LIBRARIES += libLLVM70
+MESON_LLVM_VERSION := $(LLVM_VERSION_MAJOR).0.0
+LOCAL_SHARED_LIBRARIES += libLLVM$(LLVM_VERSION_MAJOR)
 endif
 
 ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 30; echo $$?), 0)
@@ -95,8 +102,19 @@ LOCAL_SHARED_LIBRARIES += \
     libgralloctypes \
     libhidlbase \
     libutils
-
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 35; echo $$?), 0)
+LOCAL_SHARED_LIBRARIES += libui
+MESON_GEN_PKGCONFIGS += ui
+endif
 MESON_GEN_PKGCONFIGS += android.hardware.graphics.mapper:4.0
+endif
+
+__MY_SHARED_LIBRARIES := $(LOCAL_SHARED_LIBRARIES)
+
+ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 30; echo $$?), 0)
+MESA_LIBGBM_NAME := libgbm_mesa
+else
+MESA_LIBGBM_NAME := libgbm
 endif
 
 ifeq ($(TARGET_IS_64_BIT),true)
@@ -113,52 +131,63 @@ endif
 
 #-------------------------------------------------------------------------------
 
+# $1: name
+# $2: subdir
+# $3: source prebuilt
+# $4: export headers
 define mesa3d-lib
+include $(CLEAR_VARS)
 LOCAL_MODULE_CLASS := SHARED_LIBRARIES
 LOCAL_MODULE := $1
 LOCAL_VENDOR_MODULE := true
-LOCAL_MODULE_RELATIVE_PATH := $3
-ifdef TARGET_2ND_ARCH
-LOCAL_SRC_FILES_$(TARGET_ARCH) := $(call relative_top_path,$(LOCAL_PATH))$($4)
-LOCAL_SRC_FILES_$(TARGET_2ND_ARCH) := $(call relative_top_path,$(LOCAL_PATH))$(2ND_$4)
-LOCAL_MULTILIB := both
-else
-LOCAL_SRC_FILES := $(call relative_top_path,$(LOCAL_PATH))$($4)
-endif
+LOCAL_MODULE_RELATIVE_PATH := $2
+LOCAL_PREBUILT_MODULE_FILE := $($3)
+LOCAL_MULTILIB := first
 LOCAL_CHECK_ELF_FILES := false
 LOCAL_MODULE_SUFFIX := .so
-LOCAL_MODULE_SYMLINKS := $1$2
+LOCAL_SHARED_LIBRARIES := $(__MY_SHARED_LIBRARIES)
+LOCAL_EXPORT_C_INCLUDE_DIRS := $4
 include $(BUILD_PREBUILT)
+
+ifdef TARGET_2ND_ARCH
 include $(CLEAR_VARS)
+LOCAL_MODULE_CLASS := SHARED_LIBRARIES
+LOCAL_MODULE := $1
+LOCAL_VENDOR_MODULE := true
+LOCAL_MODULE_RELATIVE_PATH := $2
+LOCAL_PREBUILT_MODULE_FILE := $(2ND_$3)
+LOCAL_MULTILIB := 32
+LOCAL_CHECK_ELF_FILES := false
+LOCAL_MODULE_SUFFIX := .so
+LOCAL_SHARED_LIBRARIES := $(__MY_SHARED_LIBRARIES)
+LOCAL_EXPORT_C_INCLUDE_DIRS := $4
+include $(BUILD_PREBUILT)
+endif
 endef
 
-__MY_SHARED_LIBRARIES := $(LOCAL_SHARED_LIBRARIES)
-include $(CLEAR_VARS)
-LOCAL_SHARED_LIBRARIES := $(__MY_SHARED_LIBRARIES)
-
-# Module 'libgallium_dri', produces '/vendor/lib{64}/dri/libgallium_dri.so'
+ifneq ($(strip $(BOARD_MESA3D_GALLIUM_DRIVERS)),)
+# Module 'libgallium_dri', produces '/vendor/lib{64}/libgallium_dri.so'
 # This module also trigger DRI symlinks creation process
-$(eval $(call mesa3d-lib,libgallium_dri,.so.0,dri,MESA3D_GALLIUM_DRI_BIN))
-$(eval $(call mesa3d-lib,radeonsi_drv_video,.so.0,dri,MESA3D_RADEONSI_DRI_VIDEO_BIN))
+$(eval $(call mesa3d-lib,libgallium_dri,,MESA3D_GALLIUM_BIN))
 # Module 'libglapi', produces '/vendor/lib{64}/libglapi.so'
-$(eval $(call mesa3d-lib,libglapi,.so.0,,MESA3D_LIBGLAPI_BIN))
+$(eval $(call mesa3d-lib,libglapi,,MESA3D_LIBGLAPI_BIN))
 
 # Module 'libEGL_mesa', produces '/vendor/lib{64}/egl/libEGL_mesa.so'
-$(eval $(call mesa3d-lib,libEGL_mesa,.so.1,egl,MESA3D_LIBEGL_BIN))
+$(eval $(call mesa3d-lib,libEGL_mesa,egl,MESA3D_LIBEGL_BIN))
 # Module 'libGLESv1_CM_mesa', produces '/vendor/lib{64}/egl/libGLESv1_CM_mesa.so'
-$(eval $(call mesa3d-lib,libGLESv1_CM_mesa,.so.1,egl,MESA3D_LIBGLESV1_BIN))
+$(eval $(call mesa3d-lib,libGLESv1_CM_mesa,egl,MESA3D_LIBGLESV1_BIN))
 # Module 'libGLESv2_mesa', produces '/vendor/lib{64}/egl/libGLESv2_mesa.so'
-$(eval $(call mesa3d-lib,libGLESv2_mesa,.so.2,egl,MESA3D_LIBGLESV2_BIN))
+$(eval $(call mesa3d-lib,libGLESv2_mesa,egl,MESA3D_LIBGLESV2_BIN))
+endif
 
 # Modules 'vulkan.{driver_name}', produces '/vendor/lib{64}/hw/vulkan.{driver_name}.so' HAL
 $(foreach driver,$(BOARD_MESA3D_VULKAN_DRIVERS), \
-    $(eval $(call mesa3d-lib,vulkan.$(MESA_VK_LIB_SUFFIX_$(driver)),.so.0,hw,MESA3D_VULKAN_$(driver)_BIN)))
+    $(eval $(call mesa3d-lib,vulkan.$(MESA_VK_LIB_SUFFIX_$(driver)),hw,MESA3D_VULKAN_$(driver)_BIN)))
 
 ifneq ($(filter true, $(BOARD_MESA3D_BUILD_LIBGBM)),)
-LOCAL_EXPORT_C_INCLUDE_DIRS := $(MESA3D_TOP)/src/gbm/main
-
 # Modules 'libgbm', produces '/vendor/lib{64}/libgbm.so'
-$(eval $(call mesa3d-lib,libgbm,.so.1,,MESA3D_LIBGBM_BIN))
+$(eval $(call mesa3d-lib,$(MESA_LIBGBM_NAME),,MESA3D_LIBGBM_BIN,$(MESA3D_TOP)/src/gbm/main))
+$(eval $(call mesa3d-lib,dri_gbm,,MESA3D_DRI_GBM_BIN))
 endif
 
 #-------------------------------------------------------------------------------

@@ -1,24 +1,7 @@
 /*
  * Copyright 2014-2019 Advanced Micro Devices, Inc.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "ac_rtld.h"
@@ -156,7 +139,7 @@ static bool layout_symbols(struct ac_rtld_symbol *symbols, unsigned num_symbols,
       s->offset = total_size;
 
       if (total_size + s->size < total_size) {
-         report_errorf("%s: size overflow", __FUNCTION__);
+         report_errorf("%s: size overflow", __func__);
          return false;
       }
 
@@ -257,6 +240,7 @@ bool ac_rtld_open(struct ac_rtld_binary *binary, struct ac_rtld_open_info i)
    memset(binary, 0, sizeof(*binary));
    memcpy(&binary->options, &i.options, sizeof(binary->options));
    binary->wave_size = i.wave_size;
+   binary->gfx_level = i.info->gfx_level;
    binary->num_parts = i.num_parts;
    binary->parts = calloc(sizeof(*binary->parts), i.num_parts);
    if (!binary->parts)
@@ -294,11 +278,7 @@ bool ac_rtld_open(struct ac_rtld_binary *binary, struct ac_rtld_open_info i)
    util_dynarray_foreach (&binary->lds_symbols, struct ac_rtld_symbol, symbol)
       symbol->part_idx = ~0u;
 
-   unsigned max_lds_size = 64 * 1024;
-
-   if (i.info->chip_class == GFX6 ||
-       (i.shader_type != MESA_SHADER_COMPUTE && i.shader_type != MESA_SHADER_FRAGMENT))
-      max_lds_size = 32 * 1024;
+   unsigned max_lds_size = i.info->gfx_level == GFX6 ? 32 * 1024 : 64 * 1024;
 
    uint64_t shared_lds_size = 0;
    if (!layout_symbols(binary->lds_symbols.data, i.num_shared_lds_symbols, &shared_lds_size))
@@ -340,6 +320,7 @@ bool ac_rtld_open(struct ac_rtld_binary *binary, struct ac_rtld_open_info i)
       report_if(!part->sections);
 
       Elf_Scn *section = NULL;
+      bool first_section = true;
       while ((section = elf_nextscn(part->elf, section))) {
          Elf64_Shdr *shdr = elf64_getshdr(section);
          struct ac_rtld_section *s = &part->sections[elf_ndxscn(section)];
@@ -368,6 +349,13 @@ bool ac_rtld_open(struct ac_rtld_binary *binary, struct ac_rtld_open_info i)
             }
 
             if (s->is_pasted_text) {
+               if (part_idx > 0 && first_section && binary->options.waitcnt_wa) {
+                  /* Reserve a dword at the beginning of this part. */
+                  exec_size += 4;
+                  pasted_text_size += 4;
+                  first_section = false;
+               }
+
                s->offset = pasted_text_size;
                pasted_text_size += shdr->sh_size;
             } else {
@@ -436,31 +424,6 @@ bool ac_rtld_open(struct ac_rtld_binary *binary, struct ac_rtld_open_info i)
    binary->rx_size += rx_size;
    binary->exec_size = exec_size;
 
-   /* The SQ fetches up to N cache lines of 16 dwords
-    * ahead of the PC, configurable by SH_MEM_CONFIG and
-    * S_INST_PREFETCH. This can cause two issues:
-    *
-    * (1) Crossing a page boundary to an unmapped page. The logic
-    *     does not distinguish between a required fetch and a "mere"
-    *     prefetch and will fault.
-    *
-    * (2) Prefetching instructions that will be changed for a
-    *     different shader.
-    *
-    * (2) is not currently an issue because we flush the I$ at IB
-    * boundaries, but (1) needs to be addressed. Due to buffer
-    * suballocation, we just play it safe.
-    */
-   unsigned prefetch_distance = 0;
-
-   if (!i.info->has_graphics && i.info->family >= CHIP_ALDEBARAN)
-      prefetch_distance = 16;
-   else if (i.info->chip_class >= GFX10)
-      prefetch_distance = 3;
-
-   if (prefetch_distance)
-      binary->rx_size = align(binary->rx_size + prefetch_distance * 64, 64);
-
    return true;
 
 #undef report_if
@@ -526,7 +489,7 @@ bool ac_rtld_read_config(const struct radeon_info *info, struct ac_rtld_binary *
 
       /* TODO: be precise about scratch use? */
       struct ac_shader_config c = {0};
-      ac_parse_shader_binary_config(config_data, config_nbytes, binary->wave_size, true, info, &c);
+      ac_parse_shader_binary_config(config_data, config_nbytes, binary->wave_size, info, &c);
 
       config->num_sgprs = MAX2(config->num_sgprs, c.num_sgprs);
       config->num_vgprs = MAX2(config->num_vgprs, c.num_vgprs);
@@ -572,7 +535,7 @@ static bool resolve_symbol(const struct ac_rtld_upload_info *u, unsigned part_id
 
       /* TODO: resolve from other parts */
 
-      if (u->get_external_symbol(u->cb_data, name, value))
+      if (u->get_external_symbol(u->binary->gfx_level, u->cb_data, name, value))
          return true;
 
       report_errorf("symbol %s: unknown", name);
@@ -760,6 +723,7 @@ int ac_rtld_upload(struct ac_rtld_upload_info *u)
    for (unsigned i = 0; i < u->binary->num_parts; ++i) {
       struct ac_rtld_part *part = &u->binary->parts[i];
 
+      bool first_section = true;
       Elf_Scn *section = NULL;
       while ((section = elf_nextscn(part->elf, section))) {
          Elf64_Shdr *shdr = elf64_getshdr(section);
@@ -772,6 +736,13 @@ int ac_rtld_upload(struct ac_rtld_upload_info *u)
 
          Elf_Data *data = elf_getdata(section, NULL);
          report_elf_if(!data || data->d_size != shdr->sh_size);
+
+         if (i > 0 && first_section && u->binary->options.waitcnt_wa) {
+            assert(s->offset >= 4);
+            *(uint32_t *)(u->rx_ptr + s->offset - 4) = util_cpu_to_le32(0xbf880fff);
+            first_section = false;
+         }
+
          memcpy(u->rx_ptr + s->offset, data->d_buf, shdr->sh_size);
 
          size = MAX2(size, s->offset + shdr->sh_size);

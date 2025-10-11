@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2022 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2022-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "pipe/p_defines.h"
 #include "util/u_bitmask.h"
@@ -29,7 +11,6 @@
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "tgsi/tgsi_parse.h"
 
 #include "svga_context.h"
 #include "svga_cmd.h"
@@ -81,7 +62,7 @@ svga_create_uav_image(struct svga_context *svga,
 
       /* mark this buffer as being used in uav */
       struct svga_buffer *sbuf = svga_buffer(res);
-      sbuf->uav = TRUE;
+      sbuf->uav = true;
    }
    else if (resourceDim == SVGA3D_RESOURCE_TEXTURE1D ||
             resourceDim == SVGA3D_RESOURCE_TEXTURE2D) {
@@ -107,7 +88,7 @@ svga_create_uav_image(struct svga_context *svga,
       return uaViewId;
 
    SVGA_DBG(DEBUG_IMAGE, "%s: resource=0x%x dim=%d format=%d uaViewId=%d\n",
-            __FUNCTION__, res, resourceDim, svga_format, uaViewId);
+            __func__, res, resourceDim, svga_format, uaViewId);
 
    return uaViewId;
 }
@@ -179,9 +160,9 @@ svga_set_shader_images(struct pipe_context *pipe,
    /* number of bound image views */
    svga->curr.num_image_views[shader] = start + num;
 
-#ifdef DEBUG
+#if MESA_DEBUG
    SVGA_DBG(DEBUG_UAV, "%s: num_image_views=%d start=%d num=%d unbind_num_trailing_slots=%d\n",
-            __FUNCTION__, svga->curr.num_image_views[shader], start, num,
+            __func__, svga->curr.num_image_views[shader], start, num,
             unbind_num_trailing_slots);
 
    for (unsigned i = start; i < start + num; i++) {

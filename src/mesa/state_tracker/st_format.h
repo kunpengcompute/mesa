@@ -31,9 +31,9 @@
 #define ST_FORMAT_H
 
 #include "main/formats.h"
-#include "main/glheader.h"
+#include "util/glheader.h"
 
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -70,7 +70,8 @@ extern mesa_format
 st_ChooseTextureFormat(struct gl_context * ctx, GLenum target,
                        GLint internalFormat,
                        GLenum format, GLenum type);
-
+bool
+st_QueryTextureFormatSupport(struct gl_context *ctx, GLenum target, GLenum internalFormat);
 void
 st_QueryInternalFormat(struct gl_context *ctx, GLenum target,
                        GLenum internalFormat, GLenum pname, GLint *params);

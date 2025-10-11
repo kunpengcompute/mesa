@@ -1,27 +1,7 @@
-/**************************************************************************
-
-Copyright (C) 2004-2005 Nicolai Haehnle et al.
-
-Permission is hereby granted, free of charge, to any person obtaining a
-copy of this software and associated documentation files (the "Software"),
-to deal in the Software without restriction, including without limitation
-on the rights to use, copy, modify, merge, publish, distribute, sub
-license, and/or sell copies of the Software, and to permit persons to whom
-the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice (including the next
-paragraph) shall be included in all copies or substantial portions of the
-Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
-THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
-DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
-USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-**************************************************************************/
+/*
+ * Copyright 2004-2005 Nicolai Haehnle et al.
+ * SPDX-License-Identifier: MIT
+ */
 
 /* *INDENT-OFF* */
 
@@ -540,7 +520,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
  * position takes place.
  *
  * Most likely this is used to ignore rest of the program in cases
- * where group of verts arent visible. For some reason this "section"
+ * where group of verts aren't visible. For some reason this "section"
  * is sometimes accepted other instruction that have no relationship with
  * position calculations.
  */
@@ -1197,7 +1177,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
  * My guess is that there are two bits for each zbias primitive
  * (FILL, LINE, POINT).
  *  One to enable depth test and one for depth write.
- * Yet this doesnt explain why depth writes work ...
+ * Yet this doesn't explain why depth writes work ...
  */
 #define R300_SU_POLY_OFFSET_ENABLE	       0x42B4
 #	define R300_FRONT_ENABLE	       (1 << 0)
@@ -3299,7 +3279,8 @@ enum {
 #   define R500_US_CODE_RANGE_ADDR(x)			((x) << 0)
 #   define R500_US_CODE_RANGE_SIZE(x)			((x) << 16)
 #define R500_US_CONFIG					0x4600
-#   define R500_ZERO_TIMES_ANYTHING_EQUALS_ZERO		(1 << 1)
+#   define R500_ZERO_TIMES_ANYTHING_EQUALS_ZERO_DEFAULT	(0 << 1)
+#   define R500_ZERO_TIMES_ANYTHING_EQUALS_ZERO_LEGACY	(1 << 1)
 #define R500_US_FC_ADDR_0				0xa000
 #   define R500_FC_BOOL_ADDR(x)				((x) << 0)
 #   define R500_FC_INT_ADDR(x)				((x) << 8)
@@ -3497,7 +3478,7 @@ enum {
 /* Same as R300_PACKET3_3D_DRAW_INDX but without VAP_VTX_FMT */
 #define R300_PACKET3_3D_DRAW_INDX_2         0x00003600
 
-/* Clears a portion of hierachical Z RAM
+/* Clears a portion of hierarchical Z RAM
  * 3 dword parameters
  * 0. START
  * 1. COUNT: 13:0 (max is 0x3FFF)

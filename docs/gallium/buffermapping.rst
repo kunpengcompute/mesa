@@ -20,7 +20,7 @@ behavior.
 Portal 2
 ========
 
-.. code-block:: console
+.. code-block:: text
 
   1030842 glXSwapBuffers(dpy = 0x82a8000, drawable = 20971540)
   1030876 glBufferDataARB(target = GL_ELEMENT_ARRAY_BUFFER, size = 65536, data = NULL, usage = GL_DYNAMIC_DRAW)
@@ -54,7 +54,7 @@ the GPU access from the previous frame has completed. This pattern of
 incrementing ``glBufferSubData()`` offsets interleaved with draws from that data
 is common among newer Valve games.
 
-.. code-block:: console
+.. code-block:: text
 
   [ during setup ]
 
@@ -93,7 +93,7 @@ during setup.
 Terraria
 ========
 
-.. code-block:: console
+.. code-block:: text
 
   167581 glXSwapBuffers(dpy = 0x3004630, drawable = 25165844)
 
@@ -114,7 +114,7 @@ synchronization.
 Don't Starve
 ============
 
-.. code-block:: console
+.. code-block:: text
 
   7251917 glGenBuffers(n = 1, buffers = &115052)
   7251918 glBindBuffer(target = GL_ARRAY_BUFFER, buffer = 115052)
@@ -142,7 +142,7 @@ always happen at the end of the next frame.
 Euro Truck Simulator
 ====================
 
-.. code-block:: console
+.. code-block:: text
 
   [usage of VBO 14,15]
   [...]
@@ -182,7 +182,7 @@ Euro Truck Simulator
   893943 glDrawArrays(mode = GL_TRIANGLES, first = 0, count = 6)
 
 At the start of this frame, buffer 14 and 15 haven't been used in the previous 2
-frames, and the ``GL_ARB_sync`` fence has ensured that the GPU has at least started
+frames, and the :ext:`GL_ARB_sync` fence has ensured that the GPU has at least started
 frame n-1 as the CPU starts the current frame. The first map is ``offset = 0,
 INVALIDATE_BUFFER | UNSYNCHRONIZED``, which suggests that the driver should
 reallocate storage for the mapping even in the ``UNSYNCHRONIZED`` case, except
@@ -199,7 +199,7 @@ different buffer.
 Plague Inc
 ==========
 
-.. code-block:: console
+.. code-block:: text
 
   1640732 glXSwapBuffers(dpy = 0xb218f20, drawable = 23068674)
   1640733 glClientWaitSync(sync = 0xb4141430, flags = 0x0, timeout = 0) = GL_ALREADY_SIGNALED
@@ -237,7 +237,7 @@ Plague Inc
   1640863 glDrawElementsBaseVertex(mode = GL_TRIANGLES, count = 6, type = GL_UNSIGNED_SHORT, indices = 0x58, basevertex = 4)
 
 At the start of this frame, the VBOs haven't been used in about 6 frames, and
-the ``GL_ARB_sync`` fence has ensured that the GPU has started frame n-1.
+the :ext:`GL_ARB_sync` fence has ensured that the GPU has started frame n-1.
 
 Note the use of ``glFlushMappedBufferRange()`` on a small fraction of the size
 of the VBO -- it is important that a blitting driver make use of the flush
@@ -246,7 +246,7 @@ ranges when in explicit mode.
 Darkest Dungeon
 ===============
 
-.. code-block:: console
+.. code-block:: text
 
   938384 glXSwapBuffers(dpy = 0x377fcd0, drawable = 23068692)
   
@@ -276,7 +276,7 @@ frame.
 Tabletop Simulator
 ==================
 
-.. code-block:: console
+.. code-block:: text
 
   1287594 glXSwapBuffers(dpy = 0x3e10810, drawable = 23068692)
   1287595 glClientWaitSync(sync = 0x7abf554e37b0, flags = 0x0, timeout = 0) = GL_ALREADY_SIGNALED
@@ -299,14 +299,14 @@ Tabletop Simulator
   1289068 glDrawArrays(mode = GL_TRIANGLE_STRIP, first = 8, count = 4)
   1289553 glXSwapBuffers(dpy = 0x3e10810, drawable = 23068692)
 
-In this app, buffer 480 gets used like this every other frame.  The ``GL_ARB_sync``
+In this app, buffer 480 gets used like this every other frame.  The :ext:`GL_ARB_sync`
 fence ensures that frame n-1 has started on the GPU before CPU work starts on
 the current frame, so the unsynchronized access to the buffers is safe.
 
 Hollow Knight
 =============
 
-.. code-block:: console
+.. code-block:: text
 
   1873034 glXSwapBuffers(dpy = 0x28609d0, drawable = 23068692)
   1873035 glClientWaitSync(sync = 0x7b1a5ca6e130, flags = 0x0, timeout = 0) = GL_ALREADY_SIGNALED
@@ -337,14 +337,14 @@ Hollow Knight
   1873097 glDrawElementsBaseVertex(mode = GL_TRIANGLES, count = 36, type = GL_UNSIGNED_SHORT, indices = 0x2d0, basevertex = 240)
 
 In this app, buffer 29/30 get used like this starting from offset 0 every other
-frame.  The ``GL_ARB_sync`` fence is used to make sure that the GPU has reached the
+frame.  The :ext:`GL_ARB_sync` fence is used to make sure that the GPU has reached the
 start of the previous frame before we go unsynchronized writing over the n-2
 frame's buffer.
 
 Borderlands 2
 =============
 
-.. code-block:: console
+.. code-block:: text
 
   3561998 glFlush()
   3562004 glXSwapBuffers(dpy = 0xbaf0f90, drawable = 23068705)
@@ -363,7 +363,7 @@ Borderlands 2
   3563064 glBindBufferARB(target = GL_ELEMENT_ARRAY_BUFFER, buffer = 875)
   3563065 glDrawElementsInstancedARB(mode = GL_TRIANGLES, count = 72, type = GL_UNSIGNED_SHORT, indices = NULL, instancecount = 28)
 
-The ``GL_ARB_sync`` fence ensures that the GPU has started frame n-1 before the CPU
+The :ext:`GL_ARB_sync` fence ensures that the GPU has started frame n-1 before the CPU
 starts on the current frame.
 
 This sequence of buffer uploads appears in each frame with the same buffer

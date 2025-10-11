@@ -41,9 +41,11 @@
 #include <xcb/randr.h>
 #include <X11/Xlib-xcb.h>
 #endif
+#include "util/cnd_monotonic.h"
 #include "util/hash_table.h"
 #include "util/list.h"
 #include "util/os_time.h"
+#include "util/timespec.h"
 
 #include "vk_device.h"
 #include "vk_fence.h"
@@ -106,11 +108,11 @@ struct wsi_display {
    /* Used with syncobj imported from driver side. */
    int                          syncobj_fd;
 
-   pthread_mutex_t              wait_mutex;
-   pthread_cond_t               wait_cond;
+   mtx_t                        wait_mutex;
+   struct u_cnd_monotonic       wait_cond;
    pthread_t                    wait_thread;
 
-   pthread_cond_t               hotplug_cond;
+   struct u_cnd_monotonic       hotplug_cond;
    pthread_t                    hotplug_thread;
 
    struct list_head             connectors; /* list of all discovered connectors */
@@ -139,6 +141,7 @@ struct wsi_display_image {
    uint32_t                     fb_id;
    uint32_t                     buffer[4];
    uint64_t                     flip_sequence;
+   uint64_t                     present_id;
 };
 
 struct wsi_display_swapchain {
@@ -147,6 +150,12 @@ struct wsi_display_swapchain {
    VkIcdSurfaceDisplay          *surface;
    uint64_t                     flip_sequence;
    VkResult                     status;
+
+   mtx_t                        present_id_mutex;
+   struct u_cnd_monotonic       present_id_cond;
+   uint64_t                     present_id;
+   VkResult                     present_id_error;
+
    struct wsi_display_image     images[0];
 };
 
@@ -208,8 +217,7 @@ static uint64_t wsi_rel_to_abs_time(uint64_t rel_time)
 }
 
 static struct wsi_display_mode *
-wsi_display_find_drm_mode(struct wsi_device *wsi_device,
-                          struct wsi_display_connector *connector,
+wsi_display_find_drm_mode(struct wsi_display_connector *connector,
                           drmModeModeInfoPtr mode)
 {
    wsi_for_each_display_mode(display_mode, connector) {
@@ -220,8 +228,7 @@ wsi_display_find_drm_mode(struct wsi_device *wsi_device,
 }
 
 static void
-wsi_display_invalidate_connector_modes(struct wsi_device *wsi_device,
-                                       struct wsi_display_connector *connector)
+wsi_display_invalidate_connector_modes(struct wsi_display_connector *connector)
 {
    wsi_for_each_display_mode(display_mode, connector) {
       display_mode->valid = false;
@@ -236,7 +243,7 @@ wsi_display_register_drm_mode(struct wsi_device *wsi_device,
    struct wsi_display *wsi =
       (struct wsi_display *) wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY];
    struct wsi_display_mode *display_mode =
-      wsi_display_find_drm_mode(wsi_device, connector, drm_mode);
+      wsi_display_find_drm_mode(connector, drm_mode);
 
    if (display_mode) {
       display_mode->valid = true;
@@ -294,6 +301,8 @@ wsi_display_alloc_connector(struct wsi_display *wsi,
    struct wsi_display_connector *connector =
       vk_zalloc(wsi->alloc, sizeof (struct wsi_display_connector),
                 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
+   if (!connector)
+      return NULL;
 
    connector->id = connector_id;
    connector->wsi = wsi;
@@ -351,7 +360,7 @@ wsi_display_get_connector(struct wsi_device *wsi_device,
    }
 
    /* Mark all connector modes as invalid */
-   wsi_display_invalidate_connector_modes(wsi_device, connector);
+   wsi_display_invalidate_connector_modes(connector);
 
    /*
     * List current modes, adding new ones and marking existing ones as
@@ -382,8 +391,7 @@ mode_size(struct wsi_display_mode *mode)
 }
 
 static void
-wsi_display_fill_in_display_properties(struct wsi_device *wsi_device,
-                                       struct wsi_display_connector *connector,
+wsi_display_fill_in_display_properties(struct wsi_display_connector *connector,
                                        VkDisplayProperties2KHR *properties2)
 {
    assert(properties2->sType == VK_STRUCTURE_TYPE_DISPLAY_PROPERTIES_2_KHR);
@@ -532,9 +540,7 @@ wsi_GetPhysicalDeviceDisplayProperties2KHR(VkPhysicalDevice physicalDevice,
    wsi_for_each_connector(connector, wsi) {
       if (connector->connected) {
          vk_outarray_append_typed(VkDisplayProperties2KHR, &conn, prop) {
-            wsi_display_fill_in_display_properties(wsi_device,
-                                                   connector,
-                                                   prop);
+            wsi_display_fill_in_display_properties(connector, prop);
          }
       }
    }
@@ -551,7 +557,6 @@ bail:
  */
 static void
 wsi_display_fill_in_display_plane_properties(
-   struct wsi_device *wsi_device,
    struct wsi_display_connector *connector,
    VkDisplayPlaneProperties2KHR *properties)
 {
@@ -589,8 +594,7 @@ wsi_GetPhysicalDeviceDisplayPlanePropertiesKHR(VkPhysicalDevice physicalDevice,
          VkDisplayPlaneProperties2KHR prop2 = {
             .sType = VK_STRUCTURE_TYPE_DISPLAY_PLANE_PROPERTIES_2_KHR,
          };
-         wsi_display_fill_in_display_plane_properties(wsi_device, connector,
-                                                      &prop2);
+         wsi_display_fill_in_display_plane_properties(connector, &prop2);
          *prop = prop2.displayPlaneProperties;
       }
    }
@@ -621,8 +625,7 @@ wsi_GetPhysicalDeviceDisplayPlaneProperties2KHR(VkPhysicalDevice physicalDevice,
 
    wsi_for_each_connector(connector, wsi) {
       vk_outarray_append_typed(VkDisplayPlaneProperties2KHR, &conn, prop) {
-         wsi_display_fill_in_display_plane_properties(wsi_device, connector,
-                                                      prop);
+         wsi_display_fill_in_display_plane_properties(connector, prop);
       }
    }
    return vk_outarray_status(&conn);
@@ -668,7 +671,6 @@ wsi_GetDisplayPlaneSupportedDisplaysKHR(VkPhysicalDevice physicalDevice,
 
 static void
 wsi_display_fill_in_display_mode_properties(
-   struct wsi_device *wsi_device,
    struct wsi_display_mode *display_mode,
    VkDisplayModeProperties2KHR *properties)
 {
@@ -688,8 +690,6 @@ wsi_GetDisplayModePropertiesKHR(VkPhysicalDevice physicalDevice,
                                 uint32_t *pPropertyCount,
                                 VkDisplayModePropertiesKHR *pProperties)
 {
-   VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
-   struct wsi_device *wsi_device = pdevice->wsi_device;
    struct wsi_display_connector *connector =
       wsi_display_connector_from_handle(display);
 
@@ -704,8 +704,7 @@ wsi_GetDisplayModePropertiesKHR(VkPhysicalDevice physicalDevice,
          VkDisplayModeProperties2KHR prop2 = {
             .sType = VK_STRUCTURE_TYPE_DISPLAY_MODE_PROPERTIES_2_KHR,
          };
-         wsi_display_fill_in_display_mode_properties(wsi_device,
-                                                     display_mode, &prop2);
+         wsi_display_fill_in_display_mode_properties(display_mode, &prop2);
          *prop = prop2.displayModeProperties;
       }
    }
@@ -718,8 +717,6 @@ wsi_GetDisplayModeProperties2KHR(VkPhysicalDevice physicalDevice,
                                  uint32_t *pPropertyCount,
                                  VkDisplayModeProperties2KHR *pProperties)
 {
-   VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
-   struct wsi_device *wsi_device = pdevice->wsi_device;
    struct wsi_display_connector *connector =
       wsi_display_connector_from_handle(display);
 
@@ -731,8 +728,7 @@ wsi_GetDisplayModeProperties2KHR(VkPhysicalDevice physicalDevice,
          continue;
 
       vk_outarray_append_typed(VkDisplayModeProperties2KHR, &conn, prop) {
-         wsi_display_fill_in_display_mode_properties(wsi_device,
-                                                     display_mode, prop);
+         wsi_display_fill_in_display_mode_properties(display_mode, prop);
       }
    }
    return vk_outarray_status(&conn);
@@ -911,23 +907,19 @@ wsi_display_surface_get_capabilities(VkIcdSurfaceBase *surface_base,
    caps->supportedTransforms = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->currentTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
    caps->maxImageArrayLayers = 1;
-   caps->supportedUsageFlags =
-      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-      VK_IMAGE_USAGE_SAMPLED_BIT |
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-      VK_IMAGE_USAGE_STORAGE_BIT |
-      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-      VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+   caps->supportedUsageFlags = wsi_caps_get_image_usage();
+
+   VK_FROM_HANDLE(vk_physical_device, pdevice, wsi_device->pdevice);
+   if (pdevice->supported_extensions.EXT_attachment_feedback_loop_layout)
+      caps->supportedUsageFlags |= VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
 
    return VK_SUCCESS;
 }
 
 static VkResult
-wsi_display_surface_get_surface_counters(
-   VkIcdSurfaceBase *surface_base,
-   VkSurfaceCounterFlagsEXT *counters)
+wsi_display_surface_get_surface_counters(VkSurfaceCounterFlagsEXT *counters)
 {
-   *counters = VK_SURFACE_COUNTER_VBLANK_EXT;
+   *counters = VK_SURFACE_COUNTER_VBLANK_BIT_EXT;
    return VK_SUCCESS;
 }
 
@@ -947,35 +939,91 @@ wsi_display_surface_get_capabilities2(VkIcdSurfaceBase *icd_surface,
 
    struct wsi_surface_supported_counters *counters =
       vk_find_struct( caps->pNext, WSI_SURFACE_SUPPORTED_COUNTERS_MESA);
+   const VkSurfacePresentModeEXT *present_mode =
+      vk_find_struct_const(info_next, SURFACE_PRESENT_MODE_EXT);
 
    if (counters) {
-      result = wsi_display_surface_get_surface_counters(
-         icd_surface,
-         &counters->supported_surface_counters);
+      result = wsi_display_surface_get_surface_counters(&counters->supported_surface_counters);
+   }
+
+   vk_foreach_struct(ext, caps->pNext) {
+      switch (ext->sType) {
+      case VK_STRUCTURE_TYPE_SURFACE_PROTECTED_CAPABILITIES_KHR: {
+         VkSurfaceProtectedCapabilitiesKHR *protected = (void *)ext;
+         protected->supportsProtected = VK_FALSE;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_EXT: {
+         /* Unsupported. */
+         VkSurfacePresentScalingCapabilitiesEXT *scaling = (void *)ext;
+         scaling->supportedPresentScaling = 0;
+         scaling->supportedPresentGravityX = 0;
+         scaling->supportedPresentGravityY = 0;
+         scaling->minScaledImageExtent = caps->surfaceCapabilities.minImageExtent;
+         scaling->maxScaledImageExtent = caps->surfaceCapabilities.maxImageExtent;
+         break;
+      }
+
+      case VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_COMPATIBILITY_EXT: {
+         /* We only support FIFO. */
+         VkSurfacePresentModeCompatibilityEXT *compat = (void *)ext;
+         if (compat->pPresentModes) {
+            if (compat->presentModeCount) {
+               assert(present_mode);
+               compat->pPresentModes[0] = present_mode->presentMode;
+               compat->presentModeCount = 1;
+            }
+         } else {
+            compat->presentModeCount = 1;
+         }
+         break;
+      }
+
+      default:
+         /* Ignored */
+         break;
+      }
    }
 
    return result;
 }
 
-static const struct {
-   VkFormat     format;
-   uint32_t     drm_format;
-} available_surface_formats[] = {
-   { .format = VK_FORMAT_B8G8R8A8_SRGB, .drm_format = DRM_FORMAT_XRGB8888 },
-   { .format = VK_FORMAT_B8G8R8A8_UNORM, .drm_format = DRM_FORMAT_XRGB8888 },
+struct wsi_display_surface_format {
+   VkSurfaceFormatKHR surface_format;
+   uint32_t           drm_format;
+};
+
+static const struct wsi_display_surface_format
+ available_surface_formats[] = {
+   {
+      .surface_format = {
+         .format = VK_FORMAT_B8G8R8A8_SRGB,
+         .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+      },
+      .drm_format = DRM_FORMAT_XRGB8888
+   },
+   {
+      .surface_format = {
+         .format = VK_FORMAT_B8G8R8A8_UNORM,
+         .colorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
+      },
+      .drm_format = DRM_FORMAT_XRGB8888
+   },
 };
 
 static void
-get_sorted_vk_formats(struct wsi_device *wsi_device, VkFormat *sorted_formats)
+get_sorted_vk_formats(struct wsi_device *wsi_device, VkSurfaceFormatKHR *sorted_formats)
 {
    for (unsigned i = 0; i < ARRAY_SIZE(available_surface_formats); i++)
-      sorted_formats[i] = available_surface_formats[i].format;
+      sorted_formats[i] = available_surface_formats[i].surface_format;
 
    if (wsi_device->force_bgra8_unorm_first) {
       for (unsigned i = 0; i < ARRAY_SIZE(available_surface_formats); i++) {
-         if (sorted_formats[i] == VK_FORMAT_B8G8R8A8_UNORM) {
+         if (sorted_formats[i].format == VK_FORMAT_B8G8R8A8_UNORM) {
+            VkSurfaceFormatKHR tmp = sorted_formats[i];
             sorted_formats[i] = sorted_formats[0];
-            sorted_formats[0] = VK_FORMAT_B8G8R8A8_UNORM;
+            sorted_formats[0] = tmp;
             break;
          }
       }
@@ -991,13 +1039,12 @@ wsi_display_surface_get_formats(VkIcdSurfaceBase *icd_surface,
    VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormatKHR, out,
                           surface_formats, surface_format_count);
 
-   VkFormat sorted_formats[ARRAY_SIZE(available_surface_formats)];
+   VkSurfaceFormatKHR sorted_formats[ARRAY_SIZE(available_surface_formats)];
    get_sorted_vk_formats(wsi_device, sorted_formats);
 
    for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
       vk_outarray_append_typed(VkSurfaceFormatKHR, &out, f) {
-         f->format = sorted_formats[i];
-         f->colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+         *f = sorted_formats[i];
       }
    }
 
@@ -1014,14 +1061,13 @@ wsi_display_surface_get_formats2(VkIcdSurfaceBase *surface,
    VK_OUTARRAY_MAKE_TYPED(VkSurfaceFormat2KHR, out,
                           surface_formats, surface_format_count);
 
-   VkFormat sorted_formats[ARRAY_SIZE(available_surface_formats)];
+   VkSurfaceFormatKHR sorted_formats[ARRAY_SIZE(available_surface_formats)];
    get_sorted_vk_formats(wsi_device, sorted_formats);
 
    for (unsigned i = 0; i < ARRAY_SIZE(sorted_formats); i++) {
       vk_outarray_append_typed(VkSurfaceFormat2KHR, &out, f) {
          assert(f->sType == VK_STRUCTURE_TYPE_SURFACE_FORMAT_2_KHR);
-         f->surfaceFormat.format = sorted_formats[i];
-         f->surfaceFormat.colorSpace = VK_COLORSPACE_SRGB_NONLINEAR_KHR;
+         f->surfaceFormat = sorted_formats[i];
       }
    }
 
@@ -1030,6 +1076,7 @@ wsi_display_surface_get_formats2(VkIcdSurfaceBase *surface,
 
 static VkResult
 wsi_display_surface_get_present_modes(VkIcdSurfaceBase *surface,
+                                      struct wsi_device *wsi_device,
                                       uint32_t *present_mode_count,
                                       VkPresentModeKHR *present_modes)
 {
@@ -1053,7 +1100,7 @@ wsi_display_surface_get_present_rectangles(VkIcdSurfaceBase *surface_base,
    wsi_display_mode *mode = wsi_display_mode_from_handle(surface->displayMode);
    VK_OUTARRAY_MAKE_TYPED(VkRect2D, out, pRects, pRectCount);
 
-   if (wsi_device_matches_drm_fd(wsi_device, mode->connector->wsi->fd)) {
+   if (wsi_device->can_present_on_device(wsi_device->pdevice, mode->connector->wsi->fd)) {
       vk_outarray_append_typed(VkRect2D, &out, rect) {
          *rect = (VkRect2D) {
             .offset = { 0, 0 },
@@ -1074,10 +1121,8 @@ wsi_display_destroy_buffer(struct wsi_display *wsi,
 }
 
 static VkResult
-wsi_display_image_init(VkDevice device_h,
-                       struct wsi_swapchain *drv_chain,
+wsi_display_image_init(struct wsi_swapchain *drv_chain,
                        const VkSwapchainCreateInfoKHR *create_info,
-                       const VkAllocationCallbacks *allocator,
                        struct wsi_display_image *image)
 {
    struct wsi_display_swapchain *chain =
@@ -1086,7 +1131,8 @@ wsi_display_image_init(VkDevice device_h,
    uint32_t drm_format = 0;
 
    for (unsigned i = 0; i < ARRAY_SIZE(available_surface_formats); i++) {
-      if (create_info->imageFormat == available_surface_formats[i].format) {
+      if (create_info->imageFormat == available_surface_formats[i].surface_format.format &&
+          create_info->imageColorSpace == available_surface_formats[i].surface_format.colorSpace) {
          drm_format = available_surface_formats[i].drm_format;
          break;
       }
@@ -1104,11 +1150,8 @@ wsi_display_image_init(VkDevice device_h,
    memset(image->buffer, 0, sizeof (image->buffer));
 
    for (unsigned int i = 0; i < image->base.num_planes; i++) {
-      int ret = drmPrimeFDToHandle(wsi->fd, image->base.fds[i],
+      int ret = drmPrimeFDToHandle(wsi->fd, image->base.dma_buf_fd,
                                    &image->buffer[i]);
-
-      close(image->base.fds[i]);
-      image->base.fds[i] = -1;
       if (ret < 0)
          goto fail_handle;
    }
@@ -1136,10 +1179,6 @@ fail_handle:
    for (unsigned int i = 0; i < image->base.num_planes; i++) {
       if (image->buffer[i])
          wsi_display_destroy_buffer(wsi, image->buffer[i]);
-      if (image->base.fds[i] != -1) {
-         close(image->base.fds[i]);
-         image->base.fds[i] = -1;
-      }
    }
 
    wsi_destroy_image(&chain->base, &image->base);
@@ -1149,7 +1188,6 @@ fail_handle:
 
 static void
 wsi_display_image_finish(struct wsi_swapchain *drv_chain,
-                         const VkAllocationCallbacks *allocator,
                          struct wsi_display_image *image)
 {
    struct wsi_display_swapchain *chain =
@@ -1170,8 +1208,10 @@ wsi_display_swapchain_destroy(struct wsi_swapchain *drv_chain,
       (struct wsi_display_swapchain *) drv_chain;
 
    for (uint32_t i = 0; i < chain->base.image_count; i++)
-      wsi_display_image_finish(drv_chain, allocator, &chain->images[i]);
-   wsi_destroy_image_info(&chain->base, &chain->base.image_info);
+      wsi_display_image_finish(drv_chain, &chain->images[i]);
+
+   mtx_destroy(&chain->present_id_mutex);
+   u_cnd_monotonic_destroy(&chain->present_id_cond);
 
    wsi_swapchain_finish(&chain->base);
    vk_free(allocator, chain);
@@ -1208,6 +1248,30 @@ static VkResult
 _wsi_display_queue_next(struct wsi_swapchain *drv_chain);
 
 static void
+wsi_display_present_complete(struct wsi_display_swapchain *swapchain,
+                             struct wsi_display_image *image)
+{
+   if (image->present_id) {
+      mtx_lock(&swapchain->present_id_mutex);
+      if (image->present_id > swapchain->present_id) {
+         swapchain->present_id = image->present_id;
+         u_cnd_monotonic_broadcast(&swapchain->present_id_cond);
+      }
+      mtx_unlock(&swapchain->present_id_mutex);
+   }
+}
+
+static void
+wsi_display_surface_error(struct wsi_display_swapchain *swapchain, VkResult result)
+{
+   mtx_lock(&swapchain->present_id_mutex);
+   swapchain->present_id = UINT64_MAX;
+   swapchain->present_id_error = result;
+   u_cnd_monotonic_broadcast(&swapchain->present_id_cond);
+   mtx_unlock(&swapchain->present_id_mutex);
+}
+
+static void
 wsi_display_page_flip_handler2(int fd,
                                unsigned int frame,
                                unsigned int sec,
@@ -1221,6 +1285,8 @@ wsi_display_page_flip_handler2(int fd,
    wsi_display_debug("image %ld displayed at %d\n",
                      image - &(image->chain->images[0]), frame);
    image->state = WSI_IMAGE_DISPLAYING;
+   wsi_display_present_complete(chain, image);
+
    wsi_display_idle_old_displaying(image);
    VkResult result = _wsi_display_queue_next(&(chain->base));
    if (result != VK_SUCCESS)
@@ -1279,10 +1345,10 @@ wsi_display_wait_thread(void *data)
    for (;;) {
       int ret = poll(&pollfd, 1, -1);
       if (ret > 0) {
-         pthread_mutex_lock(&wsi->wait_mutex);
+         mtx_lock(&wsi->wait_mutex);
          (void) drmHandleEvent(wsi->fd, &event_context);
-         pthread_cond_broadcast(&wsi->wait_cond);
-         pthread_mutex_unlock(&wsi->wait_mutex);
+         u_cnd_monotonic_broadcast(&wsi->wait_cond);
+         mtx_unlock(&wsi->wait_mutex);
       }
    }
    return NULL;
@@ -1303,18 +1369,18 @@ wsi_display_start_wait_thread(struct wsi_display *wsi)
 static void
 wsi_display_stop_wait_thread(struct wsi_display *wsi)
 {
-   pthread_mutex_lock(&wsi->wait_mutex);
+   mtx_lock(&wsi->wait_mutex);
    if (wsi->wait_thread) {
       pthread_cancel(wsi->wait_thread);
       pthread_join(wsi->wait_thread, NULL);
       wsi->wait_thread = 0;
    }
-   pthread_mutex_unlock(&wsi->wait_mutex);
+   mtx_unlock(&wsi->wait_mutex);
 }
 
 static int
-cond_timedwait_ns(pthread_cond_t *cond,
-                  pthread_mutex_t *mutex,
+cond_timedwait_ns(struct u_cnd_monotonic *cond,
+                  mtx_t *mutex,
                   uint64_t timeout_ns)
 {
    struct timespec abs_timeout = {
@@ -1322,7 +1388,7 @@ cond_timedwait_ns(pthread_cond_t *cond,
       .tv_nsec = timeout_ns % 1000000000ULL,
    };
 
-   int ret = pthread_cond_timedwait(cond, mutex, &abs_timeout);
+   int ret = u_cnd_monotonic_timedwait(cond, mutex, &abs_timeout);
    wsi_display_debug("%9ld done waiting for event %d\n", pthread_self(), ret);
    return ret;
 }
@@ -1354,6 +1420,24 @@ wsi_device_wait_for_event(struct wsi_display *wsi,
 }
 
 static VkResult
+wsi_display_release_images(struct wsi_swapchain *drv_chain,
+                           uint32_t count, const uint32_t *indices)
+{
+   struct wsi_display_swapchain *chain = (struct wsi_display_swapchain *)drv_chain;
+   if (chain->status == VK_ERROR_SURFACE_LOST_KHR)
+      return chain->status;
+
+   for (uint32_t i = 0; i < count; i++) {
+      uint32_t index = indices[i];
+      assert(index < chain->base.image_count);
+      assert(chain->images[index].state == WSI_IMAGE_DRAWING);
+      chain->images[index].state = WSI_IMAGE_IDLE;
+   }
+
+   return VK_SUCCESS;
+}
+
+static VkResult
 wsi_display_acquire_next_image(struct wsi_swapchain *drv_chain,
                                const VkAcquireNextImageInfoKHR *info,
                                uint32_t *image_index)
@@ -1372,7 +1456,7 @@ wsi_display_acquire_next_image(struct wsi_swapchain *drv_chain,
    if (timeout != 0 && timeout != UINT64_MAX)
       timeout = wsi_rel_to_abs_time(timeout);
 
-   pthread_mutex_lock(&wsi->wait_mutex);
+   mtx_lock(&wsi->wait_mutex);
    for (;;) {
       for (uint32_t i = 0; i < chain->base.image_count; i++) {
          if (chain->images[i].state == WSI_IMAGE_IDLE) {
@@ -1394,11 +1478,12 @@ wsi_display_acquire_next_image(struct wsi_swapchain *drv_chain,
 
       if (ret && ret != ETIMEDOUT) {
          result = VK_ERROR_SURFACE_LOST_KHR;
+         wsi_display_surface_error(chain, result);
          goto done;
       }
    }
 done:
-   pthread_mutex_unlock(&wsi->wait_mutex);
+   mtx_unlock(&wsi->wait_mutex);
 
    if (result != VK_SUCCESS)
       return result;
@@ -1563,7 +1648,7 @@ wsi_display_fence_wait(struct wsi_display_fence *fence, uint64_t timeout)
                      pthread_self(), fence->sequence,
                      (int64_t) (timeout - os_time_get_nano()));
    wsi_display_debug_code(uint64_t start_ns = os_time_get_nano());
-   pthread_mutex_lock(&fence->wsi->wait_mutex);
+   mtx_lock(&fence->wsi->wait_mutex);
 
    VkResult result;
    int ret = 0;
@@ -1594,7 +1679,7 @@ wsi_display_fence_wait(struct wsi_display_fence *fence, uint64_t timeout)
          break;
       }
    }
-   pthread_mutex_unlock(&fence->wsi->wait_mutex);
+   mtx_unlock(&fence->wsi->wait_mutex);
    wsi_display_debug("%9lu fence wait %f ms\n",
                      pthread_self(),
                      ((int64_t) (os_time_get_nano() - start_ns)) /
@@ -1781,9 +1866,9 @@ wsi_register_vblank_event(struct wsi_display_fence *fence,
        * processed and try again
        */
 
-      pthread_mutex_lock(&wsi->wait_mutex);
+      mtx_lock(&wsi->wait_mutex);
       ret = wsi_display_wait_for_event(wsi, wsi_rel_to_abs_time(100000000ull));
-      pthread_mutex_unlock(&wsi->wait_mutex);
+      mtx_unlock(&wsi->wait_mutex);
 
       if (ret) {
          wsi_display_debug("vblank queue full, event wait failed\n");
@@ -1807,8 +1892,10 @@ _wsi_display_queue_next(struct wsi_swapchain *drv_chain)
       wsi_display_mode_from_handle(surface->displayMode);
    wsi_display_connector *connector = display_mode->connector;
 
-   if (wsi->fd < 0)
+   if (wsi->fd < 0) {
+      wsi_display_surface_error(chain, VK_ERROR_SURFACE_LOST_KHR);
       return VK_ERROR_SURFACE_LOST_KHR;
+   }
 
    if (display_mode != connector->current_mode)
       connector->active = false;
@@ -1880,6 +1967,7 @@ _wsi_display_queue_next(struct wsi_swapchain *drv_chain)
              * previous image is now idle.
              */
             image->state = WSI_IMAGE_DISPLAYING;
+            wsi_display_present_complete(chain, image);
             wsi_display_idle_old_displaying(image);
             connector->active = true;
             return VK_SUCCESS;
@@ -1889,6 +1977,7 @@ _wsi_display_queue_next(struct wsi_swapchain *drv_chain)
       if (ret != -EACCES) {
          connector->active = false;
          image->state = WSI_IMAGE_IDLE;
+         wsi_display_surface_error(chain, VK_ERROR_SURFACE_LOST_KHR);
          return VK_ERROR_SURFACE_LOST_KHR;
       }
 
@@ -1903,6 +1992,7 @@ _wsi_display_queue_next(struct wsi_swapchain *drv_chain)
 static VkResult
 wsi_display_queue_present(struct wsi_swapchain *drv_chain,
                           uint32_t image_index,
+                          uint64_t present_id,
                           const VkPresentRegionKHR *damage)
 {
    struct wsi_display_swapchain *chain =
@@ -1915,10 +2005,16 @@ wsi_display_queue_present(struct wsi_swapchain *drv_chain,
    if (chain->status != VK_SUCCESS)
       return chain->status;
 
+   image->present_id = present_id;
+
    assert(image->state == WSI_IMAGE_DRAWING);
    wsi_display_debug("present %d\n", image_index);
 
-   pthread_mutex_lock(&wsi->wait_mutex);
+   mtx_lock(&wsi->wait_mutex);
+
+   /* Make sure that the page flip handler is processed in finite time if using present wait. */
+   if (present_id)
+      wsi_display_start_wait_thread(wsi);
 
    image->flip_sequence = ++chain->flip_sequence;
    image->state = WSI_IMAGE_QUEUED;
@@ -1927,12 +2023,54 @@ wsi_display_queue_present(struct wsi_swapchain *drv_chain,
    if (result != VK_SUCCESS)
       chain->status = result;
 
-   pthread_mutex_unlock(&wsi->wait_mutex);
+   mtx_unlock(&wsi->wait_mutex);
 
    if (result != VK_SUCCESS)
       return result;
 
    return chain->status;
+}
+
+static VkResult
+wsi_display_wait_for_present(struct wsi_swapchain *wsi_chain,
+                             uint64_t waitValue,
+                             uint64_t timeout)
+{
+   struct wsi_display_swapchain *chain = (struct wsi_display_swapchain *)wsi_chain;
+   struct timespec abs_timespec;
+   uint64_t abs_timeout = 0;
+
+   if (timeout != 0)
+      abs_timeout = os_time_get_absolute_timeout(timeout);
+
+   /* Need to observe that the swapchain semaphore has been unsignalled,
+    * as this is guaranteed when a present is complete. */
+   VkResult result = wsi_swapchain_wait_for_present_semaphore(
+      &chain->base, waitValue, timeout);
+   if (result != VK_SUCCESS)
+      return result;
+
+   timespec_from_nsec(&abs_timespec, abs_timeout);
+
+   mtx_lock(&chain->present_id_mutex);
+   while (chain->present_id < waitValue) {
+      int ret = u_cnd_monotonic_timedwait(&chain->present_id_cond,
+                                          &chain->present_id_mutex,
+                                          &abs_timespec);
+      if (ret == thrd_timedout) {
+         result = VK_TIMEOUT;
+         break;
+      }
+      if (ret != thrd_success) {
+         result = VK_ERROR_DEVICE_LOST;
+         break;
+      }
+   }
+
+   if (result == VK_SUCCESS && chain->present_id_error)
+      result = chain->present_id_error;
+   mtx_unlock(&chain->present_id_mutex);
+   return result;
 }
 
 static VkResult
@@ -1958,9 +2096,30 @@ wsi_display_surface_create_swapchain(
    if (chain == NULL)
       return VK_ERROR_OUT_OF_HOST_MEMORY;
 
+   struct wsi_drm_image_params image_params = {
+      .base.image_type = WSI_IMAGE_TYPE_DRM,
+      .same_gpu = true,
+   };
+
+   int ret = mtx_init(&chain->present_id_mutex, mtx_plain);
+   if (ret != thrd_success) {
+      vk_free(allocator, chain);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
+   ret = u_cnd_monotonic_init(&chain->present_id_cond);
+   if (ret != thrd_success) {
+      mtx_destroy(&chain->present_id_mutex);
+      vk_free(allocator, chain);
+      return VK_ERROR_OUT_OF_HOST_MEMORY;
+   }
+
    VkResult result = wsi_swapchain_init(wsi_device, &chain->base, device,
-                                        create_info, allocator, false);
+                                        create_info, &image_params.base,
+                                        allocator);
    if (result != VK_SUCCESS) {
+      u_cnd_monotonic_destroy(&chain->present_id_cond);
+      mtx_destroy(&chain->present_id_mutex);
       vk_free(allocator, chain);
       return result;
    }
@@ -1968,7 +2127,9 @@ wsi_display_surface_create_swapchain(
    chain->base.destroy = wsi_display_swapchain_destroy;
    chain->base.get_wsi_image = wsi_display_get_wsi_image;
    chain->base.acquire_next_image = wsi_display_acquire_next_image;
+   chain->base.release_images = wsi_display_release_images;
    chain->base.queue_present = wsi_display_queue_present;
+   chain->base.wait_for_present = wsi_display_wait_for_present;
    chain->base.present_mode = wsi_swapchain_get_present_mode(wsi_device, create_info);
    chain->base.image_count = num_images;
 
@@ -1977,26 +2138,19 @@ wsi_display_surface_create_swapchain(
 
    chain->surface = (VkIcdSurfaceDisplay *) icd_surface;
 
-   result = wsi_configure_native_image(&chain->base, create_info,
-                                       0, NULL, NULL,
-                                       NULL /* alloc_shm */,
-                                       &chain->base.image_info);
-   if (result != VK_SUCCESS) {
-      vk_free(allocator, chain);
-      goto fail_init_images;
-   }
-
    for (uint32_t image = 0; image < chain->base.image_count; image++) {
-      result = wsi_display_image_init(device, &chain->base,
-                                      create_info, allocator,
+      result = wsi_display_image_init(&chain->base,
+                                      create_info,
                                       &chain->images[image]);
       if (result != VK_SUCCESS) {
          while (image > 0) {
             --image;
-            wsi_display_image_finish(&chain->base, allocator,
+            wsi_display_image_finish(&chain->base,
                                      &chain->images[image]);
          }
-         wsi_destroy_image_info(&chain->base, &chain->base.image_info);
+         u_cnd_monotonic_destroy(&chain->present_id_cond);
+         mtx_destroy(&chain->present_id_mutex);
+         wsi_swapchain_finish(&chain->base);
          vk_free(allocator, chain);
          goto fail_init_images;
       }
@@ -2009,31 +2163,6 @@ wsi_display_surface_create_swapchain(
 fail_init_images:
    return result;
 }
-
-static bool
-wsi_init_pthread_cond_monotonic(pthread_cond_t *cond)
-{
-   pthread_condattr_t condattr;
-   bool ret = false;
-
-   if (pthread_condattr_init(&condattr) != 0)
-      goto fail_attr_init;
-
-   if (pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC) != 0)
-      goto fail_attr_set;
-
-   if (pthread_cond_init(cond, &condattr) != 0)
-      goto fail_cond_init;
-
-   ret = true;
-
-fail_cond_init:
-fail_attr_set:
-   pthread_condattr_destroy(&condattr);
-fail_attr_init:
-   return ret;
-}
-
 
 /*
  * Local version fo the libdrm helper. Added to avoid depending on bleeding
@@ -2110,7 +2239,7 @@ udev_event_listener_thread(void *data)
              * and wsi_display_wait_for_event.
              */
             mtx_lock(&wsi->wait_mutex);
-            pthread_cond_broadcast(&wsi->hotplug_cond);
+            u_cnd_monotonic_broadcast(&wsi->hotplug_cond);
             list_for_each_entry(struct wsi_display_fence, fence,
                                 &wsi_device->hotplug_fences, link) {
                if (fence->syncobj)
@@ -2164,18 +2293,20 @@ wsi_display_init_wsi(struct wsi_device *wsi_device,
 
    list_inithead(&wsi->connectors);
 
-   int ret = pthread_mutex_init(&wsi->wait_mutex, NULL);
-   if (ret) {
+   int ret = mtx_init(&wsi->wait_mutex, mtx_plain);
+   if (ret != thrd_success) {
       result = VK_ERROR_OUT_OF_HOST_MEMORY;
       goto fail_mutex;
    }
 
-   if (!wsi_init_pthread_cond_monotonic(&wsi->wait_cond)) {
+   ret = u_cnd_monotonic_init(&wsi->wait_cond);
+   if (ret != thrd_success) {
       result = VK_ERROR_OUT_OF_HOST_MEMORY;
       goto fail_cond;
    }
 
-   if (!wsi_init_pthread_cond_monotonic(&wsi->hotplug_cond)) {
+   ret = u_cnd_monotonic_init(&wsi->hotplug_cond);
+   if (ret != thrd_success) {
       result = VK_ERROR_OUT_OF_HOST_MEMORY;
       goto fail_hotplug_cond;
    }
@@ -2193,9 +2324,9 @@ wsi_display_init_wsi(struct wsi_device *wsi_device,
    return VK_SUCCESS;
 
 fail_hotplug_cond:
-   pthread_cond_destroy(&wsi->wait_cond);
+   u_cnd_monotonic_destroy(&wsi->wait_cond);
 fail_cond:
-   pthread_mutex_destroy(&wsi->wait_mutex);
+   mtx_destroy(&wsi->wait_mutex);
 fail_mutex:
    vk_free(alloc, wsi);
 fail:
@@ -2224,9 +2355,9 @@ wsi_display_finish_wsi(struct wsi_device *wsi_device,
          pthread_join(wsi->hotplug_thread, NULL);
       }
 
-      pthread_mutex_destroy(&wsi->wait_mutex);
-      pthread_cond_destroy(&wsi->wait_cond);
-      pthread_cond_destroy(&wsi->hotplug_cond);
+      mtx_destroy(&wsi->wait_mutex);
+      u_cnd_monotonic_destroy(&wsi->wait_cond);
+      u_cnd_monotonic_destroy(&wsi->hotplug_cond);
 
       vk_free(alloc, wsi);
    }
@@ -2250,6 +2381,8 @@ wsi_ReleaseDisplayEXT(VkPhysicalDevice physicalDevice,
       close(wsi->fd);
       wsi->fd = -1;
    }
+
+   wsi_display_connector_from_handle(display)->active = false;
 
 #ifdef VK_USE_PLATFORM_XLIB_XRANDR_EXT
    wsi_display_connector_from_handle(display)->output = None;
@@ -2572,7 +2705,7 @@ wsi_display_get_output(struct wsi_device *wsi_device,
       connector->connected =
          oir->connection != XCB_RANDR_CONNECTION_DISCONNECTED;
 
-      wsi_display_invalidate_connector_modes(wsi_device, connector);
+      wsi_display_invalidate_connector_modes(connector);
 
       xcb_randr_mode_t *x_modes = xcb_randr_get_output_info_modes(oir);
       for (int m = 0; m < oir->num_modes; m++) {
@@ -2692,7 +2825,7 @@ wsi_AcquireXlibDisplayEXT(VkPhysicalDevice physicalDevice,
    if (!crtc)
       return VK_ERROR_INITIALIZATION_FAILED;
 
-#ifdef HAVE_DRI3_MODIFIERS
+#ifdef HAVE_X11_DRM
    xcb_randr_lease_t lease = xcb_generate_id(connection);
    xcb_randr_create_lease_cookie_t cl_c =
       xcb_randr_create_lease(connection, root, lease, 1, 1,
@@ -2981,7 +3114,7 @@ wsi_AcquireDrmDisplayEXT(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
    struct wsi_device *wsi_device = pdevice->wsi_device;
 
-   if (!wsi_device_matches_drm_fd(wsi_device, drmFd))
+   if (!wsi_device->can_present_on_device(wsi_device->pdevice, drmFd))
       return VK_ERROR_UNKNOWN;
 
    struct wsi_display *wsi =
@@ -3015,8 +3148,10 @@ wsi_GetDrmDisplayEXT(VkPhysicalDevice physicalDevice,
    VK_FROM_HANDLE(vk_physical_device, pdevice, physicalDevice);
    struct wsi_device *wsi_device = pdevice->wsi_device;
 
-   if (!wsi_device_matches_drm_fd(wsi_device, drmFd))
+   if (!wsi_device->can_present_on_device(wsi_device->pdevice, drmFd)) {
+      *pDisplay = VK_NULL_HANDLE;
       return VK_ERROR_UNKNOWN;
+   }
 
    struct wsi_display_connector *connector =
       wsi_display_get_connector(wsi_device, drmFd, connectorId);

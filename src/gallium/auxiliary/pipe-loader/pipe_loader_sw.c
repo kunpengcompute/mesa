@@ -25,12 +25,13 @@
  *
  **************************************************************************/
 
-#ifdef HAVE_PIPE_LOADER_KMS
+#ifdef HAVE_DRISW_KMS
 #include <fcntl.h>
 #endif
 
 #include "pipe_loader_priv.h"
 
+#include "util/detect_os.h"
 #include "util/os_file.h"
 #include "util/u_memory.h"
 #include "util/u_dl.h"
@@ -58,7 +59,7 @@ struct pipe_loader_sw_device {
 #define pipe_loader_sw_device(dev) ((struct pipe_loader_sw_device *)dev)
 
 static const struct pipe_loader_ops pipe_loader_sw_ops;
-#if defined(HAVE_PIPE_LOADER_DRI) && defined(HAVE_ZINK)
+#if defined(HAVE_DRI) && defined(HAVE_ZINK)
 static const struct pipe_loader_ops pipe_loader_vk_ops;
 #endif
 
@@ -66,26 +67,26 @@ static const struct pipe_loader_ops pipe_loader_vk_ops;
 static const struct sw_driver_descriptor driver_descriptors = {
    .create_screen = sw_screen_create_vk,
    .winsys = {
-#ifdef HAVE_PIPE_LOADER_DRI
+#ifdef HAVE_DRI
       {
          .name = "dri",
-         .create_winsys = dri_create_sw_winsys,
+         .create_winsys_dri = dri_create_sw_winsys,
       },
 #endif
-#ifdef HAVE_PIPE_LOADER_KMS
+#ifdef HAVE_DRISW_KMS
       {
          .name = "kms_dri",
-         .create_winsys = kms_dri_create_winsys,
+         .create_winsys_kms_dri = kms_dri_create_winsys,
       },
 #endif
-#ifndef __ANDROID__
+#if !DETECT_OS_ANDROID
       {
          .name = "null",
          .create_winsys = null_sw_create,
       },
       {
          .name = "wrapped",
-         .create_winsys = wrapper_sw_winsys_wrap_pipe_screen,
+         .create_winsys_wrapped = wrapper_sw_winsys_wrap_pipe_screen,
       },
 #endif
       { 0 },
@@ -93,28 +94,28 @@ static const struct sw_driver_descriptor driver_descriptors = {
 };
 #endif
 
-#if defined(GALLIUM_STATIC_TARGETS) && defined(HAVE_ZINK) && defined(HAVE_PIPE_LOADER_DRI)
+#if defined(GALLIUM_STATIC_TARGETS) && defined(HAVE_ZINK) && defined(HAVE_DRI)
 static const struct sw_driver_descriptor kopper_driver_descriptors = {
    .create_screen = sw_screen_create_zink,
    .winsys = {
       {
          .name = "dri",
-         .create_winsys = dri_create_sw_winsys,
+         .create_winsys_dri = dri_create_sw_winsys,
       },
-#ifdef HAVE_PIPE_LOADER_KMS
+#ifdef HAVE_DRISW_KMS
       {
          .name = "kms_dri",
-         .create_winsys = kms_dri_create_winsys,
+         .create_winsys_kms_dri = kms_dri_create_winsys,
       },
 #endif
-#ifndef __ANDROID__
+#if !DETECT_OS_ANDROID
       {
          .name = "null",
          .create_winsys = null_sw_create,
       },
       {
          .name = "wrapped",
-         .create_winsys = wrapper_sw_winsys_wrap_pipe_screen,
+         .create_winsys_wrapped = wrapper_sw_winsys_wrap_pipe_screen,
       },
 #endif
       { 0 },
@@ -135,7 +136,7 @@ pipe_loader_sw_probe_init_common(struct pipe_loader_sw_device *sdev)
    if (!sdev->dd)
       return false;
 #else
-   const char *search_dir = getenv("GALLIUM_PIPE_SEARCH_DIR");
+   const char *search_dir = os_get_option("GALLIUM_PIPE_SEARCH_DIR");
    if (search_dir == NULL)
       search_dir = PIPE_SEARCH_DIR;
 
@@ -156,7 +157,7 @@ pipe_loader_sw_probe_init_common(struct pipe_loader_sw_device *sdev)
    return true;
 }
 
-#if defined(HAVE_PIPE_LOADER_DRI) && defined(HAVE_ZINK)
+#if defined(HAVE_DRI) && defined(HAVE_ZINK)
 static bool
 pipe_loader_vk_probe_init_common(struct pipe_loader_sw_device *sdev)
 {
@@ -170,7 +171,7 @@ pipe_loader_vk_probe_init_common(struct pipe_loader_sw_device *sdev)
    if (!sdev->dd)
       return false;
 #else
-   const char *search_dir = getenv("GALLIUM_PIPE_SEARCH_DIR");
+   const char *search_dir = os_get_option("GALLIUM_PIPE_SEARCH_DIR");
    if (search_dir == NULL)
       search_dir = PIPE_SEARCH_DIR;
 
@@ -201,7 +202,7 @@ pipe_loader_sw_probe_teardown_common(struct pipe_loader_sw_device *sdev)
 #endif
 }
 
-#ifdef HAVE_PIPE_LOADER_DRI
+#ifdef HAVE_DRI
 bool
 pipe_loader_sw_probe_dri(struct pipe_loader_device **devs, const struct drisw_loader_funcs *drisw_lf)
 {
@@ -216,7 +217,7 @@ pipe_loader_sw_probe_dri(struct pipe_loader_device **devs, const struct drisw_lo
 
    for (i = 0; sdev->dd->winsys[i].name; i++) {
       if (strcmp(sdev->dd->winsys[i].name, "dri") == 0) {
-         sdev->ws = sdev->dd->winsys[i].create_winsys(drisw_lf);
+         sdev->ws = sdev->dd->winsys[i].create_winsys_dri(drisw_lf);
          break;
       }
    }
@@ -233,7 +234,7 @@ fail:
 }
 #ifdef HAVE_ZINK
 bool
-pipe_loader_vk_probe_dri(struct pipe_loader_device **devs, const struct drisw_loader_funcs *drisw_lf)
+pipe_loader_vk_probe_dri(struct pipe_loader_device **devs)
 {
    struct pipe_loader_sw_device *sdev = CALLOC_STRUCT(pipe_loader_sw_device);
    int i;
@@ -246,7 +247,7 @@ pipe_loader_vk_probe_dri(struct pipe_loader_device **devs, const struct drisw_lo
 
    for (i = 0; sdev->dd->winsys[i].name; i++) {
       if (strcmp(sdev->dd->winsys[i].name, "dri") == 0) {
-         sdev->ws = sdev->dd->winsys[i].create_winsys(drisw_lf);
+         sdev->ws = sdev->dd->winsys[i].create_winsys_dri(NULL);
          break;
       }
    }
@@ -264,7 +265,7 @@ fail:
 #endif
 #endif
 
-#ifdef HAVE_PIPE_LOADER_KMS
+#ifdef HAVE_DRISW_KMS
 bool
 pipe_loader_sw_probe_kms(struct pipe_loader_device **devs, int fd)
 {
@@ -282,7 +283,7 @@ pipe_loader_sw_probe_kms(struct pipe_loader_device **devs, int fd)
 
    for (i = 0; sdev->dd->winsys[i].name; i++) {
       if (strcmp(sdev->dd->winsys[i].name, "kms_dri") == 0) {
-         sdev->ws = sdev->dd->winsys[i].create_winsys(sdev->fd);
+         sdev->ws = sdev->dd->winsys[i].create_winsys_kms_dri(sdev->fd);
          break;
       }
    }
@@ -345,7 +346,7 @@ pipe_loader_sw_probe(struct pipe_loader_device **devs, int ndev)
    return i;
 }
 
-boolean
+bool
 pipe_loader_sw_probe_wrapped(struct pipe_loader_device **dev,
                              struct pipe_screen *screen)
 {
@@ -360,7 +361,7 @@ pipe_loader_sw_probe_wrapped(struct pipe_loader_device **dev,
 
    for (i = 0; sdev->dd->winsys[i].name; i++) {
       if (strcmp(sdev->dd->winsys[i].name, "wrapped") == 0) {
-         sdev->ws = sdev->dd->winsys[i].create_winsys(screen);
+         sdev->ws = sdev->dd->winsys[i].create_winsys_wrapped(screen);
          break;
       }
    }
@@ -382,12 +383,13 @@ pipe_loader_sw_release(struct pipe_loader_device **dev)
    UNUSED struct pipe_loader_sw_device *sdev =
       pipe_loader_sw_device(*dev);
 
+   sdev->ws->destroy(sdev->ws);
 #ifndef GALLIUM_STATIC_TARGETS
    if (sdev->lib)
       util_dl_close(sdev->lib);
 #endif
 
-#ifdef HAVE_PIPE_LOADER_KMS
+#ifdef HAVE_DRISW_KMS
    if (sdev->fd != -1)
       close(sdev->fd);
 #endif
@@ -402,9 +404,9 @@ pipe_loader_sw_get_driconf(struct pipe_loader_device *dev, unsigned *count)
    return NULL;
 }
 
-#if defined(HAVE_PIPE_LOADER_DRI) && defined(HAVE_ZINK)
+#if defined(HAVE_DRI) && defined(HAVE_ZINK)
 static const driOptionDescription zink_driconf[] = {
-      #include "zink/driinfo_zink.h"
+      #include "gallium/drivers/zink/driinfo_zink.h"
 };
 
 static const struct driOptionDescription *
@@ -423,8 +425,6 @@ pipe_loader_sw_create_screen(struct pipe_loader_device *dev,
    struct pipe_screen *screen;
 
    screen = sdev->dd->create_screen(sdev->ws, config, sw_vk);
-   if (!screen)
-      sdev->ws->destroy(sdev->ws);
 
    return screen ? debug_screen_wrap(screen) : NULL;
 }
@@ -435,7 +435,7 @@ static const struct pipe_loader_ops pipe_loader_sw_ops = {
    .release = pipe_loader_sw_release
 };
 
-#if defined(HAVE_PIPE_LOADER_DRI) && defined(HAVE_ZINK)
+#if defined(HAVE_DRI) && defined(HAVE_ZINK)
 static const struct pipe_loader_ops pipe_loader_vk_ops = {
    .create_screen = pipe_loader_sw_create_screen,
    .get_driconf = pipe_loader_vk_get_driconf,

@@ -94,7 +94,7 @@ lima_extend_viewport(struct lima_context *ctx, const struct pipe_draw_info *info
    ctx->ext_viewport.bottom = ctx->viewport.bottom;
    ctx->ext_viewport.top = ctx->viewport.top;
 
-   if (info->mode != PIPE_PRIM_LINES)
+   if (info->mode != MESA_PRIM_LINES)
       return;
 
    if (!ctx->rasterizer)
@@ -144,17 +144,6 @@ lima_update_job_wb(struct lima_context *ctx, unsigned buffers)
    }
 
    job->resolve |= buffers;
-}
-
-static void
-lima_damage_rect_union(struct pipe_scissor_state *rect,
-                       unsigned minx, unsigned maxx,
-                       unsigned miny, unsigned maxy)
-{
-   rect->minx = MIN2(rect->minx, minx);
-   rect->miny = MIN2(rect->miny, miny);
-   rect->maxx = MAX2(rect->maxx, maxx);
-   rect->maxy = MAX2(rect->maxy, maxy);
 }
 
 static void
@@ -374,11 +363,11 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info,
    }
 
    /* Specify point size with PLBU command if shader doesn't write */
-   if (info->mode == PIPE_PRIM_POINTS && ctx->vs->state.point_size_idx == -1)
+   if (info->mode == MESA_PRIM_POINTS && ctx->vs->state.point_size_idx == -1)
       force_point_size = true;
 
    /* Specify line width with PLBU command for lines */
-   if (info->mode > PIPE_PRIM_POINTS && info->mode < PIPE_PRIM_TRIANGLES)
+   if (info->mode > MESA_PRIM_POINTS && info->mode < MESA_PRIM_TRIANGLES)
       force_point_size = true;
 
    PLBU_CMD_PRIMITIVE_SETUP(force_point_size, cull, info->index_size);
@@ -403,10 +392,10 @@ lima_pack_plbu_cmd(struct lima_context *ctx, const struct pipe_draw_info *info,
    PLBU_CMD_DEPTH_RANGE_NEAR(fui(ctx->viewport.near));
    PLBU_CMD_DEPTH_RANGE_FAR(fui(ctx->viewport.far));
 
-   if ((info->mode == PIPE_PRIM_POINTS && ctx->vs->state.point_size_idx == -1) ||
-       ((info->mode >= PIPE_PRIM_LINES) && (info->mode < PIPE_PRIM_TRIANGLES)))
+   if ((info->mode == MESA_PRIM_POINTS && ctx->vs->state.point_size_idx == -1) ||
+       ((info->mode >= MESA_PRIM_LINES) && (info->mode < MESA_PRIM_TRIANGLES)))
    {
-      uint32_t v = info->mode == PIPE_PRIM_POINTS ?
+      uint32_t v = info->mode == MESA_PRIM_POINTS ?
          fui(ctx->rasterizer->base.point_size) : fui(ctx->rasterizer->base.line_width);
       PLBU_CMD_LOW_PRIM_SIZE(v);
    }
@@ -642,7 +631,7 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
       render->depth_test |= 0x801;
    }
 
-   ushort far, near;
+   uint16_t far, near;
 
    near = float_to_ushort(ctx->viewport.near);
    far = float_to_ushort(ctx->viewport.far);
@@ -685,14 +674,19 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
    }
 
    /* need more investigation */
-   if (info->mode == PIPE_PRIM_POINTS)
-      render->multi_sample = 0x0000F000;
-   else if (info->mode < PIPE_PRIM_TRIANGLES)
-      render->multi_sample = 0x0000F400;
+   if (info->mode == MESA_PRIM_POINTS)
+      render->multi_sample = 0x00000000;
+   else if (info->mode < MESA_PRIM_TRIANGLES)
+      render->multi_sample = 0x00000400;
    else
-      render->multi_sample = 0x0000F800;
+      render->multi_sample = 0x00000800;
    if (ctx->framebuffer.base.samples)
       render->multi_sample |= 0x68;
+   if (ctx->blend->base.alpha_to_coverage)
+      render->multi_sample |= (1 << 7);
+   if (ctx->blend->base.alpha_to_one)
+      render->multi_sample |= (1 << 8);
+   render->multi_sample |= (ctx->sample_mask << 12);
 
    /* Set gl_FragColor register, need to specify it 4 times */
    render->multi_sample |= (fs->state.frag_color0_reg << 28) |
@@ -727,7 +721,8 @@ lima_pack_render_state(struct lima_context *ctx, const struct pipe_draw_info *in
 
    if (fs->state.uses_discard ||
        ctx->zsa->base.alpha_enabled ||
-       fs->state.frag_depth_reg != -1) {
+       fs->state.frag_depth_reg != -1 ||
+       ctx->blend->base.alpha_to_coverage) {
       early_z = false;
       pixel_kill = false;
    }
@@ -842,8 +837,8 @@ lima_update_gp_attribute_info(struct lima_context *ctx, const struct pipe_draw_i
 
       unsigned start = info->index_size ? (ctx->min_index + draw->index_bias) : draw->start;
       attribute[n++] = res->bo->va + pvb->buffer_offset + pve->src_offset
-         + start * pvb->stride;
-      attribute[n++] = (pvb->stride << 11) |
+         + start * pve->src_stride;
+      attribute[n++] = (pve->src_stride << 11) |
          (lima_pipe_format_to_attrib_type(pve->src_format) << 2) |
          (util_format_get_nr_components(pve->src_format) - 1);
    }

@@ -28,7 +28,6 @@ import argparse
 import math
 import os
 
-from collections import OrderedDict, namedtuple
 from mako.template import Template
 
 # Mesa-local imports must be declared in meson variable
@@ -153,6 +152,62 @@ ${entrypoint_table('instance', instance_entrypoints)}
 ${entrypoint_table('physical_device', physical_device_entrypoints)}
 ${entrypoint_table('device', device_entrypoints)}
 
+<%def name="uncompacted_dispatch_table(entrypoints)">
+% for e in entrypoints:
+  % if e.alias:
+    <% continue %>
+  % endif
+  % if e.guard is not None:
+#ifdef ${e.guard}
+  % endif
+    PFN_vk${e.name} ${e.name};
+  % if e.aliases:
+    % for a in e.aliases:
+    PFN_vk${a.name} ${a.name};
+    % endfor
+  % endif
+  % if e.guard is not None:
+#else
+    PFN_vkVoidFunction ${e.name};
+    % if e.aliases:
+      % for a in e.aliases:
+        PFN_vkVoidFunction ${a.name};
+      % endfor
+    % endif
+#endif
+  % endif
+% endfor
+</%def>
+
+
+struct vk_instance_uncompacted_dispatch_table {
+  ${uncompacted_dispatch_table(instance_entrypoints)}
+};
+
+struct vk_physical_device_uncompacted_dispatch_table {
+  ${uncompacted_dispatch_table(physical_device_entrypoints)}
+};
+
+struct vk_device_uncompacted_dispatch_table {
+  ${uncompacted_dispatch_table(device_entrypoints)}
+};
+
+struct vk_uncompacted_dispatch_table {
+    union {
+        struct {
+            struct vk_instance_uncompacted_dispatch_table instance;
+            struct vk_physical_device_uncompacted_dispatch_table physical_device;
+            struct vk_device_uncompacted_dispatch_table device;
+        };
+
+        struct {
+            ${uncompacted_dispatch_table(instance_entrypoints)}
+            ${uncompacted_dispatch_table(physical_device_entrypoints)}
+            ${uncompacted_dispatch_table(device_entrypoints)}
+        };
+    };
+};
+
 void
 vk_instance_dispatch_table_load(struct vk_instance_dispatch_table *table,
                                 PFN_vkGetInstanceProcAddr gpa,
@@ -163,6 +218,19 @@ vk_physical_device_dispatch_table_load(struct vk_physical_device_dispatch_table 
                                        VkInstance instance);
 void
 vk_device_dispatch_table_load(struct vk_device_dispatch_table *table,
+                              PFN_vkGetDeviceProcAddr gpa,
+                              VkDevice device);
+
+void
+vk_instance_uncompacted_dispatch_table_load(struct vk_instance_uncompacted_dispatch_table *table,
+                                PFN_vkGetInstanceProcAddr gpa,
+                                VkInstance instance);
+void
+vk_physical_device_uncompacted_dispatch_table_load(struct vk_physical_device_uncompacted_dispatch_table *table,
+                                       PFN_vkGetInstanceProcAddr gpa,
+                                       VkInstance instance);
+void
+vk_device_uncompacted_dispatch_table_load(struct vk_device_uncompacted_dispatch_table *table,
                               PFN_vkGetDeviceProcAddr gpa,
                               VkDevice device);
 
@@ -266,6 +334,46 @@ ${load_dispatch_table('physical_device', 'VkInstance', 'GetInstanceProcAddr',
                       physical_device_entrypoints)}
 
 ${load_dispatch_table('device', 'VkDevice', 'GetDeviceProcAddr',
+                      device_entrypoints)}
+
+<%def name="load_uncompacted_dispatch_table(type, VkType, ProcAddr, entrypoints)">
+void
+vk_${type}_uncompacted_dispatch_table_load(struct vk_${type}_uncompacted_dispatch_table *table,
+                               PFN_vk${ProcAddr} gpa,
+                               ${VkType} obj)
+{
+% if type != 'physical_device':
+    table->${ProcAddr} = gpa;
+% endif
+% for e in entrypoints:
+  % if e.alias or e.name == '${ProcAddr}':
+    <% continue %>
+  % endif
+  % if e.guard is not None:
+#ifdef ${e.guard}
+  % endif
+    table->${e.name} = (PFN_vk${e.name}) gpa(obj, "vk${e.name}");
+  % for a in e.aliases:
+    table->${a.name} = (PFN_vk${a.name}) gpa(obj, "vk${a.name}");
+    if (table->${e.name} && !table->${a.name})
+       table->${a.name} = (PFN_vk${a.name}) table->${e.name};
+    if (!table->${e.name})
+       table->${e.name} = (PFN_vk${e.name}) table->${a.name};
+  % endfor
+  % if e.guard is not None:
+#endif
+  % endif
+% endfor
+}
+</%def>
+
+${load_uncompacted_dispatch_table('instance', 'VkInstance', 'GetInstanceProcAddr',
+                      instance_entrypoints)}
+
+${load_uncompacted_dispatch_table('physical_device', 'VkInstance', 'GetInstanceProcAddr',
+                      physical_device_entrypoints)}
+
+${load_uncompacted_dispatch_table('device', 'VkDevice', 'GetDeviceProcAddr',
                       device_entrypoints)}
 
 
@@ -462,7 +570,30 @@ vk_device_entrypoint_is_enabled(int index, uint32_t core_version,
 #ifdef _MSC_VER
 VKAPI_ATTR void VKAPI_CALL vk_entrypoint_stub(void)
 {
-   unreachable(!"Entrypoint not implemented");
+   unreachable("Entrypoint not implemented");
+}
+
+static const void *get_function_target(const void *func)
+{
+   const uint8_t *address = func;
+#ifdef _M_X64
+   /* Incremental linking may indirect through relative jump */
+   if (*address == 0xE9)
+   {
+      /* Compute JMP target if the first byte is opcode 0xE9 */
+      uint32_t offset;
+      memcpy(&offset, address + 1, 4);
+      address += offset + 5;
+   }
+#else
+   /* Add other platforms here if necessary */
+#endif
+   return address;
+}
+
+static bool vk_function_is_stub(PFN_vkVoidFunction func)
+{
+   return (func == vk_entrypoint_stub) || (get_function_target(func) == get_function_target(vk_entrypoint_stub));
 }
 #endif
 
@@ -480,7 +611,7 @@ void vk_${type}_dispatch_table_from_entrypoints(
         for (unsigned i = 0; i < ARRAY_SIZE(${type}_compaction_table); i++) {
 #ifdef _MSC_VER
             assert(entry[i] != NULL);
-            if (entry[i] == vk_entrypoint_stub)
+            if (vk_function_is_stub(entry[i]))
 #else
             if (entry[i] == NULL)
 #endif
@@ -494,7 +625,7 @@ void vk_${type}_dispatch_table_from_entrypoints(
             unsigned disp_index = ${type}_compaction_table[i];
 #ifdef _MSC_VER
             assert(entry[i] != NULL);
-            if (disp[disp_index] == NULL && entry[i] != vk_entrypoint_stub)
+            if (disp[disp_index] == NULL && !vk_function_is_stub(entry[i]))
 #else
             if (disp[disp_index] == NULL)
 #endif
@@ -595,7 +726,7 @@ U32_MASK = 2**32 - 1
 PRIME_FACTOR = 5024183
 PRIME_STEP = 19
 
-class StringIntMapEntry(object):
+class StringIntMapEntry:
     def __init__(self, string, num):
         self.string = string
         self.num = num
@@ -611,10 +742,10 @@ class StringIntMapEntry(object):
 def round_to_pow2(x):
     return 2**int(math.ceil(math.log(x, 2)))
 
-class StringIntMap(object):
+class StringIntMap:
     def __init__(self):
         self.baked = False
-        self.strings = dict()
+        self.strings = {}
 
     def add_string(self, string, num):
         assert not self.baked
@@ -651,6 +782,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out-c', help='Output C file.')
     parser.add_argument('--out-h', help='Output H file.')
+    parser.add_argument('--beta', required=True, help='Enable beta extensions.')
     parser.add_argument('--xml',
                         help='Vulkan API XML file.',
                         required=True,
@@ -658,7 +790,7 @@ def main():
                         dest='xml_files')
     args = parser.parse_args()
 
-    entrypoints = get_entrypoints_from_xml(args.xml_files)
+    entrypoints = get_entrypoints_from_xml(args.xml_files, args.beta)
 
     device_entrypoints = []
     physical_device_entrypoints = []
@@ -702,13 +834,13 @@ def main():
     # per entry point.
     try:
         if args.out_h:
-            with open(args.out_h, 'w') as f:
+            with open(args.out_h, 'w', encoding='utf-8') as f:
                 f.write(TEMPLATE_H.render(instance_entrypoints=instance_entrypoints,
                                           physical_device_entrypoints=physical_device_entrypoints,
                                           device_entrypoints=device_entrypoints,
                                           filename=os.path.basename(__file__)))
         if args.out_c:
-            with open(args.out_c, 'w') as f:
+            with open(args.out_c, 'w', encoding='utf-8') as f:
                 f.write(TEMPLATE_C.render(instance_entrypoints=instance_entrypoints,
                                           physical_device_entrypoints=physical_device_entrypoints,
                                           device_entrypoints=device_entrypoints,

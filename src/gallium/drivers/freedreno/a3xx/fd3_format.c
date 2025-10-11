@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2013 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  */
 
@@ -36,7 +18,7 @@ struct fd3_format {
    enum a3xx_tex_fmt tex;
    enum a3xx_color_fmt rb;
    enum a3xx_color_swap swap;
-   boolean present;
+   bool present;
 };
 
 /* vertex + texture */
@@ -287,16 +269,6 @@ static struct fd3_format formats[PIPE_FORMAT_COUNT] = {
    _T(DXT3_SRGBA, DXT3, NONE, WZYX),
    _T(DXT5_RGBA,  DXT5, NONE, WZYX),
    _T(DXT5_SRGBA, DXT5, NONE, WZYX),
-
-   /* faked */
-   _T(RGTC1_UNORM, 8_8_8_8_UNORM, NONE, WZYX),
-   _T(RGTC1_SNORM, 8_8_8_8_SNORM, NONE, WZYX),
-   _T(RGTC2_UNORM, 8_8_8_8_UNORM, NONE, WZYX),
-   _T(RGTC2_SNORM, 8_8_8_8_SNORM, NONE, WZYX),
-   _T(LATC1_UNORM, 8_8_8_8_UNORM, NONE, WZYX),
-   _T(LATC1_SNORM, 8_8_8_8_SNORM, NONE, WZYX),
-   _T(LATC2_UNORM, 8_8_8_8_UNORM, NONE, WZYX),
-   _T(LATC2_SNORM, 8_8_8_8_SNORM, NONE, WZYX),
 
    _T(ATC_RGB,               ATC_RGB,               NONE, WZYX),
    _T(ATC_RGBA_EXPLICIT,     ATC_RGBA_EXPLICIT,     NONE, WZYX),

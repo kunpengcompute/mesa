@@ -34,6 +34,7 @@
 #include "version.h"
 #include "util/hash_table.h"
 #include "util/list.h"
+#include "util/log.h"
 #include "util/u_memory.h"
 #include "api_exec_decl.h"
 
@@ -1089,7 +1090,7 @@ _mesa_DebugMessageInsert(GLenum source, GLenum type, GLuint id,
                  gl_enum_to_debug_severity(severity),
                  length, buf);
 
-   if (type == GL_DEBUG_TYPE_MARKER && ctx->pipe->emit_string_marker) {
+   if (type == GL_DEBUG_TYPE_MARKER && ctx->has_string_marker) {
       ctx->pipe->emit_string_marker(ctx->pipe, buf, length);
    }
 }

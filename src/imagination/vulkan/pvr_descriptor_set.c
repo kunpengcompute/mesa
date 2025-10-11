@@ -30,17 +30,19 @@
 
 #include "hwdef/rogue_hw_utils.h"
 #include "pvr_bo.h"
+#include "pvr_debug.h"
 #include "pvr_private.h"
+#include "pvr_types.h"
 #include "util/compiler.h"
 #include "util/list.h"
 #include "util/log.h"
 #include "util/macros.h"
 #include "vk_alloc.h"
+#include "vk_format.h"
 #include "vk_log.h"
 #include "vk_object.h"
 #include "vk_util.h"
 
-#if defined(DEBUG)
 static const struct {
    const char *raw;
    const char *primary;
@@ -76,9 +78,38 @@ static const char *descriptor_names[] = { "VK SAMPLER",
                                           "VK UNIFORM_BUFFER_DYNAMIC",
                                           "VK STORAGE_BUFFER_DYNAMIC",
                                           "VK INPUT_ATTACHMENT" };
-#endif
 
-static void pvr_descriptor_size_info_init(
+#define PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYBASE 0U
+#define PVR_DESC_IMAGE_SECONDARY_SIZE_ARRAYBASE 2U
+#define PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYSTRIDE \
+   (PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYBASE +     \
+    PVR_DESC_IMAGE_SECONDARY_SIZE_ARRAYBASE)
+#define PVR_DESC_IMAGE_SECONDARY_SIZE_ARRAYSTRIDE 1U
+
+#define PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYMAXINDEX(dev_info) \
+   (PVR_HAS_FEATURE(dev_info, tpu_array_textures)               \
+       ? (0)                                                    \
+       : PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYSTRIDE +          \
+            PVR_DESC_IMAGE_SECONDARY_SIZE_ARRAYSTRIDE)
+
+#define PVR_DESC_IMAGE_SECONDARY_SIZE_ARRAYMAXINDEX 1U
+#define PVR_DESC_IMAGE_SECONDARY_OFFSET_WIDTH(dev_info)       \
+   (PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYMAXINDEX(dev_info) + \
+    PVR_DESC_IMAGE_SECONDARY_SIZE_ARRAYMAXINDEX)
+#define PVR_DESC_IMAGE_SECONDARY_SIZE_WIDTH 1U
+#define PVR_DESC_IMAGE_SECONDARY_OFFSET_HEIGHT(dev_info) \
+   (PVR_DESC_IMAGE_SECONDARY_OFFSET_WIDTH(dev_info) +    \
+    PVR_DESC_IMAGE_SECONDARY_SIZE_WIDTH)
+#define PVR_DESC_IMAGE_SECONDARY_SIZE_HEIGHT 1U
+#define PVR_DESC_IMAGE_SECONDARY_OFFSET_DEPTH(dev_info) \
+   (PVR_DESC_IMAGE_SECONDARY_OFFSET_HEIGHT(dev_info) +  \
+    PVR_DESC_IMAGE_SECONDARY_SIZE_HEIGHT)
+#define PVR_DESC_IMAGE_SECONDARY_SIZE_DEPTH 1U
+#define PVR_DESC_IMAGE_SECONDARY_TOTAL_SIZE(dev_info) \
+   (PVR_DESC_IMAGE_SECONDARY_OFFSET_DEPTH(dev_info) + \
+    PVR_DESC_IMAGE_SECONDARY_SIZE_DEPTH)
+
+void pvr_descriptor_size_info_init(
    const struct pvr_device *device,
    VkDescriptorType type,
    struct pvr_descriptor_size_info *const size_info_out)
@@ -88,9 +119,9 @@ static void pvr_descriptor_size_info_init(
     */
    static const struct pvr_descriptor_size_info template_size_infos[] = {
       /* VK_DESCRIPTOR_TYPE_SAMPLER */
-      { 4, 0, 4 },
+      { PVR_SAMPLER_DESCRIPTOR_SIZE, 0, 4 },
       /* VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER */
-      { 8, UINT_MAX, 4 },
+      { PVR_IMAGE_DESCRIPTOR_SIZE + PVR_SAMPLER_DESCRIPTOR_SIZE, UINT_MAX, 4 },
       /* VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE */
       { 4, UINT_MAX, 4 },
       /* VK_DESCRIPTOR_TYPE_STORAGE_IMAGE */
@@ -124,42 +155,15 @@ static void pvr_descriptor_size_info_init(
    case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
    case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
    case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
-      const uint32_t image_secondary_offset_arraybase = 0;
-      const uint32_t image_secondary_size_arraybase = 2;
-      const uint32_t image_secondary_size_arraystride = 1;
-
-      const uint32_t image_secondary_offset_arraystride =
-         image_secondary_offset_arraybase + image_secondary_size_arraybase;
-
-      const uint32_t image_secondary_offset_arraymaxindex =
-         (PVR_HAS_FEATURE(&device->pdevice->dev_info, tpu_array_textures))
-            ? 0
-            : image_secondary_offset_arraystride +
-                 image_secondary_size_arraystride;
-
-      const uint32_t image_secondary_size_arraymaxindex = 1;
-
-      const uint32_t image_secondary_size_width = 1;
-      const uint32_t image_secondary_size_height = 1;
-      const uint32_t image_secondary_size_depth = 1;
-
-      const uint32_t image_secondary_offset_width =
-         image_secondary_offset_arraymaxindex +
-         image_secondary_size_arraymaxindex;
-      const uint32_t image_secondary_offset_height =
-         image_secondary_offset_width + image_secondary_size_width;
-      const uint32_t image_secondary_offset_depth =
-         image_secondary_offset_height + image_secondary_size_height;
-      const uint32_t image_secondary_total_size =
-         image_secondary_offset_depth + image_secondary_size_depth;
-
-      size_info_out->secondary = image_secondary_total_size;
+   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+      size_info_out->secondary =
+         PVR_DESC_IMAGE_SECONDARY_TOTAL_SIZE(&device->pdevice->dev_info);
       break;
-   }
+
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
    case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-      size_info_out->secondary = (uint32_t)device->features.robustBufferAccess;
+      size_info_out->secondary =
+         (uint32_t)device->vk.enabled_features.robustBufferAccess;
       break;
 
    default:
@@ -167,27 +171,22 @@ static void pvr_descriptor_size_info_init(
    }
 }
 
-static bool pvr_stage_matches_vk_flags(enum pvr_stage_allocation pvr_stage,
-                                       VkShaderStageFlags flags)
+static uint8_t vk_to_pvr_shader_stage_flags(VkShaderStageFlags vk_flags)
 {
-   VkShaderStageFlags flags_per_stage;
+   uint8_t flags = 0;
 
-   switch (pvr_stage) {
-   case PVR_STAGE_ALLOCATION_VERTEX_GEOMETRY:
-      flags_per_stage = VK_SHADER_STAGE_VERTEX_BIT |
-                        VK_SHADER_STAGE_GEOMETRY_BIT;
-      break;
-   case PVR_STAGE_ALLOCATION_FRAGMENT:
-      flags_per_stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-      break;
-   case PVR_STAGE_ALLOCATION_COMPUTE:
-      flags_per_stage = VK_SHADER_STAGE_COMPUTE_BIT;
-      break;
-   default:
-      unreachable("Unrecognized allocation stage.");
-   }
+   static_assert(PVR_STAGE_ALLOCATION_COUNT <= 8, "Not enough bits for flags.");
 
-   return !!(flags_per_stage & flags);
+   if (vk_flags & (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT))
+      flags |= BITFIELD_BIT(PVR_STAGE_ALLOCATION_VERTEX_GEOMETRY);
+
+   if (vk_flags & VK_SHADER_STAGE_FRAGMENT_BIT)
+      flags |= BITFIELD_BIT(PVR_STAGE_ALLOCATION_FRAGMENT);
+
+   if (vk_flags & VK_SHADER_STAGE_COMPUTE_BIT)
+      flags |= BITFIELD_BIT(PVR_STAGE_ALLOCATION_COMPUTE);
+
+   return flags;
 }
 
 /* If allocator == NULL, the internal one will be used. */
@@ -319,21 +318,31 @@ static void pvr_setup_in_memory_layout_sizes(
 
       layout->total_size_in_dwords += reg_usage[stage].secondary;
 
+      /* TODO: Should we align the dynamic ones to 4 as well? */
+
       layout->memory_layout_in_dwords_per_stage[stage].primary_dynamic_size =
          reg_usage[stage].primary_dynamic;
+      layout->total_dynamic_size_in_dwords += reg_usage[stage].primary_dynamic;
+
       layout->memory_layout_in_dwords_per_stage[stage].secondary_dynamic_size =
+         reg_usage[stage].secondary_dynamic;
+      layout->total_dynamic_size_in_dwords +=
          reg_usage[stage].secondary_dynamic;
    }
 }
 
-#if defined(DEBUG)
 static void
 pvr_dump_in_memory_layout_sizes(const struct pvr_descriptor_set_layout *layout)
 {
+   const char *const separator =
+      "----------------------------------------------";
+   const char *const big_separator =
+      "==============================================";
+
    mesa_logd("=== SET LAYOUT ===");
-   mesa_logd("----------------------------------------------");
+   mesa_logd("%s", separator);
    mesa_logd(" in memory:");
-   mesa_logd("----------------------------------------------");
+   mesa_logd("%s", separator);
 
    for (uint32_t stage = 0;
         stage < ARRAY_SIZE(layout->memory_layout_in_dwords_per_stage);
@@ -342,7 +351,7 @@ pvr_dump_in_memory_layout_sizes(const struct pvr_descriptor_set_layout *layout)
          "| %-18s @   %04u                |",
          stage_names[stage].primary,
          layout->memory_layout_in_dwords_per_stage[stage].primary_offset);
-      mesa_logd("----------------------------------------------");
+      mesa_logd("%s", separator);
 
       /* Print primaries. */
       for (uint32_t i = 0; i < layout->binding_count; i++) {
@@ -376,12 +385,12 @@ pvr_dump_in_memory_layout_sizes(const struct pvr_descriptor_set_layout *layout)
                    binding->descriptor_count);
       }
 
-      mesa_logd("----------------------------------------------");
+      mesa_logd("%s", separator);
       mesa_logd(
          "| %-18s @   %04u                |",
          stage_names[stage].secondary,
          layout->memory_layout_in_dwords_per_stage[stage].secondary_offset);
-      mesa_logd("----------------------------------------------");
+      mesa_logd("%s", separator);
 
       /* Print secondaries. */
       for (uint32_t i = 0; i < layout->binding_count; i++) {
@@ -415,10 +424,9 @@ pvr_dump_in_memory_layout_sizes(const struct pvr_descriptor_set_layout *layout)
                    binding->descriptor_count);
       }
 
-      mesa_logd("==============================================");
+      mesa_logd("%s", big_separator);
    }
 }
-#endif
 
 VkResult pvr_CreateDescriptorSetLayout(
    VkDevice _device,
@@ -436,11 +444,9 @@ VkResult pvr_CreateDescriptorSetLayout(
    assert(pCreateInfo->sType ==
           VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO);
 
-   vk_foreach_struct (ext, pCreateInfo->pNext) {
-      pvr_debug_ignored_stype(ext->sType);
+   vk_foreach_struct_const (ext, pCreateInfo->pNext) {
+      vk_debug_ignored_stype(ext->sType);
    }
-
-   /* TODO: Add support for push descriptors. */
 
    if (pCreateInfo->bindingCount == 0) {
       layout = pvr_descriptor_set_layout_allocate(device, pAllocator, 0, 0, 0);
@@ -504,13 +510,10 @@ VkResult pvr_CreateDescriptorSetLayout(
       const VkDescriptorSetLayoutBinding *const binding = &bindings[bind_num];
       struct pvr_descriptor_set_layout_binding *const internal_binding =
          &layout->bindings[bind_num];
-      VkShaderStageFlags shader_stages = 0;
+      uint8_t shader_stages = 0;
 
       internal_binding->type = binding->descriptorType;
-      /* The binding_numbers can be non-contiguous so we ignore the user
-       * specified binding numbers and make them contiguous ourselves.
-       */
-      internal_binding->binding_number = bind_num;
+      internal_binding->binding_number = binding->binding;
 
       /* From Vulkan spec 1.2.189:
        *
@@ -520,7 +523,7 @@ VkResult pvr_CreateDescriptorSetLayout(
        * So do not use bindings->stageFlags, use shader_stages instead.
        */
       if (binding->descriptorCount) {
-         shader_stages = binding->stageFlags;
+         shader_stages = vk_to_pvr_shader_stage_flags(binding->stageFlags);
 
          internal_binding->descriptor_count = binding->descriptorCount;
          internal_binding->descriptor_index = layout->descriptor_count;
@@ -538,7 +541,7 @@ VkResult pvr_CreateDescriptorSetLayout(
             for (uint32_t j = 0; j < binding->descriptorCount; j++) {
                PVR_FROM_HANDLE(pvr_sampler,
                                sampler,
-                               bindings->pImmutableSamplers[j]);
+                               binding->pImmutableSamplers[j]);
                const uint32_t next = j + layout->immutable_sampler_count;
 
                layout->immutable_samplers[next] = sampler;
@@ -570,22 +573,22 @@ VkResult pvr_CreateDescriptorSetLayout(
       if (!shader_stages)
          continue;
 
-      internal_binding->shader_stages = shader_stages;
-      layout->shader_stages |= shader_stages;
+      internal_binding->shader_stage_mask = shader_stages;
+      layout->shader_stage_mask |= shader_stages;
 
       for (uint32_t stage = 0;
            stage < ARRAY_SIZE(layout->bindings[0].per_stage_offset_in_dwords);
            stage++) {
          const VkDescriptorType descriptor_type = binding->descriptorType;
 
-         if (!pvr_stage_matches_vk_flags(stage, shader_stages))
+         if (!(shader_stages & BITFIELD_BIT(stage)))
             continue;
 
-         internal_binding->shader_stage_mask |= (1U << stage);
-
-         /* TODO: Do we have to allocate them at the end? We could speed it
-          * by allocating them here if not. */
-         /* We allocate dynamics primary and secondaries at the end. */
+         /* We don't allocate any space for dynamic primaries and secondaries.
+          * They will be all be collected together in the pipeline layout.
+          * Having them all in one place makes updating them easier when the
+          * user updates the dynamic offsets.
+          */
          if (descriptor_type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
              descriptor_type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) {
             struct pvr_descriptor_size_info size_info;
@@ -632,10 +635,8 @@ VkResult pvr_CreateDescriptorSetLayout(
            stage < ARRAY_SIZE(layout->bindings[0].per_stage_offset_in_dwords);
            stage++) {
          struct pvr_descriptor_size_info size_info;
-         const VkShaderStageFlags shader_stages =
-            internal_binding->shader_stages;
 
-         if (!pvr_stage_matches_vk_flags(stage, shader_stages))
+         if (!(internal_binding->shader_stage_mask & BITFIELD_BIT(stage)))
             continue;
 
          pvr_descriptor_size_info_init(device, descriptor_type, &size_info);
@@ -655,9 +656,8 @@ VkResult pvr_CreateDescriptorSetLayout(
 
    pvr_setup_in_memory_layout_sizes(layout, reg_usage);
 
-#if defined(DEBUG)
-   pvr_dump_in_memory_layout_sizes(layout);
-#endif
+   if (PVR_IS_DEBUG_SET(VK_DUMP_DESCRIPTOR_SET_LAYOUT))
+      pvr_dump_in_memory_layout_sizes(layout);
 
    vk_free2(&device->vk.alloc, pAllocator, bindings);
 
@@ -673,51 +673,58 @@ void pvr_DestroyDescriptorSetLayout(VkDevice _device,
    PVR_FROM_HANDLE(pvr_descriptor_set_layout, layout, _set_layout);
    PVR_FROM_HANDLE(pvr_device, device, _device);
 
+   if (!layout)
+      return;
+
    pvr_descriptor_set_layout_free(device, pAllocator, layout);
 }
 
-#if defined(DEBUG)
 static void
 pvr_dump_in_register_layout_sizes(const struct pvr_device *device,
                                   const struct pvr_pipeline_layout *layout)
 {
+   const char *const separator =
+      "--------------------------------------------------------------------";
+   const char *const big_separator =
+      "====================================================================";
+
    mesa_logd("=== SET LAYOUT ===");
-   mesa_logd("----------------------------------------------------");
+   mesa_logd("%s", separator);
    mesa_logd(" in registers:");
-   mesa_logd("----------------------------------------------------");
+   mesa_logd("%s", separator);
 
    for (uint32_t stage = 0;
         stage < ARRAY_SIZE(layout->register_layout_in_dwords_per_stage);
         stage++) {
       uint32_t dynamic_offset = 0;
 
-      mesa_logd("| %-48s |", stage_names[stage].primary_dynamic);
-      mesa_logd("----------------------------------------------------");
+      mesa_logd("| %-64s |", stage_names[stage].primary_dynamic);
+      mesa_logd("%s", separator);
 
-      /* Print dynamic primaries. */
-      for (uint32_t set_num = 0; set_num < layout->set_count; set_num++) {
-         const struct pvr_descriptor_set_layout *const set_layout =
-            layout->set_layout[set_num];
+      if (layout->per_stage_reg_info[stage].primary_dynamic_size_in_dwords) {
+         /* Print dynamic primaries. */
+         for (uint32_t set_num = 0; set_num < layout->set_count; set_num++) {
+            const struct pvr_descriptor_set_layout *const set_layout =
+               layout->set_layout[set_num];
 
-         for (uint32_t i = 0; i < set_layout->binding_count; i++) {
-            const struct pvr_descriptor_set_layout_binding *const binding =
-               &set_layout->bindings[i];
-            bool valid = !!(binding->shader_stage_mask & (1U << stage));
-
-            if (binding->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
-                binding->type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
-               continue;
-
-            mesa_logd("| %s %04u | %u:%03u | %-26s[%3u] |",
-                      (valid) ? " " : "X",
-                      dynamic_offset,
-                      set_num,
-                      i,
-                      descriptor_names[binding->type],
-                      binding->descriptor_count);
-
-            if (valid) {
+            for (uint32_t i = 0; i < set_layout->binding_count; i++) {
+               const struct pvr_descriptor_set_layout_binding *const binding =
+                  &set_layout->bindings[i];
                struct pvr_descriptor_size_info size_info;
+
+               if (!(binding->shader_stage_mask & BITFIELD_BIT(stage)))
+                  continue;
+
+               if (binding->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
+                   binding->type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+                  continue;
+
+               mesa_logd("| +%04u | set = %u, binding = %03u | %-26s[%3u] |",
+                         dynamic_offset,
+                         set_num,
+                         i,
+                         descriptor_names[binding->type],
+                         binding->descriptor_count);
 
                pvr_descriptor_size_info_init(device, binding->type, &size_info);
 
@@ -726,34 +733,39 @@ pvr_dump_in_register_layout_sizes(const struct pvr_device *device,
          }
       }
 
-      mesa_logd("----------------------------------------------------");
-      mesa_logd("| %-48s |", stage_names[stage].secondary_dynamic);
-      mesa_logd("----------------------------------------------------");
+      mesa_logd("%s", separator);
+      mesa_logd("| %-64s |", stage_names[stage].secondary_dynamic);
+      mesa_logd("%s", separator);
 
-      /* Print dynamic secondaries. */
-      for (uint32_t set_num = 0; set_num < layout->set_count; set_num++) {
-         const struct pvr_descriptor_set_layout *const set_layout =
-            layout->set_layout[set_num];
+      if (layout->per_stage_reg_info[stage].secondary_dynamic_size_in_dwords) {
+         /* Print dynamic secondaries. */
+         for (uint32_t set_num = 0; set_num < layout->set_count; set_num++) {
+            const struct pvr_descriptor_set_layout *const set_layout =
+               layout->set_layout[set_num];
+            const struct pvr_descriptor_set_layout_mem_layout *const mem_layout =
+               &set_layout->memory_layout_in_dwords_per_stage[stage];
 
-         for (uint32_t i = 0; i < set_layout->binding_count; i++) {
-            const struct pvr_descriptor_set_layout_binding *const binding =
-               &set_layout->bindings[i];
-            bool valid = !!(binding->shader_stage_mask & (1U << stage));
-
-            if (binding->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
-                binding->type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+            if (mem_layout->secondary_dynamic_size == 0)
                continue;
 
-            mesa_logd("| %s %04u | %u:%03u | %-26s[%3u] |",
-                      (valid) ? " " : "X",
-                      dynamic_offset,
-                      set_num,
-                      i,
-                      descriptor_names[binding->type],
-                      binding->descriptor_count);
-
-            if (valid) {
+            for (uint32_t i = 0; i < set_layout->binding_count; i++) {
+               const struct pvr_descriptor_set_layout_binding *const binding =
+                  &set_layout->bindings[i];
                struct pvr_descriptor_size_info size_info;
+
+               if (!(binding->shader_stage_mask & BITFIELD_BIT(stage)))
+                  continue;
+
+               if (binding->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC &&
+                   binding->type != VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
+                  continue;
+
+               mesa_logd("| +%04u | set = %u, binding = %03u | %-26s[%3u] |",
+                         dynamic_offset,
+                         set_num,
+                         i,
+                         descriptor_names[binding->type],
+                         binding->descriptor_count);
 
                pvr_descriptor_size_info_init(device, binding->type, &size_info);
 
@@ -762,9 +774,9 @@ pvr_dump_in_register_layout_sizes(const struct pvr_device *device,
          }
       }
 
-      mesa_logd("----------------------------------------------------");
-      mesa_logd("| %-48s |", stage_names[stage].primary);
-      mesa_logd("----------------------------------------------------");
+      mesa_logd("%s", separator);
+      mesa_logd("| %-64s |", stage_names[stage].primary);
+      mesa_logd("%s", separator);
 
       /* Print primaries. */
       for (uint32_t set_num = 0; set_num < layout->set_count; set_num++) {
@@ -778,12 +790,14 @@ pvr_dump_in_register_layout_sizes(const struct pvr_device *device,
             const struct pvr_descriptor_set_layout_binding *const binding =
                &set_layout->bindings[i];
 
+            if (!(binding->shader_stage_mask & BITFIELD_BIT(stage)))
+               continue;
+
             if (binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
                 binding->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
                continue;
 
-            mesa_logd("| %s %04u | %u:%03u | %-26s[%3u] |",
-                      (binding->shader_stage_mask & (1U << stage)) ? " " : "X",
+            mesa_logd("| +%04u | set = %u, binding = %03u | %-26s[%3u] |",
                       base + binding->per_stage_offset_in_dwords[stage].primary,
                       set_num,
                       i,
@@ -792,28 +806,33 @@ pvr_dump_in_register_layout_sizes(const struct pvr_device *device,
          }
       }
 
-      mesa_logd("----------------------------------------------------");
-      mesa_logd("| %-48s |", stage_names[stage].secondary);
-      mesa_logd("----------------------------------------------------");
+      mesa_logd("%s", separator);
+      mesa_logd("| %-64s |", stage_names[stage].secondary);
+      mesa_logd("%s", separator);
 
       /* Print secondaries. */
       for (uint32_t set_num = 0; set_num < layout->set_count; set_num++) {
          const struct pvr_descriptor_set_layout *const set_layout =
             layout->set_layout[set_num];
-         const uint32_t base =
-            layout->register_layout_in_dwords_per_stage[stage][set_num]
-               .secondary_offset;
+         const struct pvr_descriptor_set_layout_mem_layout *const mem_layout =
+            &layout->register_layout_in_dwords_per_stage[stage][set_num];
+         const uint32_t base = mem_layout->secondary_offset;
+
+         if (mem_layout->secondary_size == 0)
+            continue;
 
          for (uint32_t i = 0; i < set_layout->binding_count; i++) {
             const struct pvr_descriptor_set_layout_binding *const binding =
                &set_layout->bindings[i];
 
+            if (!(binding->shader_stage_mask & BITFIELD_BIT(stage)))
+               continue;
+
             if (binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
                 binding->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
                continue;
 
-            mesa_logd("| %s %04u | %u:%03u | %-26s[%3u] |",
-                      (binding->shader_stage_mask & (1U << stage)) ? " " : "X",
+            mesa_logd("| +%04u | set = %u, binding = %03u | %-26s[%3u] |",
                       base +
                          binding->per_stage_offset_in_dwords[stage].secondary,
                       set_num,
@@ -823,10 +842,9 @@ pvr_dump_in_register_layout_sizes(const struct pvr_device *device,
          }
       }
 
-      mesa_logd("====================================================");
+      mesa_logd("%s", big_separator);
    }
 }
-#endif
 
 /* Pipeline layouts. These have nothing to do with the pipeline. They are
  * just multiple descriptor set layouts pasted together.
@@ -851,7 +869,7 @@ VkResult pvr_CreatePipelineLayout(VkDevice _device,
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    layout->set_count = pCreateInfo->setLayoutCount;
-   layout->shader_stages = 0;
+   layout->shader_stage_mask = 0;
    for (uint32_t stage = 0; stage < PVR_STAGE_ALLOCATION_COUNT; stage++) {
       uint32_t descriptor_counts
          [PVR_PIPELINE_LAYOUT_SUPPORTED_DESCRIPTOR_TYPE_COUNT] = { 0 };
@@ -870,7 +888,7 @@ VkResult pvr_CreatePipelineLayout(VkDevice _device,
                             pCreateInfo->pSetLayouts[set_num]);
 
             layout->set_layout[set_num] = set_layout;
-            layout->shader_stages |= set_layout->shader_stages;
+            layout->shader_stage_mask |= set_layout->shader_stage_mask;
          }
 
          const struct pvr_descriptor_set_layout_mem_layout *const mem_layout =
@@ -890,6 +908,9 @@ VkResult pvr_CreatePipelineLayout(VkDevice _device,
 
             layout->descriptor_offsets[set_num][stage][type] =
                descriptor_counts[type];
+
+            if (!layout->set_layout[set_num]->descriptor_count)
+               continue;
 
             descriptor_count = layout->set_layout[set_num]
                                   ->per_stage_descriptor_count[stage][type];
@@ -963,15 +984,30 @@ VkResult pvr_CreatePipelineLayout(VkDevice _device,
    }
 
    layout->push_constants_shader_stages = 0;
-   for (uint32_t i = 0; i < pCreateInfo->pushConstantRangeCount; ++i) {
+   for (uint32_t i = 0; i < pCreateInfo->pushConstantRangeCount; i++) {
       const VkPushConstantRange *range = &pCreateInfo->pPushConstantRanges[i];
 
-      layout->push_constants_shader_stages |= range->stageFlags;
+      layout->push_constants_shader_stages |=
+         vk_to_pvr_shader_stage_flags(range->stageFlags);
+
+      /* From the Vulkan spec. 1.3.237
+       * VUID-VkPipelineLayoutCreateInfo-pPushConstantRanges-00292 :
+       *
+       *    "Any two elements of pPushConstantRanges must not include the same
+       *     stage in stageFlags"
+       */
+      if (range->stageFlags & VK_SHADER_STAGE_VERTEX_BIT)
+         layout->vert_push_constants_offset = range->offset;
+
+      if (range->stageFlags & VK_SHADER_STAGE_FRAGMENT_BIT)
+         layout->frag_push_constants_offset = range->offset;
+
+      if (range->stageFlags & VK_SHADER_STAGE_COMPUTE_BIT)
+         layout->compute_push_constants_offset = range->offset;
    }
 
-#if defined(DEBUG)
-   pvr_dump_in_register_layout_sizes(device, layout);
-#endif
+   if (PVR_IS_DEBUG_SET(VK_DUMP_DESCRIPTOR_SET_LAYOUT))
+      pvr_dump_in_register_layout_sizes(device, layout);
 
    *pPipelineLayout = pvr_pipeline_layout_to_handle(layout);
 
@@ -984,6 +1020,9 @@ void pvr_DestroyPipelineLayout(VkDevice _device,
 {
    PVR_FROM_HANDLE(pvr_device, device, _device);
    PVR_FROM_HANDLE(pvr_pipeline_layout, layout, _pipelineLayout);
+
+   if (!layout)
+      return;
 
    vk_object_free(&device->vk, pAllocator, layout);
 }
@@ -1043,7 +1082,7 @@ static void pvr_free_descriptor_set(struct pvr_device *device,
                                     struct pvr_descriptor_set *set)
 {
    list_del(&set->link);
-   pvr_bo_free(device, set->pvr_bo);
+   pvr_bo_suballoc_free(set->pvr_bo);
    vk_object_free(&device->vk, &pool->alloc, set);
 }
 
@@ -1071,7 +1110,18 @@ VkResult pvr_ResetDescriptorPool(VkDevice _device,
                                  VkDescriptorPool descriptorPool,
                                  VkDescriptorPoolResetFlags flags)
 {
-   assert(!"Unimplemented");
+   PVR_FROM_HANDLE(pvr_descriptor_pool, pool, descriptorPool);
+   PVR_FROM_HANDLE(pvr_device, device, _device);
+
+   list_for_each_entry_safe (struct pvr_descriptor_set,
+                             set,
+                             &pool->descriptor_sets,
+                             link) {
+      pvr_free_descriptor_set(device, pool, set);
+   }
+
+   pool->current_size_in_dwords = 0;
+
    return VK_SUCCESS;
 }
 
@@ -1125,13 +1175,6 @@ static uint16_t pvr_get_descriptor_secondary_offset(
    return (uint16_t)offset;
 }
 
-static void pvr_write_sampler_descriptor(uint32_t *primary,
-                                         const struct pvr_sampler *sampler)
-{
-   /* TODO: Implement based on WriteSamplerDescriptor. */
-   pvr_finishme("Implement after vkCreateSampler API.");
-}
-
 #define PVR_MAX_DESCRIPTOR_MEM_SIZE_IN_DWORDS (4 * 1024)
 
 static VkResult
@@ -1143,7 +1186,6 @@ pvr_descriptor_set_create(struct pvr_device *device,
    struct pvr_descriptor_set *set;
    VkResult result;
    size_t size;
-   void *map;
 
    size = sizeof(*set) + sizeof(set->descriptors[0]) * layout->descriptor_count;
 
@@ -1162,6 +1204,7 @@ pvr_descriptor_set_create(struct pvr_device *device,
     * for max descriptors supported by pool as done by v3dv. Also check the
     * possibility if this can be removed from here and done on need basis.
     */
+
    if (layout->binding_count > 0) {
       const uint32_t cache_line_size =
          rogue_get_slc_cache_line_size(&device->pdevice->dev_info);
@@ -1169,12 +1212,11 @@ pvr_descriptor_set_create(struct pvr_device *device,
                               PVR_MAX_DESCRIPTOR_MEM_SIZE_IN_DWORDS) *
                          sizeof(uint32_t);
 
-      result = pvr_bo_alloc(device,
-                            device->heaps.general_heap,
-                            bo_size,
-                            cache_line_size,
-                            PVR_BO_ALLOC_FLAG_CPU_MAPPED,
-                            &set->pvr_bo);
+      result = pvr_bo_suballoc(&device->suballoc_general,
+                               bo_size,
+                               cache_line_size,
+                               false,
+                               &set->pvr_bo);
       if (result != VK_SUCCESS)
          goto err_free_descriptor_set;
    }
@@ -1182,7 +1224,6 @@ pvr_descriptor_set_create(struct pvr_device *device,
    set->layout = layout;
    set->pool = pool;
 
-   map = set->pvr_bo->bo->map;
    for (uint32_t i = 0; i < layout->binding_count; i++) {
       const struct pvr_descriptor_set_layout_binding *binding =
          &layout->bindings[i];
@@ -1209,9 +1250,10 @@ pvr_descriptor_set_create(struct pvr_device *device,
             if (binding->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
                offset_in_dwords += 4;
 
-            pvr_write_sampler_descriptor(map +
-                                            offset_in_dwords * sizeof(uint32_t),
-                                         sampler);
+            memcpy((uint8_t *)pvr_bo_suballoc_get_map_addr(set->pvr_bo) +
+                      PVR_DW_TO_BYTES(offset_in_dwords),
+                   sampler->descriptor.words,
+                   sizeof(sampler->descriptor.words));
          }
       }
    }
@@ -1238,8 +1280,8 @@ pvr_AllocateDescriptorSets(VkDevice _device,
    VkResult result;
    uint32_t i;
 
-   vk_foreach_struct (ext, pAllocateInfo->pNext) {
-      pvr_debug_ignored_stype(ext->sType);
+   vk_foreach_struct_const (ext, pAllocateInfo->pNext) {
+      vk_debug_ignored_stype(ext->sType);
    }
 
    for (i = 0; i < pAllocateInfo->descriptorSetCount; i++) {
@@ -1290,81 +1332,38 @@ VkResult pvr_FreeDescriptorSets(VkDevice _device,
    return VK_SUCCESS;
 }
 
-static int pvr_compare_layout_binding(const void *a, const void *b)
+static void pvr_descriptor_update_buffer_info(
+   const struct pvr_device *device,
+   const VkWriteDescriptorSet *write_set,
+   struct pvr_descriptor_set *set,
+   const struct pvr_descriptor_set_layout_binding *binding,
+   uint32_t *mem_ptr,
+   uint32_t start_stage,
+   uint32_t end_stage)
 {
-   uint32_t binding_a;
-   uint32_t binding_b;
-
-   binding_a = ((struct pvr_descriptor_set_layout_binding *)a)->binding_number;
-   binding_b = ((struct pvr_descriptor_set_layout_binding *)b)->binding_number;
-
-   if (binding_a < binding_b)
-      return -1;
-
-   if (binding_a > binding_b)
-      return 1;
-
-   return 0;
-}
-
-/* This function does not assume that the binding will always exist for a
- * particular binding_num. Caller should check before using the return pointer.
- */
-static struct pvr_descriptor_set_layout_binding *
-pvr_get_descriptor_binding(const struct pvr_descriptor_set_layout *layout,
-                           const uint32_t binding_num)
-{
-   struct pvr_descriptor_set_layout_binding binding;
-   binding.binding_number = binding_num;
-
-   return bsearch(&binding,
-                  layout->bindings,
-                  layout->binding_count,
-                  sizeof(binding),
-                  pvr_compare_layout_binding);
-}
-
-static void
-pvr_descriptor_update_buffer_info(const struct pvr_device *device,
-                                  const VkWriteDescriptorSet *write_set,
-                                  struct pvr_descriptor_set *set,
-                                  uint32_t *mem_ptr,
-                                  uint32_t start_stage,
-                                  uint32_t end_stage)
-{
-   const struct pvr_descriptor_set_layout_binding *binding;
    struct pvr_descriptor_size_info size_info;
    bool is_dynamic;
-
-   binding = pvr_get_descriptor_binding(set->layout, write_set->dstBinding);
-   /* Binding should not be NULL. */
-   assert(binding);
 
    is_dynamic = (binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) ||
                 (binding->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC);
 
    pvr_descriptor_size_info_init(device, binding->type, &size_info);
 
-   /* Only need to update the buffer if it is actually being used. If it was
-    * not present in any stage, then the shader_stage_mask would be 0 and we
-    * can skip this update.
-    */
-   if (binding->shader_stage_mask == 0)
-      return;
-
    for (uint32_t i = 0; i < write_set->descriptorCount; i++) {
       const VkDescriptorBufferInfo *buffer_info = &write_set->pBufferInfo[i];
       PVR_FROM_HANDLE(pvr_buffer, buffer, buffer_info->buffer);
       const uint32_t desc_idx =
          binding->descriptor_index + write_set->dstArrayElement + i;
-      uint64_t addr = buffer->dev_addr.addr + buffer_info->offset;
+      const pvr_dev_addr_t addr =
+         PVR_DEV_ADDR_OFFSET(buffer->dev_addr, buffer_info->offset);
+      const uint32_t whole_range = buffer->vk.size - buffer_info->offset;
       uint32_t range = (buffer_info->range == VK_WHOLE_SIZE)
-                          ? (buffer->size - buffer_info->offset)
-                          : (buffer_info->range);
+                          ? whole_range
+                          : buffer_info->range;
 
       set->descriptors[desc_idx].type = write_set->descriptorType;
-      set->descriptors[desc_idx].buffer_dev_addr.addr = addr;
-      set->descriptors[desc_idx].buffer_create_info_size = buffer->size;
+      set->descriptors[desc_idx].buffer_dev_addr = addr;
+      set->descriptors[desc_idx].buffer_whole_range = whole_range;
       set->descriptors[desc_idx].buffer_desc_range = range;
 
       if (is_dynamic)
@@ -1375,7 +1374,7 @@ pvr_descriptor_update_buffer_info(const struct pvr_device *device,
          uint32_t primary_offset;
          uint32_t secondary_offset;
 
-         if (!(binding->shader_stage_mask & (1U << j)))
+         if (!(binding->shader_stage_mask & BITFIELD_BIT(j)))
             continue;
 
          /* Offset calculation functions expect descriptor_index to be
@@ -1395,9 +1394,629 @@ pvr_descriptor_update_buffer_info(const struct pvr_device *device,
                                                 j,
                                                 write_set->dstArrayElement + i);
 
-         memcpy(mem_ptr + primary_offset, &addr, size_info.primary << 2);
-         memcpy(mem_ptr + secondary_offset, &range, size_info.secondary << 2);
+         memcpy(mem_ptr + primary_offset,
+                &addr,
+                PVR_DW_TO_BYTES(size_info.primary));
+         memcpy(mem_ptr + secondary_offset,
+                &range,
+                PVR_DW_TO_BYTES(size_info.secondary));
       }
+   }
+}
+
+static void pvr_descriptor_update_sampler(
+   const struct pvr_device *device,
+   const VkWriteDescriptorSet *write_set,
+   struct pvr_descriptor_set *set,
+   const struct pvr_descriptor_set_layout_binding *binding,
+   uint32_t *mem_ptr,
+   uint32_t start_stage,
+   uint32_t end_stage)
+{
+   struct pvr_descriptor_size_info size_info;
+
+   pvr_descriptor_size_info_init(device, binding->type, &size_info);
+
+   for (uint32_t i = 0; i < write_set->descriptorCount; i++) {
+      PVR_FROM_HANDLE(pvr_sampler, sampler, write_set->pImageInfo[i].sampler);
+      const uint32_t desc_idx =
+         binding->descriptor_index + write_set->dstArrayElement + i;
+
+      set->descriptors[desc_idx].type = write_set->descriptorType;
+      set->descriptors[desc_idx].sampler = sampler;
+
+      for (uint32_t j = start_stage; j < end_stage; j++) {
+         uint32_t primary_offset;
+
+         if (!(binding->shader_stage_mask & BITFIELD_BIT(j)))
+            continue;
+
+         /* Offset calculation functions expect descriptor_index to be binding
+          * relative not layout relative, so we have used
+          * write_set->dstArrayElement + i rather than desc_idx.
+          */
+         primary_offset =
+            pvr_get_descriptor_primary_offset(device,
+                                              set->layout,
+                                              binding,
+                                              j,
+                                              write_set->dstArrayElement + i);
+
+         memcpy(mem_ptr + primary_offset,
+                sampler->descriptor.words,
+                sizeof(sampler->descriptor.words));
+      }
+   }
+}
+
+static void
+pvr_write_image_descriptor_primaries(const struct pvr_device_info *dev_info,
+                                     const struct pvr_image_view *iview,
+                                     VkDescriptorType descriptorType,
+                                     uint32_t *primary)
+{
+   uint64_t *qword_ptr = (uint64_t *)primary;
+
+   if (descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE &&
+       (iview->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE ||
+        iview->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY)) {
+      qword_ptr[0] = iview->texture_state[PVR_TEXTURE_STATE_STORAGE][0];
+      qword_ptr[1] = iview->texture_state[PVR_TEXTURE_STATE_STORAGE][1];
+   } else if (descriptorType == VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) {
+      qword_ptr[0] = iview->texture_state[PVR_TEXTURE_STATE_ATTACHMENT][0];
+      qword_ptr[1] = iview->texture_state[PVR_TEXTURE_STATE_ATTACHMENT][1];
+   } else {
+      qword_ptr[0] = iview->texture_state[PVR_TEXTURE_STATE_SAMPLE][0];
+      qword_ptr[1] = iview->texture_state[PVR_TEXTURE_STATE_SAMPLE][1];
+   }
+
+   if (descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE &&
+       !PVR_HAS_FEATURE(dev_info, tpu_extended_integer_lookup)) {
+      uint64_t tmp;
+
+      pvr_csb_pack (&tmp, TEXSTATE_STRIDE_IMAGE_WORD1, word1) {
+         word1.index_lookup = true;
+      }
+
+      qword_ptr[1] |= tmp;
+   }
+}
+
+static void
+pvr_write_image_descriptor_secondaries(const struct pvr_device_info *dev_info,
+                                       const struct pvr_image_view *iview,
+                                       VkDescriptorType descriptorType,
+                                       uint32_t *secondary)
+{
+   const bool cube_array_adjust =
+      descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE &&
+      iview->vk.view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+
+   if (!PVR_HAS_FEATURE(dev_info, tpu_array_textures)) {
+      const struct pvr_image *image = pvr_image_view_get_image(iview);
+      uint64_t addr =
+         image->dev_addr.addr + iview->vk.base_array_layer * image->layer_size;
+
+      secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYBASE] = (uint32_t)addr;
+      secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYBASE + 1U] =
+         (uint32_t)(addr >> 32U);
+
+      secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYSTRIDE] =
+         cube_array_adjust ? image->layer_size * 6 : image->layer_size;
+   }
+
+   if (cube_array_adjust) {
+      secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYMAXINDEX(dev_info)] =
+         iview->vk.layer_count / 6 - 1;
+   } else {
+      secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_ARRAYMAXINDEX(dev_info)] =
+         iview->vk.layer_count - 1;
+   }
+
+   secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_WIDTH(dev_info)] =
+      iview->vk.extent.width;
+   secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_HEIGHT(dev_info)] =
+      iview->vk.extent.height;
+   secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_DEPTH(dev_info)] =
+      iview->vk.extent.depth;
+}
+
+static void pvr_descriptor_update_sampler_texture(
+   const struct pvr_device *device,
+   const VkWriteDescriptorSet *write_set,
+   struct pvr_descriptor_set *set,
+   const struct pvr_descriptor_set_layout_binding *binding,
+   uint32_t *mem_ptr,
+   uint32_t start_stage,
+   uint32_t end_stage)
+{
+   const struct pvr_device_info *dev_info = &device->pdevice->dev_info;
+
+   for (uint32_t i = 0; i < write_set->descriptorCount; i++) {
+      PVR_FROM_HANDLE(pvr_image_view,
+                      iview,
+                      write_set->pImageInfo[i].imageView);
+      const uint32_t desc_idx =
+         binding->descriptor_index + write_set->dstArrayElement + i;
+
+      set->descriptors[desc_idx].type = write_set->descriptorType;
+      set->descriptors[desc_idx].iview = iview;
+      set->descriptors[desc_idx].layout = write_set->pImageInfo[i].imageLayout;
+
+      for (uint32_t j = start_stage; j < end_stage; j++) {
+         uint32_t secondary_offset;
+         uint32_t primary_offset;
+
+         if (!(binding->shader_stage_mask & BITFIELD_BIT(j)))
+            continue;
+
+         /* Offset calculation functions expect descriptor_index to be
+          * binding relative not layout relative, so we have used
+          * write_set->dstArrayElement + i rather than desc_idx.
+          */
+         primary_offset =
+            pvr_get_descriptor_primary_offset(device,
+                                              set->layout,
+                                              binding,
+                                              j,
+                                              write_set->dstArrayElement + i);
+         secondary_offset =
+            pvr_get_descriptor_secondary_offset(device,
+                                                set->layout,
+                                                binding,
+                                                j,
+                                                write_set->dstArrayElement + i);
+
+         pvr_write_image_descriptor_primaries(dev_info,
+                                              iview,
+                                              write_set->descriptorType,
+                                              mem_ptr + primary_offset);
+
+         /* We don't need to update the sampler words if they belong to an
+          * immutable sampler.
+          */
+         if (!binding->has_immutable_samplers) {
+            PVR_FROM_HANDLE(pvr_sampler,
+                            sampler,
+                            write_set->pImageInfo[i].sampler);
+            set->descriptors[desc_idx].sampler = sampler;
+
+            /* Sampler words are located at the end of the primary image words.
+             */
+            memcpy(mem_ptr + primary_offset + PVR_IMAGE_DESCRIPTOR_SIZE,
+                   sampler->descriptor.words,
+                   sizeof(sampler->descriptor.words));
+         }
+
+         pvr_write_image_descriptor_secondaries(dev_info,
+                                                iview,
+                                                write_set->descriptorType,
+                                                mem_ptr + secondary_offset);
+      }
+   }
+}
+
+static void pvr_descriptor_update_texture(
+   const struct pvr_device *device,
+   const VkWriteDescriptorSet *write_set,
+   struct pvr_descriptor_set *set,
+   const struct pvr_descriptor_set_layout_binding *binding,
+   uint32_t *mem_ptr,
+   uint32_t start_stage,
+   uint32_t end_stage)
+{
+   const struct pvr_device_info *dev_info = &device->pdevice->dev_info;
+
+   for (uint32_t i = 0; i < write_set->descriptorCount; i++) {
+      PVR_FROM_HANDLE(pvr_image_view,
+                      iview,
+                      write_set->pImageInfo[i].imageView);
+      const uint32_t desc_idx =
+         binding->descriptor_index + write_set->dstArrayElement + i;
+
+      set->descriptors[desc_idx].type = write_set->descriptorType;
+      set->descriptors[desc_idx].iview = iview;
+      set->descriptors[desc_idx].layout = write_set->pImageInfo[i].imageLayout;
+
+      for (uint32_t j = start_stage; j < end_stage; j++) {
+         uint32_t secondary_offset;
+         uint32_t primary_offset;
+
+         if (!(binding->shader_stage_mask & BITFIELD_BIT(j)))
+            continue;
+
+         /* Offset calculation functions expect descriptor_index to be
+          * binding relative not layout relative, so we have used
+          * write_set->dstArrayElement + i rather than desc_idx.
+          */
+         primary_offset =
+            pvr_get_descriptor_primary_offset(device,
+                                              set->layout,
+                                              binding,
+                                              j,
+                                              write_set->dstArrayElement + i);
+         secondary_offset =
+            pvr_get_descriptor_secondary_offset(device,
+                                                set->layout,
+                                                binding,
+                                                j,
+                                                write_set->dstArrayElement + i);
+
+         pvr_write_image_descriptor_primaries(dev_info,
+                                              iview,
+                                              write_set->descriptorType,
+                                              mem_ptr + primary_offset);
+
+         pvr_write_image_descriptor_secondaries(dev_info,
+                                                iview,
+                                                write_set->descriptorType,
+                                                mem_ptr + secondary_offset);
+      }
+   }
+}
+
+static void pvr_write_buffer_descriptor(const struct pvr_device_info *dev_info,
+                                        const struct pvr_buffer_view *bview,
+                                        VkDescriptorType descriptorType,
+                                        uint32_t *primary,
+                                        uint32_t *secondary)
+{
+   uint64_t *qword_ptr = (uint64_t *)primary;
+
+   qword_ptr[0] = bview->texture_state[0];
+   qword_ptr[1] = bview->texture_state[1];
+
+   if (descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER &&
+       !PVR_HAS_FEATURE(dev_info, tpu_extended_integer_lookup)) {
+      uint64_t tmp;
+
+      pvr_csb_pack (&tmp, TEXSTATE_STRIDE_IMAGE_WORD1, word1) {
+         word1.index_lookup = true;
+      }
+
+      qword_ptr[1] |= tmp;
+   }
+
+   if (secondary) {
+      /* NOTE: Range check for texture buffer writes is not strictly required as
+       * we have already validated that the index is in range. We'd need a
+       * compiler change to allow us to skip the range check.
+       */
+      secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_WIDTH(dev_info)] =
+         (uint32_t)(bview->vk.elements);
+      secondary[PVR_DESC_IMAGE_SECONDARY_OFFSET_HEIGHT(dev_info)] = 1;
+   }
+}
+
+static void pvr_descriptor_update_buffer_view(
+   const struct pvr_device *device,
+   const VkWriteDescriptorSet *write_set,
+   struct pvr_descriptor_set *set,
+   const struct pvr_descriptor_set_layout_binding *binding,
+   uint32_t *mem_ptr,
+   uint32_t start_stage,
+   uint32_t end_stage)
+{
+   const struct pvr_device_info *dev_info = &device->pdevice->dev_info;
+   struct pvr_descriptor_size_info size_info;
+
+   pvr_descriptor_size_info_init(device, binding->type, &size_info);
+
+   for (uint32_t i = 0; i < write_set->descriptorCount; i++) {
+      PVR_FROM_HANDLE(pvr_buffer_view, bview, write_set->pTexelBufferView[i]);
+      const uint32_t desc_idx =
+         binding->descriptor_index + write_set->dstArrayElement + i;
+
+      set->descriptors[desc_idx].type = write_set->descriptorType;
+      set->descriptors[desc_idx].bview = bview;
+
+      for (uint32_t j = start_stage; j < end_stage; j++) {
+         uint32_t secondary_offset;
+         uint32_t primary_offset;
+
+         if (!(binding->shader_stage_mask & BITFIELD_BIT(j)))
+            continue;
+
+         /* Offset calculation functions expect descriptor_index to be
+          * binding relative not layout relative, so we have used
+          * write_set->dstArrayElement + i rather than desc_idx.
+          */
+         primary_offset =
+            pvr_get_descriptor_primary_offset(device,
+                                              set->layout,
+                                              binding,
+                                              j,
+                                              write_set->dstArrayElement + i);
+         secondary_offset =
+            pvr_get_descriptor_secondary_offset(device,
+                                                set->layout,
+                                                binding,
+                                                j,
+                                                write_set->dstArrayElement + i);
+
+         pvr_write_buffer_descriptor(
+            dev_info,
+            bview,
+            write_set->descriptorType,
+            mem_ptr + primary_offset,
+            size_info.secondary ? mem_ptr + secondary_offset : NULL);
+      }
+   }
+}
+
+static void pvr_descriptor_update_input_attachment(
+   const struct pvr_device *device,
+   const VkWriteDescriptorSet *write_set,
+   struct pvr_descriptor_set *set,
+   const struct pvr_descriptor_set_layout_binding *binding,
+   uint32_t *mem_ptr,
+   uint32_t start_stage,
+   uint32_t end_stage)
+{
+   const struct pvr_device_info *dev_info = &device->pdevice->dev_info;
+   struct pvr_descriptor_size_info size_info;
+
+   pvr_descriptor_size_info_init(device, binding->type, &size_info);
+
+   for (uint32_t i = 0; i < write_set->descriptorCount; i++) {
+      PVR_FROM_HANDLE(pvr_image_view,
+                      iview,
+                      write_set->pImageInfo[i].imageView);
+      const uint32_t desc_idx =
+         binding->descriptor_index + write_set->dstArrayElement + i;
+
+      set->descriptors[desc_idx].type = write_set->descriptorType;
+      set->descriptors[desc_idx].iview = iview;
+      set->descriptors[desc_idx].layout = write_set->pImageInfo[i].imageLayout;
+
+      for (uint32_t j = start_stage; j < end_stage; j++) {
+         uint32_t primary_offset;
+
+         if (!(binding->shader_stage_mask & BITFIELD_BIT(j)))
+            continue;
+
+         /* Offset calculation functions expect descriptor_index to be
+          * binding relative not layout relative, so we have used
+          * write_set->dstArrayElement + i rather than desc_idx.
+          */
+         primary_offset =
+            pvr_get_descriptor_primary_offset(device,
+                                              set->layout,
+                                              binding,
+                                              j,
+                                              write_set->dstArrayElement + i);
+
+         pvr_write_image_descriptor_primaries(dev_info,
+                                              iview,
+                                              write_set->descriptorType,
+                                              mem_ptr + primary_offset);
+
+         *(uint64_t *)(mem_ptr + primary_offset + PVR_IMAGE_DESCRIPTOR_SIZE) =
+            device->input_attachment_sampler;
+
+         if (!PVR_HAS_FEATURE(dev_info, tpu_array_textures)) {
+            const uint32_t secondary_offset =
+               pvr_get_descriptor_secondary_offset(device,
+                                                   set->layout,
+                                                   binding,
+                                                   j,
+                                                   write_set->dstArrayElement +
+                                                      i);
+
+            pvr_write_image_descriptor_secondaries(dev_info,
+                                                   iview,
+                                                   write_set->descriptorType,
+                                                   mem_ptr + secondary_offset);
+         }
+      }
+   }
+}
+
+static void pvr_write_descriptor_set(struct pvr_device *device,
+                                     const VkWriteDescriptorSet *write_set)
+{
+   PVR_FROM_HANDLE(pvr_descriptor_set, set, write_set->dstSet);
+   uint32_t *map = pvr_bo_suballoc_get_map_addr(set->pvr_bo);
+   const struct pvr_descriptor_set_layout_binding *binding =
+      pvr_get_descriptor_binding(set->layout, write_set->dstBinding);
+
+   /* Binding should not be NULL. */
+   assert(binding);
+
+   /* Only need to update the descriptor if it is actually being used. If it
+    * was not used in any stage, then the shader_stage_mask would be 0 and we
+    * can skip this update.
+    */
+   if (binding->shader_stage_mask == 0)
+      return;
+
+   vk_foreach_struct_const (ext, write_set->pNext) {
+      vk_debug_ignored_stype(ext->sType);
+   }
+
+   switch (write_set->descriptorType) {
+   case VK_DESCRIPTOR_TYPE_SAMPLER:
+      pvr_descriptor_update_sampler(device,
+                                    write_set,
+                                    set,
+                                    binding,
+                                    map,
+                                    0,
+                                    PVR_STAGE_ALLOCATION_COUNT);
+      break;
+
+   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+      pvr_descriptor_update_sampler_texture(device,
+                                            write_set,
+                                            set,
+                                            binding,
+                                            map,
+                                            0,
+                                            PVR_STAGE_ALLOCATION_COUNT);
+      break;
+
+   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      pvr_descriptor_update_texture(device,
+                                    write_set,
+                                    set,
+                                    binding,
+                                    map,
+                                    0,
+                                    PVR_STAGE_ALLOCATION_COUNT);
+      break;
+
+   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+      pvr_descriptor_update_buffer_view(device,
+                                        write_set,
+                                        set,
+                                        binding,
+                                        map,
+                                        0,
+                                        PVR_STAGE_ALLOCATION_COUNT);
+      break;
+
+   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
+      pvr_descriptor_update_input_attachment(device,
+                                             write_set,
+                                             set,
+                                             binding,
+                                             map,
+                                             0,
+                                             PVR_STAGE_ALLOCATION_COUNT);
+      break;
+
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+      pvr_descriptor_update_buffer_info(device,
+                                        write_set,
+                                        set,
+                                        binding,
+                                        map,
+                                        0,
+                                        PVR_STAGE_ALLOCATION_COUNT);
+      break;
+
+   default:
+      unreachable("Unknown descriptor type");
+      break;
+   }
+}
+
+static void pvr_copy_descriptor_set(struct pvr_device *device,
+                                    const VkCopyDescriptorSet *copy_set)
+{
+   PVR_FROM_HANDLE(pvr_descriptor_set, src_set, copy_set->srcSet);
+   PVR_FROM_HANDLE(pvr_descriptor_set, dst_set, copy_set->dstSet);
+   const struct pvr_descriptor_set_layout_binding *src_binding =
+      pvr_get_descriptor_binding(src_set->layout, copy_set->srcBinding);
+   const struct pvr_descriptor_set_layout_binding *dst_binding =
+      pvr_get_descriptor_binding(dst_set->layout, copy_set->dstBinding);
+   struct pvr_descriptor_size_info size_info;
+   uint32_t *src_mem_ptr;
+   uint32_t *dst_mem_ptr;
+
+   switch (src_binding->type) {
+   case VK_DESCRIPTOR_TYPE_SAMPLER:
+      break;
+
+   case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+   case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
+   case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+   case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
+   case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
+   case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
+   case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
+   case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT: {
+      const uint32_t src_idx =
+         src_binding->descriptor_index + copy_set->srcArrayElement;
+      const uint32_t dst_idx =
+         dst_binding->descriptor_index + copy_set->dstArrayElement;
+
+      for (uint32_t j = 0; j < copy_set->descriptorCount; j++) {
+         assert(src_set->descriptors[src_idx + j].type == src_binding->type);
+
+         dst_set->descriptors[dst_idx + j] = src_set->descriptors[src_idx + j];
+      }
+
+      break;
+   }
+
+   default:
+      unreachable("Unknown descriptor type");
+      break;
+   }
+
+   /* Dynamic buffer descriptors don't have any data stored in the descriptor
+    * set memory. They only exist in the set->descriptors list which we've
+    * already updated above.
+    */
+   if (src_binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+       src_binding->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC) {
+      return;
+   }
+
+   src_mem_ptr = pvr_bo_suballoc_get_map_addr(src_set->pvr_bo);
+   dst_mem_ptr = pvr_bo_suballoc_get_map_addr(dst_set->pvr_bo);
+
+   /* From the Vulkan 1.3.232 spec VUID-VkCopyDescriptorSet-dstBinding-02632:
+    *
+    *    The type of dstBinding within dstSet must be equal to the type of
+    *    srcBinding within srcSet.
+    *
+    * So both bindings have the same descriptor size and we don't need to
+    * handle size differences.
+    */
+   pvr_descriptor_size_info_init(device, src_binding->type, &size_info);
+
+   assert(src_binding->shader_stage_mask == dst_binding->shader_stage_mask);
+
+   u_foreach_bit (stage, dst_binding->shader_stage_mask) {
+      uint16_t src_secondary_offset;
+      uint16_t dst_secondary_offset;
+      uint16_t src_primary_offset;
+      uint16_t dst_primary_offset;
+
+      /* Offset calculation functions expect descriptor_index to be
+       * binding relative not layout relative.
+       */
+      src_primary_offset =
+         pvr_get_descriptor_primary_offset(device,
+                                           src_set->layout,
+                                           src_binding,
+                                           stage,
+                                           copy_set->srcArrayElement);
+      dst_primary_offset =
+         pvr_get_descriptor_primary_offset(device,
+                                           dst_set->layout,
+                                           dst_binding,
+                                           stage,
+                                           copy_set->dstArrayElement);
+      src_secondary_offset =
+         pvr_get_descriptor_secondary_offset(device,
+                                             src_set->layout,
+                                             src_binding,
+                                             stage,
+                                             copy_set->srcArrayElement);
+      dst_secondary_offset =
+         pvr_get_descriptor_secondary_offset(device,
+                                             dst_set->layout,
+                                             dst_binding,
+                                             stage,
+                                             copy_set->dstArrayElement);
+
+      memcpy(dst_mem_ptr + dst_primary_offset,
+             src_mem_ptr + src_primary_offset,
+             PVR_DW_TO_BYTES(size_info.primary) * copy_set->descriptorCount);
+
+      memcpy(dst_mem_ptr + dst_secondary_offset,
+             src_mem_ptr + src_secondary_offset,
+             PVR_DW_TO_BYTES(size_info.secondary) * copy_set->descriptorCount);
    }
 }
 
@@ -1409,45 +2028,9 @@ void pvr_UpdateDescriptorSets(VkDevice _device,
 {
    PVR_FROM_HANDLE(pvr_device, device, _device);
 
-   for (uint32_t i = 0; i < descriptorWriteCount; i++) {
-      const VkWriteDescriptorSet *write_set = &pDescriptorWrites[i];
-      PVR_FROM_HANDLE(pvr_descriptor_set, set, write_set->dstSet);
-      uint32_t *map = set->pvr_bo->bo->map;
+   for (uint32_t i = 0; i < descriptorWriteCount; i++)
+      pvr_write_descriptor_set(device, &pDescriptorWrites[i]);
 
-      vk_foreach_struct (ext, write_set->pNext) {
-         pvr_debug_ignored_stype(ext->sType);
-      }
-
-      switch (write_set->descriptorType) {
-      case VK_DESCRIPTOR_TYPE_SAMPLER:
-      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-         pvr_finishme("Update support missing for %d descriptor type\n",
-                      write_set->descriptorType);
-         break;
-
-      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-         pvr_descriptor_update_buffer_info(device,
-                                           write_set,
-                                           set,
-                                           map,
-                                           0,
-                                           PVR_STAGE_ALLOCATION_COUNT);
-         break;
-
-      default:
-         unreachable("Unknown descriptor type");
-         break;
-      }
-   }
-
-   if (descriptorCopyCount > 0)
-      pvr_finishme("Descriptor copying support missing\n");
+   for (uint32_t i = 0; i < descriptorCopyCount; i++)
+      pvr_copy_descriptor_set(device, &pDescriptorCopies[i]);
 }

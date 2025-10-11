@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -31,13 +13,15 @@
 #include "util/os_file.h"
 
 #include "drm/freedreno_ringbuffer_sp.h"
+#include "freedreno_rd_output.h"
 #include "msm_priv.h"
 
 static int
 flush_submit_list(struct list_head *submit_list)
 {
    struct fd_submit_sp *fd_submit = to_fd_submit_sp(last_submit(submit_list));
-   struct msm_pipe *msm_pipe = to_msm_pipe(fd_submit->base.pipe);
+   struct fd_pipe *pipe = fd_submit->base.pipe;
+   struct msm_pipe *msm_pipe = to_msm_pipe(pipe);
    struct drm_msm_gem_submit req = {
       .flags = msm_pipe->pipe,
       .queueid = msm_pipe->queue_id,
@@ -45,6 +29,8 @@ flush_submit_list(struct list_head *submit_list)
    int ret;
 
    unsigned nr_cmds = 0;
+
+   MESA_TRACE_FUNC();
 
    /* Determine the number of extra cmds's from deferred submits that
     * we will be merging in:
@@ -66,10 +52,10 @@ flush_submit_list(struct list_head *submit_list)
          to_fd_ringbuffer_sp(submit->primary);
 
       for (unsigned i = 0; i < deferred_primary->u.nr_cmds; i++) {
+         struct fd_bo *ring_bo = deferred_primary->u.cmds[i].ring_bo;
          cmds[cmd_idx].type = MSM_SUBMIT_CMD_BUF;
-         cmds[cmd_idx].submit_idx =
-               fd_submit_append_bo(fd_submit, deferred_primary->u.cmds[i].ring_bo);
-         cmds[cmd_idx].submit_offset = deferred_primary->offset;
+         cmds[cmd_idx].submit_idx = fd_submit_append_bo(fd_submit, ring_bo);
+         cmds[cmd_idx].submit_offset = submit_offset(ring_bo, deferred_primary->offset);
          cmds[cmd_idx].size = deferred_primary->u.cmds[i].size;
          cmds[cmd_idx].pad = 0;
          cmds[cmd_idx].nr_relocs = 0;
@@ -104,14 +90,13 @@ flush_submit_list(struct list_head *submit_list)
    if (fd_submit->in_fence_fd != -1) {
       req.flags |= MSM_SUBMIT_FENCE_FD_IN;
       req.fence_fd = fd_submit->in_fence_fd;
-      msm_pipe->no_implicit_sync = true;
    }
 
-   if (msm_pipe->no_implicit_sync) {
+   if (pipe->no_implicit_sync) {
       req.flags |= MSM_SUBMIT_NO_IMPLICIT;
    }
 
-   if (fd_submit->out_fence && fd_submit->out_fence->use_fence_fd) {
+   if (fd_submit->out_fence->use_fence_fd) {
       req.flags |= MSM_SUBMIT_FENCE_FD_OUT;
    }
 
@@ -120,7 +105,7 @@ flush_submit_list(struct list_head *submit_list)
     * NOTE allocate on-stack in the common case, but with an upper-
     * bound to limit on-stack allocation to 4k:
     */
-   const unsigned bo_limit = sizeof(struct drm_msm_gem_submit_bo) / 4096;
+   const unsigned bo_limit = 4096 / sizeof(struct drm_msm_gem_submit_bo);
    bool bos_on_stack = fd_submit->nr_bos < bo_limit;
    struct drm_msm_gem_submit_bo
       _submit_bos[bos_on_stack ? fd_submit->nr_bos : 0];
@@ -144,16 +129,17 @@ flush_submit_list(struct list_head *submit_list)
 
    DEBUG_MSG("nr_cmds=%u, nr_bos=%u", req.nr_cmds, req.nr_bos);
 
-   ret = drmCommandWriteRead(msm_pipe->base.dev->fd, DRM_MSM_GEM_SUBMIT, &req,
+   ret = drmCommandWriteRead(pipe->dev->fd, DRM_MSM_GEM_SUBMIT, &req,
                              sizeof(req));
    if (ret) {
       ERROR_MSG("submit failed: %d (%s)", ret, strerror(errno));
       msm_dump_submit(&req);
-   } else if (!ret && fd_submit->out_fence) {
-      fd_submit->out_fence->fence.kfence = req.fence;
-      fd_submit->out_fence->fence.ufence = fd_submit->base.fence;
+   } else if (!ret) {
+      fd_submit->out_fence->kfence = req.fence;
       fd_submit->out_fence->fence_fd = req.fence_fd;
    }
+
+   msm_dump_rd(pipe, &req);
 
    if (!bos_on_stack)
       free(submit_bos);

@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -88,7 +70,7 @@ static void
 emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
                    struct pipe_surface *psurf)
 {
-   struct fd_ringbuffer *ring = batch->tile_fini;
+   struct fd_ringbuffer *ring = batch->tile_store;
    struct fd_resource *rsc = fd_resource(psurf->texture);
    uint32_t offset =
       fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
@@ -141,9 +123,9 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
    struct fd_ringbuffer *ring;
 
-   batch->tile_fini =
+   batch->tile_store =
       fd_submit_new_ringbuffer(batch->submit, 0x1000, FD_RINGBUFFER_STREAMING);
-   ring = batch->tile_fini;
+   ring = batch->tile_store;
 
    fd2_emit_vertex_bufs(ring, 0x9c,
                         (struct fd2_vertex_buf[]){
@@ -223,7 +205,7 @@ prepare_tile_fini_ib(struct fd_batch *batch) assert_dt
 static void
 fd2_emit_tile_gmem2mem(struct fd_batch *batch, const struct fd_tile *tile)
 {
-   fd2_emit_ib(batch->gmem, batch->tile_fini);
+   fd2_emit_ib(batch->gmem, batch->tile_store);
 }
 
 /* transfer from system memory to gmem */

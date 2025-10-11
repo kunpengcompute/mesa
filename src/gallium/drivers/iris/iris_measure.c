@@ -25,12 +25,25 @@
  */
 
 #include <stdio.h>
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/list.h"
 #include "util/crc32.h"
 #include "iris_context.h"
 #include "iris_defines.h"
 #include "compiler/shader_info.h"
+
+/**
+ * This callback is registered with intel_measure.  It will be called when
+ * snapshot data has been fully collected, so iris can release the associated
+ * resources.
+ */
+static void
+measure_batch_free(struct intel_measure_batch *base)
+{
+   struct iris_measure_batch *batch =
+      container_of(base, struct iris_measure_batch, base);
+   iris_destroy_batch_measure(batch);
+}
 
 void
 iris_init_screen_measure(struct iris_screen *screen)
@@ -38,7 +51,9 @@ iris_init_screen_measure(struct iris_screen *screen)
    struct intel_measure_device *measure_device = &screen->measure;
 
    memset(measure_device, 0, sizeof(*measure_device));
+   measure_device->type = INTEL_MEASURE_DEVICE_OGL;
    intel_measure_init(measure_device);
+   measure_device->release_batch = &measure_batch_free;
    struct intel_measure_config *config = measure_device->config;
    if (config == NULL)
       return;
@@ -104,10 +119,10 @@ iris_init_batch_measure(struct iris_context *ice, struct iris_batch *batch)
    struct iris_measure_batch *measure = batch->measure;
 
    measure->bo = iris_bo_alloc(bufmgr, "measure",
-                               config->batch_size * sizeof(uint64_t), 1,
+                               config->batch_size * sizeof(uint64_t), 8,
                                IRIS_MEMZONE_OTHER, BO_ALLOC_ZEROED);
    measure->base.timestamps = iris_bo_map(NULL, measure->bo, MAP_READ);
-   measure->base.framebuffer =
+   measure->base.renderpass =
       (uintptr_t)util_hash_crc32(&ice->state.framebuffer,
                                  sizeof(ice->state.framebuffer));
 }
@@ -121,6 +136,12 @@ iris_destroy_batch_measure(struct iris_measure_batch *batch)
    iris_bo_unreference(batch->bo);
    batch->bo = NULL;
    free(batch);
+}
+
+static uint32_t
+fetch_hash(const struct iris_uncompiled_shader *uncompiled)
+{
+   return (uncompiled) ? uncompiled->source_hash : 0;
 }
 
 static void
@@ -141,7 +162,7 @@ measure_start_snapshot(struct iris_context *ice,
    if (measure_batch->frame == 0)
       measure_batch->frame = screen_frame;
 
-   uintptr_t framebuffer = measure_batch->framebuffer;
+   uintptr_t renderpass = measure_batch->renderpass;
 
    if (measure_batch->index == config->batch_size) {
       /* Snapshot buffer is full.  The batch must be flushed before additional
@@ -161,12 +182,24 @@ measure_start_snapshot(struct iris_context *ice,
 
    unsigned index = measure_batch->index++;
    assert(index < config->batch_size);
+   if (event_name == NULL)
+      event_name = intel_measure_snapshot_string(type);
+
+   if(config->cpu_measure) {
+      intel_measure_print_cpu_result(measure_batch->frame,
+                                     measure_batch->batch_count,
+                                     measure_batch->batch_size,
+                                     index/2,
+                                     measure_batch->event_count,
+                                     count,
+                                     event_name);
+      return;
+   }
+
    iris_emit_pipe_control_write(batch, "measurement snapshot",
                                 PIPE_CONTROL_WRITE_TIMESTAMP |
                                 PIPE_CONTROL_CS_STALL,
                                 batch->measure->bo, index * sizeof(uint64_t), 0ull);
-   if (event_name == NULL)
-      event_name = intel_measure_snapshot_string(type);
 
    struct intel_measure_snapshot *snapshot = &(measure_batch->snapshots[index]);
    memset(snapshot, 0, sizeof(*snapshot));
@@ -174,16 +207,16 @@ measure_start_snapshot(struct iris_context *ice,
    snapshot->count = (unsigned) count;
    snapshot->event_count = measure_batch->event_count;
    snapshot->event_name = event_name;
-   snapshot->framebuffer = framebuffer;
+   snapshot->renderpass = renderpass;
 
    if (type == INTEL_SNAPSHOT_COMPUTE) {
-      snapshot->cs = (uintptr_t) ice->shaders.prog[MESA_SHADER_COMPUTE];
-   } else {
-      snapshot->vs  = (uintptr_t) ice->shaders.prog[MESA_SHADER_VERTEX];
-      snapshot->tcs = (uintptr_t) ice->shaders.prog[MESA_SHADER_TESS_CTRL];
-      snapshot->tes = (uintptr_t) ice->shaders.prog[MESA_SHADER_TESS_EVAL];
-      snapshot->gs  = (uintptr_t) ice->shaders.prog[MESA_SHADER_GEOMETRY];
-      snapshot->fs  = (uintptr_t) ice->shaders.prog[MESA_SHADER_FRAGMENT];
+      snapshot->cs  = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_COMPUTE]);
+   } else if (type == INTEL_SNAPSHOT_DRAW) {
+      snapshot->vs  = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_VERTEX]);
+      snapshot->tcs = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_TESS_CTRL]);
+      snapshot->tes = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_TESS_EVAL]);
+      snapshot->gs  = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_GEOMETRY]);
+      snapshot->fs  = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_FRAGMENT]);
    }
 }
 
@@ -192,9 +225,12 @@ measure_end_snapshot(struct iris_batch *batch,
                      uint32_t event_count)
 {
    struct intel_measure_batch *measure_batch = &batch->measure->base;
+   const struct intel_measure_config *config = config_from_context(batch->ice);
 
    unsigned index = measure_batch->index++;
    assert(index % 2 == 1);
+   if(config->cpu_measure)
+      return;
 
    iris_emit_pipe_control_write(batch, "measurement snapshot",
                                 PIPE_CONTROL_WRITE_TIMESTAMP |
@@ -216,18 +252,18 @@ state_changed(const struct iris_context *ice,
    uintptr_t vs=0, tcs=0, tes=0, gs=0, fs=0, cs=0;
 
    if (type == INTEL_SNAPSHOT_COMPUTE) {
-      cs = (uintptr_t) ice->shaders.prog[MESA_SHADER_COMPUTE];
+      cs = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_COMPUTE]);
    } else if (type == INTEL_SNAPSHOT_DRAW) {
-      vs  = (uintptr_t) ice->shaders.prog[MESA_SHADER_VERTEX];
-      tcs = (uintptr_t) ice->shaders.prog[MESA_SHADER_TESS_CTRL];
-      tes = (uintptr_t) ice->shaders.prog[MESA_SHADER_TESS_EVAL];
-      gs  = (uintptr_t) ice->shaders.prog[MESA_SHADER_GEOMETRY];
-      fs  = (uintptr_t) ice->shaders.prog[MESA_SHADER_FRAGMENT];
+      vs  = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_VERTEX]);
+      tcs = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_TESS_CTRL]);
+      tes = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_TESS_EVAL]);
+      gs  = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_GEOMETRY]);
+      fs  = fetch_hash(ice->shaders.uncompiled[MESA_SHADER_FRAGMENT]);
    }
    /* else blorp, all programs NULL */
 
    return intel_measure_state_changed(&batch->measure->base,
-                                      vs, tcs, tes, gs, fs, cs);
+                                      vs, tcs, tes, gs, fs, cs, 0, 0);
 }
 
 static void
@@ -241,7 +277,7 @@ iris_measure_renderpass(struct iris_context *ice)
       return;
    uint32_t framebuffer_crc = util_hash_crc32(&ice->state.framebuffer,
                                               sizeof(ice->state.framebuffer));
-   if (framebuffer_crc == batch->framebuffer)
+   if (framebuffer_crc == batch->renderpass)
       return;
    bool filtering = config->flags & INTEL_MEASURE_RENDERPASS;
    if (filtering && batch->index % 2 == 1) {
@@ -251,7 +287,7 @@ iris_measure_renderpass(struct iris_context *ice)
       batch->event_count = 0;
    }
 
-   batch->framebuffer = framebuffer_crc;
+   batch->renderpass = framebuffer_crc;
 }
 
 void
@@ -274,6 +310,10 @@ _iris_measure_snapshot(struct iris_context *ice,
 
    assert(type != INTEL_SNAPSHOT_END);
    iris_measure_renderpass(ice);
+
+   static unsigned batch_count = 0;
+   if (measure_batch->event_count == 0)
+      measure_batch->batch_count = p_atomic_inc_return(&batch_count);
 
    if (!state_changed(ice, batch, type)) {
       /* filter out this event */
@@ -326,7 +366,7 @@ iris_destroy_ctx_measure(struct iris_context *ice)
     * destroyed.
     */
    struct iris_screen *screen = (struct iris_screen *) ice->ctx.screen;
-   intel_measure_gather(&screen->measure, &screen->devinfo);
+   intel_measure_gather(&screen->measure, screen->devinfo);
 }
 
 void
@@ -346,9 +386,6 @@ iris_measure_batch_end(struct iris_context *ice, struct iris_batch *batch)
    assert(measure_batch);
    assert(measure_device);
 
-   static unsigned batch_count = 0;
-   measure_batch->batch_count = p_atomic_inc_return(&batch_count);
-
    if (measure_batch->index % 2) {
       /* We hit the end of the batch, but never terminated our section of
        * drawing with the same render target or shaders.  End it now.
@@ -358,6 +395,15 @@ iris_measure_batch_end(struct iris_context *ice, struct iris_batch *batch)
 
    if (measure_batch->index == 0)
       return;
+
+   /* At this point, total_chained_batch_size is not yet updated because the
+    * batch_end measurement is within the batch and the batch is not quite
+    * ended yet (it'll be just after this function call). So combined the
+    * already summed total_chained_batch_size with whatever was written in the
+    * current batch BO.
+    */
+   measure_batch->batch_size = batch->total_chained_batch_size +
+                               iris_batch_bytes_used(batch);
 
    /* enqueue snapshot for gathering */
    pthread_mutex_lock(&measure_device->mutex);
@@ -369,7 +415,7 @@ iris_measure_batch_end(struct iris_context *ice, struct iris_batch *batch)
 
    static int interval = 0;
    if (++interval > 10) {
-      intel_measure_gather(measure_device, &screen->devinfo);
+      intel_measure_gather(measure_device, screen->devinfo);
       interval = 0;
    }
 }
@@ -387,5 +433,5 @@ iris_measure_frame_end(struct iris_context *ice)
    /* increment frame counter */
    intel_measure_frame_transition(p_atomic_inc_return(&measure_device->frame));
 
-   intel_measure_gather(measure_device, &screen->devinfo);
+   intel_measure_gather(measure_device, screen->devinfo);
 }

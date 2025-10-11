@@ -269,7 +269,7 @@ static void noop_texture_subdata(struct pipe_context *pipe,
                                  const struct pipe_box *box,
                                  const void *data,
                                  unsigned stride,
-                                 unsigned layer_stride)
+                                 uintptr_t layer_stride)
 {
 }
 
@@ -477,7 +477,7 @@ static void noop_flush_frontbuffer(struct pipe_screen *_screen,
                                    struct pipe_context *ctx,
                                    struct pipe_resource *resource,
                                    unsigned level, unsigned layer,
-                                   void *context_private, struct pipe_box *box)
+                                   void *context_private, unsigned nboxes, struct pipe_box *box)
 {
 }
 
@@ -616,6 +616,17 @@ static bool noop_check_resource_capability(struct pipe_screen *screen,
    return true;
 }
 
+static void noop_create_fence_win32(struct pipe_screen *screen,
+                                    struct pipe_fence_handle **fence,
+                                    void *handle,
+                                    const void *name,
+                                    enum pipe_fd_type type)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen *)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+   oscreen->create_fence_win32(oscreen, fence, handle, name, type);
+}
+
 static void noop_set_max_shader_compiler_threads(struct pipe_screen *screen,
                                                  unsigned max_threads)
 {
@@ -623,7 +634,7 @@ static void noop_set_max_shader_compiler_threads(struct pipe_screen *screen,
 
 static bool noop_is_parallel_shader_compilation_finished(struct pipe_screen *screen,
                                                          void *shader,
-                                                         unsigned shader_type)
+                                                         enum pipe_shader_type shader_type)
 {
    return true;
 }
@@ -648,6 +659,30 @@ static unsigned int noop_get_dmabuf_modifier_planes(struct pipe_screen *screen,
    return oscreen->get_dmabuf_modifier_planes(oscreen, modifier, format);
 }
 
+static void noop_query_compression_rates(struct pipe_screen *screen,
+                                         enum pipe_format format, int max,
+                                         uint32_t *rates, int *count)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+
+   *count = 0;
+   if (oscreen->query_compression_rates)
+      oscreen->query_compression_rates(oscreen, format, max, rates, count);
+}
+
+static void noop_query_compression_modifiers(struct pipe_screen *screen,
+                                             enum pipe_format fmt, uint32_t rate,
+                                             int max, uint64_t *mods, int *count)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+
+   *count = 0;
+   if (oscreen->query_compression_modifiers)
+      oscreen->query_compression_modifiers(oscreen, fmt, rate, max, mods, count);
+}
+
 static void noop_get_driver_uuid(struct pipe_screen *screen, char *uuid)
 {
    struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
@@ -662,6 +697,22 @@ static void noop_get_device_uuid(struct pipe_screen *screen, char *uuid)
    struct pipe_screen *oscreen = noop_screen->oscreen;
 
    oscreen->get_device_uuid(oscreen, uuid);
+}
+
+static void noop_get_device_luid(struct pipe_screen *screen, char *luid)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+
+   oscreen->get_device_luid(oscreen, luid);
+}
+
+static uint32_t noop_get_device_node_mask(struct pipe_screen *screen)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen*)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+
+   return oscreen->get_device_node_mask(oscreen);
 }
 
 static int noop_get_sparse_texture_virtual_page_size(struct pipe_screen *screen,
@@ -716,6 +767,24 @@ static void noop_vertex_state_destroy(struct pipe_screen *screen,
    FREE(state);
 }
 
+static void noop_set_fence_timeline_value(struct pipe_screen *screen,
+                                          struct pipe_fence_handle *fence,
+                                          uint64_t value)
+{
+   struct noop_pipe_screen *noop_screen = (struct noop_pipe_screen *)screen;
+   struct pipe_screen *oscreen = noop_screen->oscreen;
+   oscreen->set_fence_timeline_value(oscreen, fence, value);
+}
+
+static struct pipe_screen * noop_get_driver_pipe_screen(struct pipe_screen *_screen)
+{
+   struct pipe_screen * screen = ((struct noop_pipe_screen*)_screen)->oscreen;
+
+   if (screen->get_driver_pipe_screen)
+      return screen->get_driver_pipe_screen(screen);
+   return screen;
+}
+
 struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
 {
    struct noop_pipe_screen *noop_screen;
@@ -756,6 +825,8 @@ struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
    screen->get_disk_shader_cache = noop_get_disk_shader_cache;
    screen->get_compiler_options = noop_get_compiler_options;
    screen->finalize_nir = noop_finalize_nir;
+   if (screen->create_fence_win32)
+      screen->create_fence_win32 = noop_create_fence_win32;
    screen->check_resource_capability = noop_check_resource_capability;
    screen->set_max_shader_compiler_threads = noop_set_max_shader_compiler_threads;
    screen->is_parallel_shader_compilation_finished = noop_is_parallel_shader_compilation_finished;
@@ -763,12 +834,19 @@ struct pipe_screen *noop_screen_create(struct pipe_screen *oscreen)
    screen->get_dmabuf_modifier_planes = noop_get_dmabuf_modifier_planes;
    screen->get_driver_uuid = noop_get_driver_uuid;
    screen->get_device_uuid = noop_get_device_uuid;
+   screen->get_device_luid = noop_get_device_luid;
+   screen->get_device_node_mask = noop_get_device_node_mask;
    screen->query_dmabuf_modifiers = noop_query_dmabuf_modifiers;
    screen->resource_create_with_modifiers = noop_resource_create_with_modifiers;
    screen->create_vertex_state = noop_create_vertex_state;
    screen->vertex_state_destroy = noop_vertex_state_destroy;
    if (oscreen->get_sparse_texture_virtual_page_size)
       screen->get_sparse_texture_virtual_page_size = noop_get_sparse_texture_virtual_page_size;
+   if (oscreen->set_fence_timeline_value)
+      screen->set_fence_timeline_value = noop_set_fence_timeline_value;
+   screen->query_compression_rates = noop_query_compression_rates;
+   screen->query_compression_modifiers = noop_query_compression_modifiers;
+   screen->get_driver_pipe_screen = noop_get_driver_pipe_screen;
 
    slab_create_parent(&noop_screen->pool_transfers,
                       sizeof(struct pipe_transfer), 64);

@@ -1,24 +1,6 @@
 /*
  * Copyright 2012 Advanced Micro Devices, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "r600_cs.h"
@@ -48,7 +30,7 @@
 #define R_0282D0_PA_SC_VPORT_ZMIN_0                                     0x0282D0
 #define R_0282D4_PA_SC_VPORT_ZMAX_0                                     0x0282D4
 
-#define GET_MAX_SCISSOR(rctx) (rctx->chip_class >= EVERGREEN ? 16384 : 8192)
+#define GET_MAX_SCISSOR(rctx) (rctx->gfx_level >= EVERGREEN ? 16384 : 8192)
 
 static void r600_set_scissor_states(struct pipe_context *ctx,
 				    unsigned start_slot,
@@ -141,13 +123,13 @@ static void r600_scissor_make_union(struct r600_signed_scissor *out,
 void evergreen_apply_scissor_bug_workaround(struct r600_common_context *rctx,
 					    struct pipe_scissor_state *scissor)
 {
-	if (rctx->chip_class == EVERGREEN || rctx->chip_class == CAYMAN) {
+	if (rctx->gfx_level == EVERGREEN || rctx->gfx_level == CAYMAN) {
 		if (scissor->maxx == 0)
 			scissor->minx = 1;
 		if (scissor->maxy == 0)
 			scissor->miny = 1;
 
-		if (rctx->chip_class == CAYMAN &&
+		if (rctx->gfx_level == CAYMAN &&
 		    scissor->maxx == 1 && scissor->maxy == 1)
 			scissor->maxx = 2;
 	}
@@ -180,7 +162,7 @@ static void r600_emit_one_scissor(struct r600_common_context *rctx,
 }
 
 /* the range is [-MAX, MAX] */
-#define GET_MAX_VIEWPORT_RANGE(rctx) (rctx->chip_class >= EVERGREEN ? 32768 : 16384)
+#define GET_MAX_VIEWPORT_RANGE(rctx) (rctx->gfx_level >= EVERGREEN ? 32768 : 16384)
 
 static void r600_emit_guardband(struct r600_common_context *rctx,
 				struct r600_signed_scissor *vp_as_scissor)
@@ -222,7 +204,7 @@ static void r600_emit_guardband(struct r600_common_context *rctx,
 	guardband_y = MIN2(-top, bottom);
 
 	/* If any of the GB registers is updated, all of them must be updated. */
-	if (rctx->chip_class >= CAYMAN)
+	if (rctx->gfx_level >= CAYMAN)
 		radeon_set_context_reg_seq(cs, CM_R_028BE8_PA_CL_GB_VERT_CLIP_ADJ, 4);
 	else
 		radeon_set_context_reg_seq(cs, R600_R_028C0C_PA_CL_GB_VERT_CLIP_ADJ, 4);

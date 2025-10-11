@@ -1,29 +1,11 @@
 /*
  * Copyright 2010 Jerome Glisse <glisse@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
  * Authors:
  *      Jerome Glisse
  *      Corbin Simpson
+ * SPDX-License-Identifier: MIT
  */
+
 #include "r600_pipe_common.h"
 #include "r600_cs.h"
 #include "r600_query.h"
@@ -175,7 +157,7 @@ static unsigned r600_texture_get_offset(struct r600_common_screen *rscreen,
 					struct r600_texture *rtex, unsigned level,
 					const struct pipe_box *box,
 					unsigned *stride,
-					unsigned *layer_stride)
+					uintptr_t *layer_stride)
 {
 	*stride = rtex->surface.u.legacy.level[level].nblk_x *
 		rtex->surface.bpe;
@@ -209,11 +191,18 @@ static int r600_init_surface(struct r600_common_screen *rscreen,
 	bool is_depth, is_stencil;
 	int r;
 	unsigned i, bpe, flags = 0;
+	struct pipe_resource ptmp;
 
 	is_depth = util_format_has_depth(desc);
 	is_stencil = util_format_has_stencil(desc);
 
-	if (rscreen->chip_class >= EVERGREEN && !is_flushed_depth &&
+	if (unlikely(rscreen->gfx_level >= EVERGREEN && ptex->format == PIPE_FORMAT_S8_UINT_Z24_UNORM && (ptex->width0 & 31))) {
+		memcpy(&ptmp, ptex, sizeof(ptmp));
+		ptmp.width0 = (ptex->width0 + 31) & ~31;
+		ptex = &ptmp;
+	}
+
+	if (rscreen->gfx_level >= EVERGREEN && !is_flushed_depth &&
 	    ptex->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) {
 		bpe = 4; /* stencil is allocated separately on evergreen */
 	} else {
@@ -244,7 +233,7 @@ static int r600_init_surface(struct r600_common_screen *rscreen,
 	if (is_imported)
 		flags |= RADEON_SURF_IMPORTED | RADEON_SURF_SHAREABLE;
 
-	r = rscreen->ws->surface_init(rscreen->ws, ptex,
+	r = rscreen->ws->surface_init(rscreen->ws, &rscreen->info, ptex,
 				      flags, bpe, array_mode, surface);
 	if (r) {
 		return r;
@@ -365,7 +354,7 @@ static void r600_reallocate_texture_inplace(struct r600_common_context *rctx,
 	templ.bind |= new_bind_flag;
 
 	/* r600g doesn't react to dirty_tex_descriptor_counter */
-	if (rctx->chip_class < GFX6)
+	if (rctx->gfx_level < GFX6)
 		return;
 
 	if (rtex->resource.b.is_shared)
@@ -405,7 +394,7 @@ static void r600_reallocate_texture_inplace(struct r600_common_context *rctx,
 
 	/* Replace the structure fields of rtex. */
 	rtex->resource.b.b.bind = templ.bind;
-	pb_reference(&rtex->resource.buf, new_tex->resource.buf);
+	radeon_bo_reference(rctx->ws, &rtex->resource.buf, new_tex->resource.buf);
 	rtex->resource.gpu_address = new_tex->resource.gpu_address;
 	rtex->resource.vram_usage = new_tex->resource.vram_usage;
 	rtex->resource.gart_usage = new_tex->resource.gart_usage;
@@ -576,6 +565,7 @@ static bool r600_texture_get_handle(struct pipe_screen* screen,
 
 void r600_texture_destroy(struct pipe_screen *screen, struct pipe_resource *ptex)
 {
+	struct r600_common_screen *rscreen = (struct r600_common_screen*)screen;
 	struct r600_texture *rtex = (struct r600_texture*)ptex;
 	struct r600_resource *resource = &rtex->resource;
 
@@ -585,7 +575,7 @@ void r600_texture_destroy(struct pipe_screen *screen, struct pipe_resource *ptex
 	if (rtex->cmask_buffer != &rtex->resource) {
 	    r600_resource_reference(&rtex->cmask_buffer, NULL);
 	}
-	pb_reference(&resource->buf, NULL);
+	radeon_bo_reference(rscreen->ws, &resource->buf, NULL);
 	FREE(rtex);
 }
 
@@ -630,11 +620,11 @@ void r600_texture_get_fmask_info(struct r600_common_screen *rscreen,
 	/* Overallocate FMASK on R600-R700 to fix colorbuffer corruption.
 	 * This can be fixed by writing a separate FMASK allocator specifically
 	 * for R600-R700 asics. */
-	if (rscreen->chip_class <= R700) {
+	if (rscreen->gfx_level <= R700) {
 		bpe *= 2;
 	}
 
-	if (rscreen->ws->surface_init(rscreen->ws, &templ,
+	if (rscreen->ws->surface_init(rscreen->ws, &rscreen->info, &templ,
 				      flags, bpe, RADEON_SURF_MODE_2D, &fmask)) {
 		R600_ERR("Got error in surface_init while allocating FMASK.\n");
 		return;
@@ -756,12 +746,8 @@ static void r600_texture_get_htile_size(struct r600_common_screen *rscreen,
 
 	rtex->surface.meta_size = 0;
 
-	if (rscreen->chip_class <= EVERGREEN &&
-	    rscreen->info.drm_minor < 26)
-		return;
-
 	/* HW bug on R6xx. */
-	if (rscreen->chip_class == R600 &&
+	if (rscreen->gfx_level == R600 &&
 	    (rtex->resource.b.b.width0 > 7680 ||
 	     rtex->resource.b.b.height0 > 7680))
 		return;
@@ -900,7 +886,7 @@ void r600_print_texture_info(struct r600_common_screen *rscreen,
 static struct r600_texture *
 r600_texture_create_object(struct pipe_screen *screen,
 			   const struct pipe_resource *base,
-			   struct pb_buffer *buf,
+			   struct pb_buffer_lean *buf,
 			   struct radeon_surf *surface)
 {
 	struct r600_texture *rtex;
@@ -933,7 +919,7 @@ r600_texture_create_object(struct pipe_screen *screen,
 	if (rtex->is_depth) {
 		if (base->flags & (R600_RESOURCE_FLAG_TRANSFER |
 				   R600_RESOURCE_FLAG_FLUSHED_DEPTH) ||
-		    rscreen->chip_class >= EVERGREEN) {
+		    rscreen->gfx_level >= EVERGREEN) {
 			rtex->can_sample_z = !rtex->surface.u.legacy.depth_adjusted;
 			rtex->can_sample_s = !rtex->surface.u.legacy.stencil_adjusted;
 		} else {
@@ -1043,7 +1029,7 @@ r600_choose_tiling(struct r600_common_screen *rscreen,
 		return RADEON_SURF_MODE_LINEAR_ALIGNED;
 
 	/* r600g: force tiling on TEXTURE_2D and TEXTURE_3D compute resources. */
-	if (rscreen->chip_class >= R600 && rscreen->chip_class <= CAYMAN &&
+	if (rscreen->gfx_level >= R600 && rscreen->gfx_level <= CAYMAN &&
 	    (templ->bind & PIPE_BIND_COMPUTE_RESOURCE) &&
 	    (templ->target == PIPE_TEXTURE_2D ||
 	     templ->target == PIPE_TEXTURE_3D))
@@ -1110,7 +1096,7 @@ static struct pipe_resource *r600_texture_from_handle(struct pipe_screen *screen
                                                       unsigned usage)
 {
 	struct r600_common_screen *rscreen = (struct r600_common_screen*)screen;
-	struct pb_buffer *buf = NULL;
+	struct pb_buffer_lean *buf = NULL;
 	enum radeon_surf_mode array_mode;
 	struct radeon_surf surface = {};
 	int r;
@@ -1253,7 +1239,7 @@ static bool r600_can_invalidate_texture(struct r600_common_screen *rscreen,
 					const struct pipe_box *box)
 {
 	/* r600g doesn't react to dirty_tex_descriptor_counter */
-	return rscreen->chip_class >= GFX6 &&
+	return rscreen->gfx_level >= GFX6 &&
 		!rtex->resource.b.is_shared &&
 		!(transfer_usage & PIPE_MAP_READ) &&
 		rtex->resource.b.b.last_level == 0 &&
@@ -1370,7 +1356,7 @@ void *r600_texture_transfer_map(struct pipe_context *ctx,
 			 * First downsample the depth buffer to a temporary texture,
 			 * then decompress the temporary one to staging.
 			 *
-			 * Only the region being mapped is transfered.
+			 * Only the region being mapped is transferred.
 			 */
 			struct pipe_resource resource;
 
@@ -1506,7 +1492,7 @@ void r600_texture_transfer_unmap(struct pipe_context *ctx,
 	 *
 	 * The result is that the kernel memory manager is never a bottleneck.
 	 */
-	if (rctx->num_alloc_tex_transfer_bytes > rctx->screen->info.gart_size / 4) {
+	if (rctx->num_alloc_tex_transfer_bytes > (uint64_t)rctx->screen->info.gart_size_kb * 1024 / 4) {
 		rctx->gfx.flush(rctx, PIPE_FLUSH_ASYNC, NULL);
 		rctx->num_alloc_tex_transfer_bytes = 0;
 	}
@@ -1589,63 +1575,6 @@ static void r600_surface_destroy(struct pipe_context *pipe,
 	r600_resource_reference(&surf->cb_buffer_cmask, NULL);
 	pipe_resource_reference(&surface->texture, NULL);
 	FREE(surface);
-}
-
-static void r600_clear_texture(struct pipe_context *pipe,
-			       struct pipe_resource *tex,
-			       unsigned level,
-			       const struct pipe_box *box,
-			       const void *data)
-{
-	struct pipe_screen *screen = pipe->screen;
-	struct r600_texture *rtex = (struct r600_texture*)tex;
-	struct pipe_surface tmpl = {{0}};
-	struct pipe_surface *sf;
-
-	tmpl.format = tex->format;
-	tmpl.u.tex.first_layer = box->z;
-	tmpl.u.tex.last_layer = box->z + box->depth - 1;
-	tmpl.u.tex.level = level;
-	sf = pipe->create_surface(pipe, tex, &tmpl);
-	if (!sf)
-		return;
-
-	if (rtex->is_depth) {
-		unsigned clear;
-		float depth;
-		uint8_t stencil = 0;
-
-		/* Depth is always present. */
-		clear = PIPE_CLEAR_DEPTH;
-		util_format_unpack_z_float(tex->format, &depth, data, 1);
-
-		if (rtex->surface.has_stencil) {
-			clear |= PIPE_CLEAR_STENCIL;
-			util_format_unpack_s_8uint(tex->format, &stencil, data, 1);
-		}
-
-		pipe->clear_depth_stencil(pipe, sf, clear, depth, stencil,
-					  box->x, box->y,
-					  box->width, box->height, false);
-	} else {
-		union pipe_color_union color;
-
-		util_format_unpack_rgba(tex->format, color.ui, data, 1);
-
-		if (screen->is_format_supported(screen, tex->format,
-						tex->target, 0, 0,
-						PIPE_BIND_RENDER_TARGET)) {
-			pipe->clear_render_target(pipe, sf, &color,
-						  box->x, box->y,
-						  box->width, box->height, false);
-		} else {
-			/* Software fallback - just for R9G9B9E5_FLOAT */
-			util_clear_render_target(pipe, sf, &color,
-						 box->x, box->y,
-						 box->width, box->height);
-		}
-	}
-	pipe_surface_reference(&sf, NULL);
 }
 
 unsigned r600_translate_colorswap(enum pipe_format format, bool do_endian_swap)
@@ -1737,7 +1666,7 @@ static void evergreen_set_clear_color(struct r600_texture *rtex,
 void evergreen_do_fast_color_clear(struct r600_common_context *rctx,
 				   struct pipe_framebuffer_state *fb,
 				   struct r600_atom *fb_state,
-				   unsigned *buffers, ubyte *dirty_cbufs,
+				   unsigned *buffers, uint8_t *dirty_cbufs,
 				   const union pipe_color_union *color)
 {
 	int i;
@@ -1838,7 +1767,7 @@ r600_memobj_from_handle(struct pipe_screen *screen,
 {
 	struct r600_common_screen *rscreen = (struct r600_common_screen*)screen;
 	struct r600_memory_object *memobj = CALLOC_STRUCT(r600_memory_object);
-	struct pb_buffer *buf = NULL;
+	struct pb_buffer_lean *buf = NULL;
 
 	if (!memobj)
 		return NULL;
@@ -1863,9 +1792,10 @@ static void
 r600_memobj_destroy(struct pipe_screen *screen,
 		    struct pipe_memory_object *_memobj)
 {
+	struct r600_common_screen *rscreen = (struct r600_common_screen*)screen;
 	struct r600_memory_object *memobj = (struct r600_memory_object *)_memobj;
 
-	pb_reference(&memobj->buf, NULL);
+	radeon_bo_reference(rscreen->ws, &memobj->buf, NULL);
 	free(memobj);
 }
 
@@ -1883,7 +1813,7 @@ r600_texture_from_memobj(struct pipe_screen *screen,
 	struct radeon_bo_metadata metadata = {};
 	enum radeon_surf_mode array_mode;
 	bool is_scanout;
-	struct pb_buffer *buf = NULL;
+	struct pb_buffer_lean *buf = NULL;
 
 	if (memobj->b.dedicated) {
 		rscreen->ws->buffer_get_metadata(rscreen->ws, memobj->buf, &metadata, NULL);
@@ -1899,7 +1829,7 @@ r600_texture_from_memobj(struct pipe_screen *screen,
 		 * surface pitch isn't correctly aligned by default.
 		 *
 		 * In order to support it correctly we require multi-image
-		 * metadata to be syncrhonized between radv and radeonsi. The
+		 * metadata to be synchronized between radv and radeonsi. The
 		 * semantics of associating multiple image metadata to a memory
 		 * object on the vulkan export side are not concretely defined
 		 * either.
@@ -1931,7 +1861,7 @@ r600_texture_from_memobj(struct pipe_screen *screen,
 	/* r600_texture_create_object doesn't increment refcount of
 	 * memobj->buf, so increment it here.
 	 */
-	pb_reference(&buf, memobj->buf);
+	radeon_bo_reference(rscreen->ws, &buf, memobj->buf);
 
 	rtex->resource.b.is_shared = true;
 	rtex->resource.external_usage = PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE;
@@ -1953,5 +1883,5 @@ void r600_init_context_texture_functions(struct r600_common_context *rctx)
 {
 	rctx->b.create_surface = r600_create_surface;
 	rctx->b.surface_destroy = r600_surface_destroy;
-	rctx->b.clear_texture = r600_clear_texture;
+	rctx->b.clear_texture = u_default_clear_texture;
 }

@@ -33,7 +33,7 @@
 #ifndef LP_PERF_H
 #define LP_PERF_H
 
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 
 /**
  * Various counters
@@ -75,7 +75,7 @@ extern struct lp_counters lp_count;
 
 
 /** Increment the named counter (only for debug builds) */
-#ifdef DEBUG
+#if MESA_DEBUG && !THREAD_SANITIZER
 #define LP_COUNT(counter) lp_count.counter++
 #define LP_COUNT_ADD(counter, incr)  lp_count.counter += (incr)
 #define LP_COUNT_GET(counter) (lp_count.counter)

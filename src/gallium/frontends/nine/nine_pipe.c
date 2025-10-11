@@ -1,25 +1,8 @@
 /*
  * Copyright 2011 Joakim Sindholt <opensource@zhasha.com>
  * Copyright 2013 Christoph Bumiller
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "device9.h"
 #include "nine_pipe.h"
@@ -63,7 +46,7 @@ nine_convert_dsa_state(struct pipe_depth_stencil_alpha_state *dsa_state,
         }
     }
 
-    if (rs[D3DRS_ALPHATESTENABLE]) {
+    if (rs[D3DRS_ALPHATESTENABLE] && rs[NINED3DRS_EMULATED_ALPHATEST] == 7 && rs[D3DRS_ALPHAFUNC] != D3DCMP_ALWAYS) {
         dsa.alpha_enabled = 1;
         dsa.alpha_func = d3dcmpfunc_to_pipe_func(rs[D3DRS_ALPHAFUNC]);
         dsa.alpha_ref_value = (float)rs[D3DRS_ALPHAREF] / 255.0f;
@@ -108,8 +91,17 @@ nine_convert_rasterizer_state(struct NineDevice9 *device,
  /* rast.lower_left_origin = 0; */
  /* rast.bottom_edge_rule = 0; */
  /* rast.rasterizer_discard = 0; */
-    rast.depth_clip_near = 1;
-    rast.depth_clip_far = 1;
+    if (rs[NINED3DRS_POSITIONT] &&
+        !device->driver_caps.window_space_position_support &&
+        device->driver_caps.disabling_depth_clipping_support) {
+        /* rast.depth_clip_near = 0; */
+        /* rast.depth_clip_far = 0; */
+        rast.depth_clamp = 1;
+    } else {
+        rast.depth_clip_near = 1;
+        rast.depth_clip_far = 1;
+        /* rast.depth_clamp = 0; */
+    }
     rast.clip_halfz = 1;
     rast.clip_plane_enable = rs[D3DRS_CLIPPLANEENABLE];
  /* rast.line_stipple_factor = 0; */
@@ -194,7 +186,7 @@ nine_convert_blend_state(struct pipe_blend_state *blend_state, const DWORD *rs)
         rs[D3DRS_COLORWRITEENABLE2] != rs[D3DRS_COLORWRITEENABLE] ||
         rs[D3DRS_COLORWRITEENABLE3] != rs[D3DRS_COLORWRITEENABLE]) {
         unsigned i;
-        blend.independent_blend_enable = TRUE;
+        blend.independent_blend_enable = true;
         for (i = 1; i < 4; ++i)
             blend.rt[i] = blend.rt[0];
         blend.rt[1].colormask = rs[D3DRS_COLORWRITEENABLE1];
@@ -246,11 +238,12 @@ nine_convert_sampler_state(struct cso_context *ctx, int idx, const DWORD *ss)
         samp.max_anisotropy = 0;
     samp.compare_mode = ss[NINED3DSAMP_SHADOW] ? PIPE_TEX_COMPARE_R_TO_TEXTURE : PIPE_TEX_COMPARE_NONE;
     samp.compare_func = PIPE_FUNC_LEQUAL;
-    samp.normalized_coords = 1;
+    samp.unnormalized_coords = 0;
     samp.seamless_cube_map = 0;
     samp.border_color_is_integer = 0;
     samp.reduction_mode = 0;
     samp.pad = 0;
+    samp.border_color_format = PIPE_FORMAT_NONE;
     d3dcolor_to_pipe_color_union(&samp.border_color, ss[D3DSAMP_BORDERCOLOR]);
 
     /* see nine_state.h */

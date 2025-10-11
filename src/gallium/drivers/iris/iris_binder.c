@@ -69,8 +69,8 @@ binder_realloc(struct iris_context *ice)
    if (binder->bo)
       iris_bo_unreference(binder->bo);
 
-   binder->bo = iris_bo_alloc(bufmgr, "binder", binder->size, 1,
-                              IRIS_MEMZONE_BINDER, 4096);
+   binder->bo = iris_bo_alloc(bufmgr, "binder", binder->size, binder->alignment,
+                              IRIS_MEMZONE_BINDER, BO_ALLOC_PLAIN);
    binder->map = iris_bo_map(NULL, binder->bo, MAP_WRITE);
 
    /* Avoid using offset 0 - tools consider it NULL. */
@@ -117,6 +117,23 @@ iris_binder_reserve(struct iris_context *ice,
 
    assert(size > 0);
    return binder_insert(binder, size);
+}
+
+/**
+ * Reserve and record binder space for generation shader (FS stage only).
+ */
+void
+iris_binder_reserve_gen(struct iris_context *ice)
+{
+   struct iris_binder *binder = &ice->state.binder;
+
+   binder->bt_offset[MESA_SHADER_FRAGMENT] =
+      iris_binder_reserve(ice, sizeof(uint32_t));
+
+   iris_record_state_size(ice->state.sizes,
+                          binder->bo->address +
+                          binder->bt_offset[MESA_SHADER_FRAGMENT],
+                          sizeof(uint32_t));
 }
 
 /**
@@ -205,7 +222,7 @@ void
 iris_init_binder(struct iris_context *ice)
 {
    struct iris_screen *screen = (void *) ice->ctx.screen;
-   const struct intel_device_info *devinfo = &screen->devinfo;
+   const struct intel_device_info *devinfo = screen->devinfo;
 
    memset(&ice->state.binder, 0, sizeof(struct iris_binder));
 

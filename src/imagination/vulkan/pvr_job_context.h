@@ -24,8 +24,12 @@
 #ifndef PVR_JOB_CONTEXT_H
 #define PVR_JOB_CONTEXT_H
 
-#include "pvr_winsys.h"
+#include "pvr_common.h"
 #include "pvr_private.h"
+#include "pvr_transfer_frag_store.h"
+#include "pvr_types.h"
+#include "pvr_uscgen.h"
+#include "pvr_winsys.h"
 
 /* Support PDS code/data loading/storing to the 'B' shared register state
  * buffers.
@@ -36,17 +40,15 @@
 struct pvr_reset_cmd {
 };
 
-struct pvr_compute_ctx;
-
 struct rogue_sr_programs {
    struct pvr_bo *store_load_state_bo;
 
    struct {
       uint8_t unified_size;
 
-      struct pvr_bo *store_program_bo;
+      struct pvr_suballoc_bo *store_program_bo;
 
-      struct pvr_bo *load_program_bo;
+      struct pvr_suballoc_bo *load_program_bo;
    } usc;
 
    struct {
@@ -54,6 +56,10 @@ struct rogue_sr_programs {
       struct pvr_pds_upload load_program;
    } pds;
 };
+
+/******************************************************************************
+   Render context
+ ******************************************************************************/
 
 struct pvr_render_ctx {
    struct pvr_device *device;
@@ -96,6 +102,10 @@ struct pvr_render_ctx {
    struct pvr_reset_cmd reset_cmd;
 };
 
+/******************************************************************************
+   Compute context
+ ******************************************************************************/
+
 struct pvr_compute_ctx {
    struct pvr_device *device;
 
@@ -113,6 +123,41 @@ struct pvr_compute_ctx {
    struct pvr_reset_cmd reset_cmd;
 };
 
+/******************************************************************************
+   Transfer context
+ ******************************************************************************/
+
+/* TODO: Can we move these to pds code headers? */
+/* Maximum number of DMAs in the PDS TexState/Uniform program. */
+#define PVR_TRANSFER_MAX_UNIFORM_DMA 1U
+#define PVR_TRANSFER_MAX_TEXSTATE_DMA 2U
+
+#if (PVR_TRANSFER_MAX_TEXSTATE_DMA >= PVR_PDS_MAX_NUM_DMA_KICKS) || \
+   (PVR_TRANSFER_MAX_UNIFORM_DMA >= PVR_PDS_MAX_NUM_DMA_KICKS)
+#   error \
+      "Transfer queue can not support more DMA kicks than supported by PDS codegen."
+#endif
+
+struct pvr_transfer_ctx {
+   struct pvr_device *device;
+
+   /* Reset framework. */
+   struct pvr_reset_cmd reset_cmd;
+
+   struct pvr_winsys_transfer_ctx *ws_ctx;
+
+   struct pvr_transfer_frag_store frag_store;
+
+   struct pvr_suballoc_bo *usc_eot_bos[PVR_TRANSFER_MAX_RENDER_TARGETS];
+
+   struct pvr_pds_upload pds_unitex_code[PVR_TRANSFER_MAX_TEXSTATE_DMA]
+                                        [PVR_TRANSFER_MAX_UNIFORM_DMA];
+};
+
+/******************************************************************************
+   Function prototypes
+ ******************************************************************************/
+
 VkResult pvr_render_ctx_create(struct pvr_device *device,
                                enum pvr_winsys_ctx_priority priority,
                                struct pvr_render_ctx **const ctx_out);
@@ -122,5 +167,10 @@ VkResult pvr_compute_ctx_create(struct pvr_device *const device,
                                 enum pvr_winsys_ctx_priority priority,
                                 struct pvr_compute_ctx **const ctx_out);
 void pvr_compute_ctx_destroy(struct pvr_compute_ctx *ctx);
+
+VkResult pvr_transfer_ctx_create(struct pvr_device *const device,
+                                 enum pvr_winsys_ctx_priority priority,
+                                 struct pvr_transfer_ctx **const ctx_out);
+void pvr_transfer_ctx_destroy(struct pvr_transfer_ctx *const ctx);
 
 #endif /* PVR_JOB_CONTEXT_H */

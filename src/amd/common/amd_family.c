@@ -1,31 +1,17 @@
 /*
  * Copyright © 2017 Advanced Micro Devices, Inc.
  *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS, AUTHORS
- * AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "amd_family.h"
-
+#include "addrlib/src/amdgpu_asic_addr.h"
 #include "util/macros.h"
+#include "ac_gpu_info.h"
+
+#if AMD_LLVM_AVAILABLE
+#include <llvm/Config/llvm-config.h>
+#endif
 
 const char *ac_get_family_name(enum radeon_family family)
 {
@@ -78,31 +64,227 @@ const char *ac_get_family_name(enum radeon_family family)
       return "RAVEN2";
    case CHIP_RENOIR:
       return "RENOIR";
-   case CHIP_ARCTURUS:
-      return "ARCTURUS";
-   case CHIP_ALDEBARAN:
-      return "ALDEBARAN";
+   case CHIP_MI100:
+      return "MI100";
+   case CHIP_MI200:
+      return "MI200";
+   case CHIP_GFX940:
+      return "GFX940";
    case CHIP_NAVI10:
       return "NAVI10";
    case CHIP_NAVI12:
       return "NAVI12";
    case CHIP_NAVI14:
       return "NAVI14";
-   case CHIP_SIENNA_CICHLID:
-      return "SIENNA_CICHLID";
-   case CHIP_NAVY_FLOUNDER:
-      return "NAVY_FLOUNDER";
-   case CHIP_DIMGREY_CAVEFISH:
-      return "DIMGREY_CAVEFISH";
+   case CHIP_NAVI21:
+      return "NAVI21";
+   case CHIP_NAVI22:
+      return "NAVI22";
+   case CHIP_NAVI23:
+      return "NAVI23";
    case CHIP_VANGOGH:
       return "VANGOGH";
-   case CHIP_BEIGE_GOBY:
-      return "BEIGE_GOBY";
-   case CHIP_YELLOW_CARP:
-      return "YELLOW_CARP";
-   case CHIP_GFX1036:
-      return "GFX1036";
+   case CHIP_NAVI24:
+      return "NAVI24";
+   case CHIP_REMBRANDT:
+      return "REMBRANDT";
+   case CHIP_RAPHAEL_MENDOCINO:
+      return "RAPHAEL_MENDOCINO";
+   case CHIP_NAVI31:
+      return "NAVI31";
+   case CHIP_NAVI32:
+      return "NAVI32";
+   case CHIP_NAVI33:
+      return "NAVI33";
+   case CHIP_GFX1103_R1:
+      return "GFX1103_R1";
+   case CHIP_GFX1103_R2:
+      return "GFX1103_R2";
+   case CHIP_GFX1150:
+      return "GFX1150";
+   case CHIP_GFX1151:
+      return "GFX1151";
+   case CHIP_GFX1152:
+      return "GFX1152";
+   case CHIP_GFX1200:
+      return "GFX1200";
+   case CHIP_GFX1201:
+      return "GFX1201";
    default:
       unreachable("Unknown GPU family");
+   }
+}
+
+enum amd_gfx_level ac_get_gfx_level(enum radeon_family family)
+{
+   if (family >= CHIP_GFX1200)
+      return GFX12;
+   if (family >= CHIP_GFX1150)
+      return GFX11_5;
+   if (family >= CHIP_NAVI31)
+      return GFX11;
+   if (family >= CHIP_NAVI21)
+      return GFX10_3;
+   if (family >= CHIP_NAVI10)
+      return GFX10;
+   if (family >= CHIP_VEGA10)
+      return GFX9;
+   if (family >= CHIP_TONGA)
+      return GFX8;
+   if (family >= CHIP_BONAIRE)
+      return GFX7;
+
+   return GFX6;
+}
+
+unsigned ac_get_family_id(enum radeon_family family)
+{
+   if (family >= CHIP_GFX1200)
+      return FAMILY_GFX12;
+   if (family >= CHIP_GFX1150)
+      return FAMILY_GFX1150;
+   if (family >= CHIP_NAVI31)
+      return FAMILY_NV3;
+   if (family >= CHIP_NAVI21)
+      return FAMILY_NV;
+   if (family >= CHIP_NAVI10)
+      return FAMILY_NV;
+   if (family >= CHIP_VEGA10)
+      return FAMILY_AI;
+   if (family >= CHIP_TONGA)
+      return FAMILY_VI;
+   if (family >= CHIP_BONAIRE)
+      return FAMILY_CI;
+
+   return FAMILY_SI;
+}
+
+const char *ac_get_llvm_processor_name(enum radeon_family family)
+{
+   switch (family) {
+   case CHIP_TAHITI:
+      return "tahiti";
+   case CHIP_PITCAIRN:
+      return "pitcairn";
+   case CHIP_VERDE:
+      return "verde";
+   case CHIP_OLAND:
+      return "oland";
+   case CHIP_HAINAN:
+      return "hainan";
+   case CHIP_BONAIRE:
+      return "bonaire";
+   case CHIP_KABINI:
+      return "kabini";
+   case CHIP_KAVERI:
+      return "kaveri";
+   case CHIP_HAWAII:
+      return "hawaii";
+   case CHIP_TONGA:
+      return "tonga";
+   case CHIP_ICELAND:
+      return "iceland";
+   case CHIP_CARRIZO:
+      return "carrizo";
+   case CHIP_FIJI:
+      return "fiji";
+   case CHIP_STONEY:
+      return "stoney";
+   case CHIP_POLARIS10:
+      return "polaris10";
+   case CHIP_POLARIS11:
+   case CHIP_POLARIS12:
+   case CHIP_VEGAM:
+      return "polaris11";
+   case CHIP_VEGA10:
+      return "gfx900";
+   case CHIP_RAVEN:
+      return "gfx902";
+   case CHIP_VEGA12:
+      return "gfx904";
+   case CHIP_VEGA20:
+      return "gfx906";
+   case CHIP_RAVEN2:
+   case CHIP_RENOIR:
+      return "gfx909";
+   case CHIP_MI100:
+      return "gfx908";
+   case CHIP_MI200:
+      return "gfx90a";
+   case CHIP_GFX940:
+      return
+#if AMD_LLVM_AVAILABLE
+             LLVM_VERSION_MAJOR >= 17 ? "gfx942" :
+#endif
+             "gfx940";
+   case CHIP_NAVI10:
+      return "gfx1010";
+   case CHIP_NAVI12:
+      return "gfx1011";
+   case CHIP_NAVI14:
+      return "gfx1012";
+   case CHIP_NAVI21:
+      return "gfx1030";
+   case CHIP_NAVI22:
+      return "gfx1031";
+   case CHIP_NAVI23:
+      return "gfx1032";
+   case CHIP_VANGOGH:
+      return "gfx1033";
+   case CHIP_NAVI24:
+      return "gfx1034";
+   case CHIP_REMBRANDT:
+      return "gfx1035";
+   case CHIP_RAPHAEL_MENDOCINO:
+      return "gfx1036";
+   case CHIP_NAVI31:
+      return "gfx1100";
+   case CHIP_NAVI32:
+      return "gfx1101";
+   case CHIP_NAVI33:
+      return "gfx1102";
+   case CHIP_GFX1103_R1:
+   case CHIP_GFX1103_R2:
+      return "gfx1103";
+   case CHIP_GFX1150:
+      return "gfx1150";
+   case CHIP_GFX1151:
+      return "gfx1151";
+   case CHIP_GFX1152:
+      return "gfx1152";
+   case CHIP_GFX1200:
+      return "gfx1200";
+   case CHIP_GFX1201:
+      return "gfx1201";
+   default:
+      return "";
+   }
+}
+
+const char *ac_get_ip_type_string(const struct radeon_info *info, enum amd_ip_type ip_type)
+{
+   switch (ip_type) {
+   case AMD_IP_GFX:
+      return "GFX";
+   case AMD_IP_COMPUTE:
+      return "COMPUTE";
+   case AMD_IP_SDMA:
+      return "SDMA";
+   case AMD_IP_UVD:
+      return "UVD";
+   case AMD_IP_VCE:
+      return "VCE";
+   case AMD_IP_UVD_ENC:
+      return "UVD_ENC";
+   case AMD_IP_VCN_DEC:
+      return "VCN_DEC";
+   case AMD_IP_VCN_ENC: /* equal to AMD_IP_VCN_UNIFIED */
+      return !info || info->vcn_ip_version >= VCN_4_0_0 ? "VCN" : "VCN_ENC";
+   case AMD_IP_VCN_JPEG:
+      return "VCN_JPEG";
+   case AMD_IP_VPE:
+      return "VPE";
+   default:
+      return "UNKNOWN_IP";
    }
 }

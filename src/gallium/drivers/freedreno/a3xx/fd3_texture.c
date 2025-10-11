@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2013 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -92,7 +74,7 @@ fd3_sampler_state_create(struct pipe_context *pctx,
 
    so->needs_border = false;
    so->texsamp0 =
-      COND(!cso->normalized_coords, A3XX_TEX_SAMP_0_UNNORM_COORDS) |
+      COND(cso->unnormalized_coords, A3XX_TEX_SAMP_0_UNNORM_COORDS) |
       COND(!cso->seamless_cube_map, A3XX_TEX_SAMP_0_CUBEMAPSEAMLESSFILTOFF) |
       COND(miplinear, A3XX_TEX_SAMP_0_MIPFILTER_LINEAR) |
       A3XX_TEX_SAMP_0_XY_MAG(tex_filter(cso->mag_img_filter, aniso)) |
@@ -128,7 +110,7 @@ tex_type(unsigned target)
 {
    switch (target) {
    default:
-      assert(0);
+      unreachable("Unsupported target");
    case PIPE_BUFFER:
    case PIPE_TEXTURE_1D:
    case PIPE_TEXTURE_1D_ARRAY:

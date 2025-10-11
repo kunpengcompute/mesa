@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -31,6 +13,8 @@
 #include "util/list.h"
 
 #include "freedreno_util.h"
+
+BEGINC;
 
 /* per-pipe configuration for hw binning: */
 struct fd_vsc_pipe {
@@ -62,7 +46,7 @@ struct fd_gmem_stateobj {
    uint8_t num_vsc_pipes; /* number of pipes for a20x */
 
    struct fd_vsc_pipe vsc_pipe[32];
-   struct fd_tile tile[2048];
+   struct fd_tile *tile;
 
    struct list_head node;
 };
@@ -95,5 +79,7 @@ bool fd_gmem_needs_restore(struct fd_batch *batch, const struct fd_tile *tile,
 struct pipe_screen;
 void fd_gmem_screen_init(struct pipe_screen *pscreen);
 void fd_gmem_screen_fini(struct pipe_screen *pscreen);
+
+ENDC;
 
 #endif /* FREEDRENO_GMEM_H_ */

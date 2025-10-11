@@ -46,7 +46,7 @@ struct st_texture_image_transfer
    /* For compressed texture fallback. */
    GLubyte *temp_data; /**< Temporary compressed texture storage. */
    unsigned temp_stride; /**< Stride of the compressed texture storage. */
-   GLubyte *map; /**< Saved map pointer of the uncompressed transfer. */
+   struct pipe_box box; /**< Region of the transfer's resource to write. */
 };
 
 
@@ -158,7 +158,8 @@ st_texture_create(struct st_context *st,
                   GLuint layers,
                   GLuint nr_samples,
                   GLuint tex_usage,
-                  bool sparse);
+                  bool sparse,
+                  uint32_t compression);
 
 
 extern void
@@ -177,6 +178,21 @@ extern GLboolean
 st_texture_match_image(struct st_context *st,
                        const struct pipe_resource *pt,
                        const struct gl_texture_image *image);
+
+/* Insert a transfer pointer into the image's transfer array at the specified
+ * index. The array is reallocated if necessary.
+ */
+void
+st_texture_image_insert_transfer(struct gl_texture_image *stImage,
+                                 unsigned index,
+                                 struct pipe_transfer *transfer);
+
+/**
+ * Returns the level of the gl_texture_image with respect to the resource it
+ * is allocated within. Example: returns 0 for non-finalized texture.
+ */
+GLuint
+st_texture_image_resource_level(struct gl_texture_image *stImage);
 
 /* Return a pointer to an image within a texture.  Return image stride as
  * well.
@@ -225,13 +241,13 @@ st_compressed_format_fallback(struct st_context *st, mesa_format format);
 
 void
 st_convert_image(const struct st_context *st, const struct gl_image_unit *u,
-                 struct pipe_image_view *img, unsigned shader_access);
+                 struct pipe_image_view *img, enum gl_access_qualifier shader_access);
 
 void
 st_convert_image_from_unit(const struct st_context *st,
                            struct pipe_image_view *img,
                            GLuint imgUnit,
-                           unsigned shader_access);
+                           enum gl_access_qualifier shader_access);
 
 void
 st_convert_sampler(const struct st_context *st,
@@ -239,12 +255,15 @@ st_convert_sampler(const struct st_context *st,
                    const struct gl_sampler_object *msamp,
                    float tex_unit_lod_bias,
                    struct pipe_sampler_state *sampler,
-                   bool seamless_cube_map);
+                   bool seamless_cube_map,
+                   bool ignore_srgb_decode,
+                   bool glsl130_or_later);
 
 void
 st_convert_sampler_from_unit(const struct st_context *st,
                              struct pipe_sampler_state *sampler,
-                             GLuint texUnit);
+                             GLuint texUnit,
+                             bool glsl130_or_later);
 
 struct pipe_sampler_view *
 st_update_single_texture(struct st_context *st,

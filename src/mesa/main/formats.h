@@ -33,10 +33,11 @@
 #define FORMATS_H
 
 
-#include <GL/gl.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include "gallium/include/pipe/p_format.h"
+
+#include "util/glheader.h"
+#include "util/format/u_formats.h"
 #include "util/u_endian.h"
 
 #ifdef __cplusplus
@@ -239,7 +240,7 @@ _mesa_format_is_mesa_array_format(uint32_t f)
 
 /**
  * Mesa texture/renderbuffer image formats.  These are just other names of the
- * gallium p_format.h formats.
+ * util/format/u_formats.h formats.
  */
 typedef enum pipe_format mesa_format;
 
@@ -386,7 +387,9 @@ typedef enum pipe_format mesa_format;
 #define MESA_FORMAT_YCBCR                        PIPE_FORMAT_UYVY
 #define MESA_FORMAT_YCBCR_REV                    PIPE_FORMAT_YUYV
 #define MESA_FORMAT_RG_RB_UNORM8                 PIPE_FORMAT_R8G8_R8B8_UNORM
+#define MESA_FORMAT_RB_RG_UNORM8                 PIPE_FORMAT_R8B8_R8G8_UNORM
 #define MESA_FORMAT_GR_BR_UNORM8                 PIPE_FORMAT_G8R8_B8R8_UNORM
+#define MESA_FORMAT_BR_GR_UNORM8                 PIPE_FORMAT_B8R8_G8R8_UNORM
 #define MESA_FORMAT_A_UNORM8                     PIPE_FORMAT_A8_UNORM
 #define MESA_FORMAT_A_UNORM16                    PIPE_FORMAT_A16_UNORM
 #define MESA_FORMAT_L_UNORM8                     PIPE_FORMAT_L8_UNORM
@@ -696,6 +699,18 @@ bool
 _mesa_is_format_astc_2d(mesa_format format);
 
 bool
+_mesa_is_format_s3tc(mesa_format format);
+
+bool
+_mesa_is_format_rgtc(mesa_format format);
+
+bool
+_mesa_is_format_latc(mesa_format format);
+
+bool
+_mesa_is_format_bptc(mesa_format format);
+
+bool
 _mesa_is_format_color_format(mesa_format format);
 
 bool
@@ -712,12 +727,8 @@ _mesa_format_image_size64(mesa_format format, int width,
 extern int32_t
 _mesa_format_row_stride(mesa_format format, int width);
 
-extern void
-_mesa_uncompressed_format_to_type_and_comps(mesa_format format,
-                               GLenum *datatype, GLuint *comps);
-
-extern void
-_mesa_test_formats(void);
+extern GLenum
+_mesa_uncompressed_format_to_type(mesa_format format);
 
 extern mesa_format
 _mesa_get_srgb_format_linear(mesa_format format);

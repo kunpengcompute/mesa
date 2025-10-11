@@ -34,6 +34,7 @@
 
 #include "common/intel_gem.h"
 #include "dev/intel_device_info.h"
+#include "dev/intel_device_info_serialize.h"
 #include "drm-uapi/i915_drm.h"
 #include "drm-shim/drm_shim.h"
 #include "util/macros.h"
@@ -51,6 +52,7 @@ struct i915_bo {
 };
 
 static struct i915_device i915 = {};
+static bool i915_device_from_json = false;
 
 bool drm_shim_driver_prefers_first_render_node = true;
 
@@ -110,6 +112,22 @@ i915_ioctl_gem_create(int fd, unsigned long request, void *arg)
 }
 
 static int
+i915_ioctl_gem_create_ext(int fd, unsigned long request, void *arg)
+{
+   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
+   struct drm_i915_gem_create_ext *create = arg;
+   struct i915_bo *bo = calloc(1, sizeof(*bo));
+
+   drm_shim_bo_init(&bo->base, create->size);
+
+   create->handle = drm_shim_bo_get_handle(shim_fd, &bo->base);
+
+   drm_shim_bo_put(&bo->base);
+
+   return 0;
+}
+
+static int
 i915_ioctl_gem_mmap(int fd, unsigned long request, void *arg)
 {
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
@@ -120,9 +138,29 @@ i915_ioctl_gem_mmap(int fd, unsigned long request, void *arg)
       return -1;
 
    if (!bo->map)
-      bo->map = drm_shim_mmap(shim_fd, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, -1, (uintptr_t)bo);
+      bo->map = drm_shim_mmap(shim_fd, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, -1,
+                              drm_shim_bo_get_mmap_offset(shim_fd, bo));
 
    mmap_arg->addr_ptr = (uint64_t) (bo->map + mmap_arg->offset);
+
+   return 0;
+}
+
+static int
+i915_ioctl_gem_mmap_offset(int fd, unsigned long request, void *arg)
+{
+   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
+   struct drm_i915_gem_mmap_offset *mmap_arg = arg;
+   struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, mmap_arg->handle);
+
+   if (!bo)
+      return -1;
+
+   if (!bo->map)
+      bo->map = drm_shim_mmap(shim_fd, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED, -1,
+                              drm_shim_bo_get_mmap_offset(shim_fd, bo));
+
+   mmap_arg->offset = drm_shim_bo_get_mmap_offset(shim_fd, bo);
 
    return 0;
 }
@@ -224,7 +262,7 @@ i915_ioctl_get_param(int fd, unsigned long request, void *arg)
       *gp->value = true;
       return 0;
    case I915_PARAM_HAS_EXEC_TIMELINE_FENCES:
-      *gp->value = false;
+      *gp->value = true;
       return 0;
    case I915_PARAM_CMD_PARSER_VERSION:
       /* Most recent version in drivers/gpu/drm/i915/i915_cmd_parser.c */
@@ -232,7 +270,7 @@ i915_ioctl_get_param(int fd, unsigned long request, void *arg)
       return 0;
    case I915_PARAM_MMAP_VERSION:
    case I915_PARAM_MMAP_GTT_VERSION:
-      *gp->value = 1;
+      *gp->value = 4 /* MMAP_OFFSET support */;
       return 0;
    case I915_PARAM_SUBSLICE_TOTAL:
       *gp->value = 0;
@@ -292,6 +330,7 @@ query_write_topology(struct drm_i915_query_item *item)
    info->subslice_offset = DIV_ROUND_UP(i915.devinfo.num_slices, 8);
    info->subslice_stride = DIV_ROUND_UP(i915.devinfo.num_subslices[0], 8);
    info->eu_offset = info->subslice_offset + info->max_slices * info->subslice_stride;
+   info->eu_stride = DIV_ROUND_UP(info->max_eus_per_subslice, 8);
 
    uint32_t slice_mask = (1u << i915.devinfo.num_slices) - 1;
    for (uint32_t i = 0; i < info->subslice_offset; i++)
@@ -334,7 +373,8 @@ i915_ioctl_query(int fd, unsigned long request, void *arg)
       struct drm_i915_query_item *item = &items[i];
 
       switch (item->query_id) {
-      case DRM_I915_QUERY_TOPOLOGY_INFO: {
+      case DRM_I915_QUERY_TOPOLOGY_INFO:
+      case DRM_I915_QUERY_GEOMETRY_SUBSLICES: {
          int ret = query_write_topology(item);
          if (ret)
             item->length = ret;
@@ -364,13 +404,13 @@ i915_ioctl_query(int fd, unsigned long request, void *arg)
 
             for (uint32_t e = 0; e < num_render; e++, info->num_engines++) {
                info->engines[info->num_engines].engine.engine_class =
-                  I915_ENGINE_CLASS_RENDER;
+                  INTEL_ENGINE_CLASS_RENDER;
                info->engines[info->num_engines].engine.engine_instance = e;
             }
 
             for (uint32_t e = 0; e < num_copy; e++, info->num_engines++) {
                info->engines[info->num_engines].engine.engine_class =
-                  I915_ENGINE_CLASS_COPY;
+                  INTEL_ENGINE_CLASS_COPY;
                info->engines[info->num_engines].engine.engine_instance = e;
             }
 
@@ -451,6 +491,31 @@ i915_gem_get_aperture(int fd, unsigned long request, void *arg)
    return 0;
 }
 
+/* Provide a binary blob of struct intel_device_info to the caller
+ *
+ * This is used in conjunction with INTEL_STUB_GPU_JSON to initialize a
+ * stubbed driver with device info from a file.
+ */
+static int
+i915_ioctl_load_device_info(int fd, unsigned long request, void *arg)
+{
+   if(!i915_device_from_json)
+      return -1;
+
+   struct drm_intel_stub_devinfo *stub_arg = (struct drm_intel_stub_devinfo*) arg;
+   struct intel_device_info *stub_info = (struct intel_device_info*) stub_arg->addr;
+
+   if (stub_arg->size != sizeof(i915.devinfo)) {
+      assert(false);
+      return -1;
+   }
+   memcpy(stub_info, &i915.devinfo, sizeof(i915.devinfo));
+   return 0;
+}
+
+#define DRM_I915_LAST (DRM_COMMAND_END - DRM_COMMAND_BASE - 1)
+#define DRM_I915_LOAD_STUB_DEVINFO DRM_I915_LAST
+
 static ioctl_fn_t driver_ioctls[] = {
    [DRM_I915_GETPARAM] = i915_ioctl_get_param,
    [DRM_I915_QUERY] = i915_ioctl_query,
@@ -458,7 +523,9 @@ static ioctl_fn_t driver_ioctls[] = {
    [DRM_I915_GET_RESET_STATS] = i915_ioctl_noop,
 
    [DRM_I915_GEM_CREATE] = i915_ioctl_gem_create,
+   [DRM_I915_GEM_CREATE_EXT] = i915_ioctl_gem_create_ext,
    [DRM_I915_GEM_MMAP] = i915_ioctl_gem_mmap,
+   [DRM_I915_GEM_MMAP_GTT] = i915_ioctl_gem_mmap_offset,
    [DRM_I915_GEM_SET_TILING] = i915_ioctl_gem_set_tiling,
    [DRM_I915_GEM_CONTEXT_CREATE] = i915_ioctl_gem_context_create,
    [DRM_I915_GEM_CONTEXT_DESTROY] = i915_ioctl_noop,
@@ -481,17 +548,33 @@ static ioctl_fn_t driver_ioctls[] = {
    [DRM_I915_GEM_MADVISE] = i915_ioctl_noop,
    [DRM_I915_GEM_WAIT] = i915_ioctl_noop,
    [DRM_I915_GEM_BUSY] = i915_ioctl_noop,
+   [DRM_I915_LOAD_STUB_DEVINFO] = i915_ioctl_load_device_info,
 };
 
 void
 drm_shim_driver_init(void)
 {
-   const char *user_platform = getenv("INTEL_STUB_GPU_PLATFORM");
-
-   /* Use SKL if nothing is specified. */
-   i915.device_id = intel_device_name_to_pci_device_id(user_platform ?: "skl");
-   if (!intel_get_device_info_from_pci_id(i915.device_id, &i915.devinfo))
-      return;
+   i915.device_id = 0;
+   const char *json_dev_str = getenv("INTEL_STUB_GPU_JSON");
+   if (json_dev_str != NULL) {
+      if (!intel_device_info_from_json(json_dev_str, &i915.devinfo))
+         return;
+      i915.device_id = i915.devinfo.pci_device_id;
+      i915_device_from_json = true;
+   } else {
+      const char *device_id_str = getenv("INTEL_STUB_GPU_DEVICE_ID");
+      if (device_id_str != NULL) {
+         /* Set as 0 if strtoul fails */
+         i915.device_id = strtoul(device_id_str, NULL, 16);
+      }
+      if (i915.device_id == 0) {
+         const char *user_platform = getenv("INTEL_STUB_GPU_PLATFORM");
+         /* Use SKL if nothing is specified. */
+         i915.device_id = intel_device_name_to_pci_device_id(user_platform ?: "skl");
+      }
+      if (!intel_get_device_info_from_pci_id(i915.device_id, &i915.devinfo))
+         return;
+   }
 
    shim_device.bus_type = DRM_BUS_PCI;
    shim_device.driver_name = "i915";

@@ -3,8 +3,8 @@
 
 #include "imgui/imgui.h"
 
-#include "common/intel_decoder.h"
-#include "common/intel_disasm.h"
+#include "compiler/brw_disasm.h"
+#include "decoder/intel_decoder.h"
 
 struct aub_viewer_cfg {
    ImColor clear_color;
@@ -70,7 +70,7 @@ struct aub_viewer_decode_ctx {
 
    const struct intel_device_info *devinfo;
    struct intel_spec *spec;
-   enum drm_i915_gem_engine_class engine;
+   enum intel_engine_class engine;
 
    struct aub_viewer_cfg *cfg;
    struct aub_viewer_decode_cfg *decode_cfg;

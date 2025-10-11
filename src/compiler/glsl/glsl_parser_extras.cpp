@@ -33,12 +33,12 @@
 #include "util/u_atomic.h" /* for p_atomic_cmpxchg */
 #include "util/ralloc.h"
 #include "util/disk_cache.h"
-#include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "ast.h"
 #include "glsl_parser_extras.h"
 #include "glsl_parser.h"
+#include "glsl_to_nir.h"
 #include "ir_optimization.h"
-#include "loop_analysis.h"
 #include "builtin_functions.h"
 
 /**
@@ -72,7 +72,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->translation_unit.make_empty();
    this->symbols = new(mem_ctx) glsl_symbol_table;
 
-   this->linalloc = linear_alloc_parent(this, 0);
+   this->linalloc = linear_context(this);
 
    this->info_log = ralloc_strdup(mem_ctx, "");
    this->error = false;
@@ -96,7 +96,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->ARB_texture_rectangle_enable = true;
 
    /* OpenGL ES 2.0 has different defaults from desktop GL. */
-   if (ctx->API == API_OPENGLES2) {
+   if (_mesa_is_gles2(ctx)) {
       this->language_version = 100;
       this->es_shader = true;
       this->ARB_texture_rectangle_enable = false;
@@ -239,26 +239,25 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
          }
       }
    }
-   if (ctx->API == API_OPENGLES2 || ctx->Extensions.ARB_ES2_compatibility) {
+   if (_mesa_is_gles2_compatible(ctx)) {
       this->supported_versions[this->num_supported_versions].ver = 100;
       this->supported_versions[this->num_supported_versions].gl_ver = 20;
       this->supported_versions[this->num_supported_versions].es = true;
       this->num_supported_versions++;
    }
-   if (_mesa_is_gles3(ctx) || ctx->Extensions.ARB_ES3_compatibility) {
+   if (_mesa_is_gles3_compatible(ctx)) {
       this->supported_versions[this->num_supported_versions].ver = 300;
       this->supported_versions[this->num_supported_versions].gl_ver = 30;
       this->supported_versions[this->num_supported_versions].es = true;
       this->num_supported_versions++;
    }
-   if (_mesa_is_gles31(ctx) || ctx->Extensions.ARB_ES3_1_compatibility) {
+   if (_mesa_is_gles31_compatible(ctx)) {
       this->supported_versions[this->num_supported_versions].ver = 310;
       this->supported_versions[this->num_supported_versions].gl_ver = 31;
       this->supported_versions[this->num_supported_versions].es = true;
       this->num_supported_versions++;
    }
-   if ((ctx->API == API_OPENGLES2 && ctx->Version >= 32) ||
-       ctx->Extensions.ARB_ES3_2_compatibility) {
+   if (_mesa_is_gles32_compatible(ctx)) {
       this->supported_versions[this->num_supported_versions].ver = 320;
       this->supported_versions[this->num_supported_versions].gl_ver = 32;
       this->supported_versions[this->num_supported_versions].es = true;
@@ -318,6 +317,10 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
           sizeof(this->atomic_counter_offsets));
    this->allow_extension_directive_midshader =
       ctx->Const.AllowGLSLExtensionDirectiveMidShader;
+   this->alias_shader_extension =
+      ctx->Const.AliasShaderExtension;
+   this->allow_vertex_texture_bias =
+      ctx->Const.AllowVertexTextureBias;
    this->allow_glsl_120_subset_in_110 =
       ctx->Const.AllowGLSL120SubsetIn110;
    this->allow_builtin_variable_redeclaration =
@@ -599,7 +602,7 @@ struct _mesa_glsl_extension {
     * Predicate that checks whether the relevant extension is available for
     * this context.
     */
-   bool (*available_pred)(const struct gl_extensions *,
+   bool (*available_pred)(const _mesa_glsl_parse_state *,
                           gl_api api, uint8_t version);
 
    /**
@@ -629,13 +632,62 @@ struct _mesa_glsl_extension {
 /** Checks if the context supports a user-facing extension */
 #define EXT(name_str, driver_cap, ...) \
 static UNUSED bool \
-has_##name_str(const struct gl_extensions *exts, gl_api api, uint8_t version) \
+has_##name_str(const _mesa_glsl_parse_state *state, gl_api api, uint8_t version) \
 { \
-   return exts->driver_cap && (version >= \
+   return state->exts->driver_cap && (version >= \
           _mesa_extension_table[MESA_EXTENSION_##name_str].version[api]); \
 }
 #include "main/extensions_table.h"
 #undef EXT
+
+static unsigned
+mesa_stage_to_gl_stage_bit(unsigned stage)
+{
+   switch (stage) {
+   case MESA_SHADER_VERTEX:
+      return GL_VERTEX_SHADER_BIT;
+   case MESA_SHADER_TESS_CTRL:
+      return GL_TESS_CONTROL_SHADER_BIT;
+   case MESA_SHADER_TESS_EVAL:
+      return GL_TESS_EVALUATION_SHADER_BIT;
+   case MESA_SHADER_GEOMETRY:
+      return GL_GEOMETRY_SHADER_BIT;
+   case MESA_SHADER_FRAGMENT:
+      return GL_FRAGMENT_SHADER_BIT;
+   case MESA_SHADER_COMPUTE:
+      return GL_COMPUTE_SHADER_BIT;
+   default:
+      unreachable("glsl parser: invalid shader stage");
+   }
+}
+
+#define HAS_SUBGROUP_EXT(name, feature) \
+static bool \
+has_KHR_shader_subgroup_##name(const _mesa_glsl_parse_state *state, gl_api api, uint8_t version) \
+{ \
+   unsigned stage = mesa_stage_to_gl_stage_bit(state->stage); \
+   return state->exts->KHR_shader_subgroup && \
+      (version >= _mesa_extension_table[MESA_EXTENSION_KHR_shader_subgroup].version[api]) && \
+      (state->consts->ShaderSubgroupSupportedStages & stage) && \
+      (state->consts->ShaderSubgroupSupportedFeatures & GL_SUBGROUP_FEATURE_##feature##_BIT_KHR); \
+}
+
+HAS_SUBGROUP_EXT(basic, BASIC)
+HAS_SUBGROUP_EXT(vote, VOTE)
+HAS_SUBGROUP_EXT(arithmetic, ARITHMETIC)
+HAS_SUBGROUP_EXT(ballot, BALLOT)
+HAS_SUBGROUP_EXT(shuffle, SHUFFLE)
+HAS_SUBGROUP_EXT(shuffle_relative, SHUFFLE_RELATIVE)
+HAS_SUBGROUP_EXT(clustered, CLUSTERED)
+HAS_SUBGROUP_EXT(quad_, QUAD)
+
+static bool
+has_KHR_shader_subgroup_quad(const _mesa_glsl_parse_state *state, gl_api api, uint8_t version)
+{
+   return has_KHR_shader_subgroup_quad_(state, api, version) &&
+      ((state->stage == MESA_SHADER_FRAGMENT || state->stage == MESA_SHADER_COMPUTE) ||
+       state->consts->ShaderSubgroupQuadAllStages);
+}
 
 #define EXT(NAME)                                           \
    { "GL_" #NAME, false, has_##NAME,                        \
@@ -713,6 +765,14 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    /* KHR extensions go here, sorted alphabetically.
     */
    EXT_AEP(KHR_blend_equation_advanced),
+   EXT(KHR_shader_subgroup_arithmetic),
+   EXT(KHR_shader_subgroup_ballot),
+   EXT(KHR_shader_subgroup_basic),
+   EXT(KHR_shader_subgroup_clustered),
+   EXT(KHR_shader_subgroup_quad),
+   EXT(KHR_shader_subgroup_shuffle),
+   EXT(KHR_shader_subgroup_shuffle_relative),
+   EXT(KHR_shader_subgroup_vote),
 
    /* OES extensions go here, sorted alphabetically.
     */
@@ -738,6 +798,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    /* All other extensions go here, sorted alphabetically.
     */
    EXT(AMD_conservative_depth),
+   EXT(AMD_gpu_shader_half_float),
    EXT(AMD_gpu_shader_int64),
    EXT(AMD_shader_stencil_export),
    EXT(AMD_shader_trinary_minmax),
@@ -745,6 +806,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(AMD_vertex_shader_layer),
    EXT(AMD_vertex_shader_viewport_index),
    EXT(ANDROID_extension_pack_es31a),
+   EXT(ARM_shader_framebuffer_fetch_depth_stencil),
    EXT(EXT_blend_func_extended),
    EXT(EXT_demote_to_helper_invocation),
    EXT(EXT_frag_depth),
@@ -766,6 +828,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(EXT_shader_integer_mix),
    EXT_AEP(EXT_shader_io_blocks),
    EXT(EXT_shader_samples_identical),
+   EXT(EXT_shadow_samplers),
    EXT(EXT_tessellation_point_size),
    EXT_AEP(EXT_tessellation_shader),
    EXT(EXT_texture_array),
@@ -782,7 +845,10 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(NV_image_formats),
    EXT(NV_shader_atomic_float),
    EXT(NV_shader_atomic_int64),
+   EXT(NV_shader_noperspective_interpolation),
    EXT(NV_viewport_array2),
+   EXT(OVR_multiview),
+   EXT(OVR_multiview2),
 };
 
 #undef EXT
@@ -795,7 +861,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
 bool _mesa_glsl_extension::compatible_with_state(
       const _mesa_glsl_parse_state *state, gl_api api, uint8_t gl_version) const
 {
-   return this->available_pred(state->exts, api, gl_version);
+   return this->available_pred(state, api, gl_version);
 }
 
 /**
@@ -814,16 +880,50 @@ void _mesa_glsl_extension::set_flags(_mesa_glsl_parse_state *state,
 }
 
 /**
+ * Check alias_shader_extension for any aliased shader extensions
+ */
+static const char *find_extension_alias(_mesa_glsl_parse_state *state, const char *name)
+{
+   char *exts, *field, *ext_alias = NULL;
+
+   /* Copy alias_shader_extension because strtok() is destructive. */
+   exts = strdup(state->alias_shader_extension);
+   if (exts) {
+      for (field = strtok(exts, ","); field != NULL; field = strtok(NULL, ",")) {
+         if(strncmp(name, field, strlen(name)) == 0) {
+            field = strstr(field, ":");
+            if(field) {
+               ext_alias = strdup(field + 1);
+            }
+            break;
+         }
+      }
+
+      free(exts);
+   }
+   return ext_alias;
+}
+
+/**
  * Find an extension by name in _mesa_glsl_supported_extensions.  If
  * the name is not found, return NULL.
  */
-static const _mesa_glsl_extension *find_extension(const char *name)
+static const _mesa_glsl_extension *find_extension(_mesa_glsl_parse_state *state, const char *name)
 {
+   const char *ext_alias = NULL;
+   if (state->alias_shader_extension) {
+      ext_alias = find_extension_alias(state, name);
+      name = ext_alias ? ext_alias : name;
+   }
+
    for (unsigned i = 0; i < ARRAY_SIZE(_mesa_glsl_supported_extensions); ++i) {
       if (strcmp(name, _mesa_glsl_supported_extensions[i].name) == 0) {
+         free((void *)ext_alias);
          return &_mesa_glsl_supported_extensions[i];
       }
    }
+
+   free((void *)ext_alias);
    return NULL;
 }
 
@@ -878,7 +978,7 @@ _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
          }
       }
    } else {
-      const _mesa_glsl_extension *extension = find_extension(name);
+      const _mesa_glsl_extension *extension = find_extension(state, name);
       if (extension &&
           (extension->compatible_with_state(state, api, gl_version) ||
            (state->consts->AllowGLSLCompatShaders &&
@@ -899,6 +999,23 @@ _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
                assert(extension->compatible_with_state(state, api, gl_version));
                extension->set_flags(state, behavior);
             }
+         } else if (extension->available_pred == has_KHR_shader_subgroup_vote ||
+                    extension->available_pred == has_KHR_shader_subgroup_arithmetic ||
+                    extension->available_pred == has_KHR_shader_subgroup_ballot ||
+                    extension->available_pred == has_KHR_shader_subgroup_shuffle ||
+                    extension->available_pred == has_KHR_shader_subgroup_shuffle_relative ||
+                    extension->available_pred == has_KHR_shader_subgroup_clustered ||
+                    extension->available_pred == has_KHR_shader_subgroup_quad) {
+            /* GLSL KHR_shader_subgroup spec says when any of above subgroup extension
+             * is enabled, KHR_shader_subgroup_basic extension is also implicitly enabled.
+             */
+            for (unsigned i = 0; i < ARRAY_SIZE(_mesa_glsl_supported_extensions); ++i) {
+               const _mesa_glsl_extension *extension = &_mesa_glsl_supported_extensions[i];
+               if (extension->available_pred == has_KHR_shader_subgroup_basic) {
+                  assert(extension->compatible_with_state(state, api, gl_version));
+                  extension->set_flags(state, behavior);
+               }
+            }
          }
       } else {
          static const char fmt[] = "extension `%s' unsupported in %s shader";
@@ -914,9 +1031,11 @@ _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
       }
    }
 
+   if (state->OVR_multiview2_enable)
+      state->OVR_multiview_enable = true;
+
    return true;
 }
-
 
 /**
  * Recurses through <type> and <expr> if <expr> is an aggregate initializer
@@ -972,7 +1091,7 @@ _mesa_ast_set_aggregate_type(const glsl_type *type,
    ai->constructor_type = type;
 
    /* If the aggregate is an array, recursively set its elements' types. */
-   if (type->is_array()) {
+   if (glsl_type_is_array(type)) {
       /* Each array element has the type type->fields.array.
        *
        * E.g., if <type> if struct S[2] we want to set each element's type to
@@ -989,7 +1108,7 @@ _mesa_ast_set_aggregate_type(const glsl_type *type,
       }
 
    /* If the aggregate is a struct, recursively set its fields' types. */
-   } else if (type->is_struct()) {
+   } else if (glsl_type_is_struct(type)) {
       exec_node *expr_node = ai->expressions.get_head_raw();
 
       /* Iterate through the struct's fields. */
@@ -1003,7 +1122,7 @@ _mesa_ast_set_aggregate_type(const glsl_type *type,
          }
       }
    /* If the aggregate is a matrix, set its columns' types. */
-   } else if (type->is_matrix()) {
+   } else if (glsl_type_is_matrix(type)) {
       for (exec_node *expr_node = ai->expressions.get_head_raw();
            !expr_node->is_tail_sentinel();
            expr_node = expr_node->next) {
@@ -1011,7 +1130,7 @@ _mesa_ast_set_aggregate_type(const glsl_type *type,
                                                link);
 
          if (expr->oper == ast_aggregate)
-            _mesa_ast_set_aggregate_type(type->column_type(), expr);
+            _mesa_ast_set_aggregate_type(glsl_get_column_type(type), expr);
       }
    }
 }
@@ -1111,7 +1230,8 @@ _mesa_ast_process_interface_block(YYLTYPE *locp,
       block->default_layout.stream = state->out_qualifier->stream;
    }
 
-   if (state->has_enhanced_layouts() && block->default_layout.flags.q.out) {
+   if (state->has_enhanced_layouts() && block->default_layout.flags.q.out &&
+       state->exts->ARB_transform_feedback3) {
       /* Assign global layout's xfb_buffer value. */
       block->default_layout.flags.q.xfb_buffer = 1;
       block->default_layout.flags.q.explicit_xfb_buffer = 0;
@@ -1831,7 +1951,6 @@ set_shader_inout_layout(struct gl_shader *shader,
       }
       break;
    case MESA_SHADER_TESS_EVAL:
-      shader->OES_tessellation_point_size_enable = state->OES_tessellation_point_size_enable || state->EXT_tessellation_point_size_enable;
       shader->info.TessEval._PrimitiveMode = TESS_PRIMITIVE_UNSPECIFIED;
       if (state->in_qualifier->flags.q.prim_type) {
          switch (state->in_qualifier->prim_type) {
@@ -1860,7 +1979,6 @@ set_shader_inout_layout(struct gl_shader *shader,
          shader->info.TessEval.PointMode = state->in_qualifier->point_mode;
       break;
    case MESA_SHADER_GEOMETRY:
-      shader->OES_geometry_point_size_enable = state->OES_geometry_point_size_enable || state->EXT_geometry_point_size_enable;
       shader->info.Geom.VerticesOut = -1;
       if (state->out_qualifier->flags.q.max_vertices) {
          unsigned qual_max_vertices;
@@ -1880,15 +1998,17 @@ set_shader_inout_layout(struct gl_shader *shader,
       }
 
       if (state->gs_input_prim_type_specified) {
-         shader->info.Geom.InputType = (enum shader_prim)state->in_qualifier->prim_type;
+         shader->info.Geom.InputType =
+            gl_to_mesa_prim(state->in_qualifier->prim_type);
       } else {
-         shader->info.Geom.InputType = SHADER_PRIM_UNKNOWN;
+         shader->info.Geom.InputType = MESA_PRIM_UNKNOWN;
       }
 
       if (state->out_qualifier->flags.q.prim_type) {
-         shader->info.Geom.OutputType = (enum shader_prim)state->out_qualifier->prim_type;
+         shader->info.Geom.OutputType =
+            gl_to_mesa_prim(state->out_qualifier->prim_type);
       } else {
-         shader->info.Geom.OutputType = SHADER_PRIM_UNKNOWN;
+         shader->info.Geom.OutputType = MESA_PRIM_UNKNOWN;
       }
 
       shader->info.Geom.Invocations = 0;
@@ -2018,11 +2138,11 @@ _mesa_glsl_copy_symbols_from_table(struct exec_list *shader_ir,
       const glsl_type *iface =
          src->get_interface("gl_PerVertex", ir_var_shader_in);
       if (iface)
-         dest->add_interface(iface->name, iface, ir_var_shader_in);
+         dest->add_interface(glsl_get_type_name(iface), iface, ir_var_shader_in);
 
       iface = src->get_interface("gl_PerVertex", ir_var_shader_out);
       if (iface)
-         dest->add_interface(iface->name, iface, ir_var_shader_out);
+         dest->add_interface(glsl_get_type_name(iface), iface, ir_var_shader_out);
    }
 }
 
@@ -2099,6 +2219,7 @@ do_late_parsing_checks(struct _mesa_glsl_parse_state *state)
 
 static void
 opt_shader_and_create_symbol_table(const struct gl_constants *consts,
+                                   const struct gl_extensions *exts,
                                    struct glsl_symbol_table *source_symbols,
                                    struct gl_shader *shader)
 {
@@ -2109,18 +2230,11 @@ opt_shader_and_create_symbol_table(const struct gl_constants *consts,
       &consts->ShaderCompilerOptions[shader->Stage];
 
    /* Do some optimization at compile time to reduce shader IR size
-    * and reduce later work if the same shader is linked multiple times
+    * and reduce later work if the same shader is linked multiple times.
+    *
+    * Run it just once, since NIR will do the real optimization.
     */
-   if (consts->GLSLOptimizeConservatively) {
-      /* Run it just once. */
-      do_common_optimization(shader->ir, false, false, options,
-                             consts->NativeIntegers);
-   } else {
-      /* Repeat it until it stops making changes. */
-      while (do_common_optimization(shader->ir, false, false, options,
-                                    consts->NativeIntegers))
-         ;
-   }
+   do_common_optimization(shader->ir, false, options, consts->NativeIntegers);
 
    validate_ir_tree(shader->ir);
 
@@ -2141,6 +2255,17 @@ opt_shader_and_create_symbol_table(const struct gl_constants *consts,
    }
 
    optimize_dead_builtin_variables(shader->ir, other);
+
+   lower_vector_derefs(shader);
+
+   lower_packing_builtins(shader->ir, exts->ARB_shading_language_packing,
+                          exts->ARB_gpu_shader5,
+                          consts->GLSLHasHalfFloatPacking);
+   do_mat_op_to_vec(shader->ir);
+
+   lower_instructions(shader->ir, exts->ARB_gpu_shader5);
+
+   do_vec_index_to_cond_assign(shader->ir);
 
    validate_ir_tree(shader->ir);
 
@@ -2163,8 +2288,7 @@ opt_shader_and_create_symbol_table(const struct gl_constants *consts,
 
 static bool
 can_skip_compile(struct gl_context *ctx, struct gl_shader *shader,
-                 const char *source,
-                 const uint8_t source_sha1[SHA1_DIGEST_LENGTH],
+                 const char *source, const blake3_hash source_blake3,
                  bool force_recompile, bool source_has_shader_include)
 {
    if (!force_recompile) {
@@ -2188,13 +2312,13 @@ can_skip_compile(struct gl_context *ctx, struct gl_shader *shader,
              */
             if (source_has_shader_include) {
                shader->FallbackSource = strdup(source);
-               memcpy(shader->fallback_source_sha1, source_sha1,
-                      SHA1_DIGEST_LENGTH);
+               memcpy(shader->fallback_source_blake3, source_blake3,
+                      BLAKE3_OUT_LEN);
             } else {
                shader->FallbackSource = NULL;
             }
-            memcpy(shader->compiled_source_sha1, source_sha1,
-                   SHA1_DIGEST_LENGTH);
+            memcpy(shader->compiled_source_blake3, source_blake3,
+                   BLAKE3_OUT_LEN);
             return true;
          }
       }
@@ -2210,19 +2334,29 @@ can_skip_compile(struct gl_context *ctx, struct gl_shader *shader,
    return false;
 }
 
+static void
+log_compile_skip(struct gl_context *ctx, struct gl_shader *shader)
+{
+   if (ctx->_Shader->Flags & GLSL_DUMP) {
+      _mesa_log("No GLSL IR for shader %d (shader may be from cache)\n",
+                shader->Name);
+   }
+}
+
 void
 _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
-                          bool dump_ast, bool dump_hir, bool force_recompile)
+                          FILE *dump_ir_file, bool dump_ast, bool dump_hir,
+                          bool force_recompile)
 {
    const char *source;
-   const uint8_t *source_sha1;
+   const uint8_t *source_blake3;
 
    if (force_recompile && shader->FallbackSource) {
       source = shader->FallbackSource;
-      source_sha1 = shader->fallback_source_sha1;
+      source_blake3 = shader->fallback_source_blake3;
    } else {
       source = shader->Source;
-      source_sha1 = shader->source_sha1;
+      source_blake3 = shader->source_blake3;
    }
 
    /* Note this will be true for shaders the have #include inside comments
@@ -2237,9 +2371,11 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
     * keep duplicate copies of the shader include source tree and paths.
     */
    if (!source_has_shader_include &&
-       can_skip_compile(ctx, shader, source, source_sha1, force_recompile,
-                        false))
+       can_skip_compile(ctx, shader, source, source_blake3, force_recompile,
+                        false)) {
+      log_compile_skip(ctx, shader);
       return;
+   }
 
     struct _mesa_glsl_parse_state *state =
       new(shader) _mesa_glsl_parse_state(ctx, shader->Stage, shader);
@@ -2258,9 +2394,11 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
     * include.
     */
    if (source_has_shader_include &&
-       can_skip_compile(ctx, shader, source, source_sha1, force_recompile,
-                        true))
+       can_skip_compile(ctx, shader, source, source_blake3, force_recompile,
+                        true)) {
+      log_compile_skip(ctx, shader);
       return;
+   }
 
    if (!state->error) {
      _mesa_glsl_lexer_ctor(state, source);
@@ -2277,6 +2415,8 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    }
 
    ralloc_free(shader->ir);
+   ralloc_free(shader->nir);
+   shader->nir = NULL;
    shader->ir = new(shader) exec_list;
    if (!state->error && !state->translation_unit.is_empty())
       _mesa_ast_to_hir(shader->ir, state);
@@ -2301,6 +2441,10 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    shader->InfoLog = state->info_log;
    shader->Version = state->language_version;
    shader->IsES = state->es_shader;
+   shader->has_implicit_conversions = state->has_implicit_conversions();
+   shader->has_implicit_int_to_uint_conversion =
+      state->has_implicit_int_to_uint_conversion();
+   shader->KHR_shader_subgroup_basic_enable = state->KHR_shader_subgroup_basic_enable;
 
    struct gl_shader_compiler_options *options =
       &ctx->Const.ShaderCompilerOptions[shader->Stage];
@@ -2312,7 +2456,8 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
       lower_builtins(shader->ir);
       assign_subroutine_indexes(state);
       lower_subroutine(shader->ir, state);
-      opt_shader_and_create_symbol_table(&ctx->Const, state->symbols, shader);
+      opt_shader_and_create_symbol_table(&ctx->Const, &ctx->Extensions,
+                                         state->symbols, shader);
    }
 
    if (!force_recompile) {
@@ -2323,7 +2468,7 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
        */
       if (source_has_shader_include) {
          shader->FallbackSource = strdup(source);
-         memcpy(shader->fallback_source_sha1, source_sha1, SHA1_DIGEST_LENGTH);
+         memcpy(shader->fallback_source_blake3, source_blake3, BLAKE3_OUT_LEN);
       } else {
          shader->FallbackSource = NULL;
       }
@@ -2332,8 +2477,34 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    delete state->symbols;
    ralloc_free(state);
 
-   if (shader->CompileStatus == COMPILE_SUCCESS)
-      memcpy(shader->compiled_source_sha1, source_sha1, SHA1_DIGEST_LENGTH);
+   if (ctx->_Shader && ctx->_Shader->Flags & GLSL_DUMP) {
+      if (shader->CompileStatus) {
+         assert(shader->ir);
+         _mesa_log("GLSL IR for shader %d:\n", shader->Name);
+         _mesa_print_ir(mesa_log_get_file(), shader->ir, NULL);
+         _mesa_log("\n\n");
+      } else {
+         _mesa_log("GLSL shader %d failed to compile.\n", shader->Name);
+      }
+      if (shader->InfoLog && shader->InfoLog[0] != 0) {
+         _mesa_log("GLSL shader %d info log:\n", shader->Name);
+         _mesa_log("%s\n", shader->InfoLog);
+      }
+   }
+
+   if (dump_ir_file) {
+      if (shader->CompileStatus) {
+         assert(shader->ir);
+         _mesa_print_ir(dump_ir_file, shader->ir, NULL);
+      }
+   }
+
+   if (shader->CompileStatus == COMPILE_SUCCESS) {
+      memcpy(shader->compiled_source_blake3, source_blake3, BLAKE3_OUT_LEN);
+
+      shader->nir = glsl_to_nir(&ctx->Const, &shader->ir, NULL, shader->Stage,
+                                options->NirOptions, source_blake3);
+   }
 
    if (ctx->Cache && shader->CompileStatus == COMPILE_SUCCESS) {
       char sha1_buf[41];
@@ -2367,7 +2538,6 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
  */
 bool
 do_common_optimization(exec_list *ir, bool linked,
-		       bool uniform_locations_assigned,
                        const struct gl_shader_compiler_options *options,
                        bool native_integers)
 {
@@ -2388,95 +2558,24 @@ do_common_optimization(exec_list *ir, bool linked,
       }                                                                 \
    } while (false)
 
-   OPT(lower_instructions, ir, SUB_TO_ADD_NEG);
-
-   if (linked) {
-      OPT(do_function_inlining, ir);
-      OPT(do_dead_functions, ir);
-      OPT(do_structure_splitting, ir);
-   }
    OPT(propagate_invariance, ir);
    OPT(do_if_simplification, ir);
    OPT(opt_flatten_nested_if_blocks, ir);
-   OPT(opt_conditional_discard, ir);
-   OPT(do_copy_propagation_elements, ir);
 
    if (options->OptimizeForAOS && !linked)
       OPT(opt_flip_matrices, ir);
 
-   if (linked)
-      OPT(do_dead_code, ir, uniform_locations_assigned);
-   else
-      OPT(do_dead_code_unlinked, ir);
+   OPT(do_dead_code_unlinked, ir);
    OPT(do_dead_code_local, ir);
    OPT(do_tree_grafting, ir);
-   OPT(do_constant_propagation, ir);
-   if (linked)
-      OPT(do_constant_variable, ir);
-   else
-      OPT(do_constant_variable_unlinked, ir);
-   OPT(do_constant_folding, ir);
    OPT(do_minmax_prune, ir);
    OPT(do_rebalance_tree, ir);
    OPT(do_algebraic, ir, native_integers, options);
    OPT(do_lower_jumps, ir, true, true, options->EmitNoMainReturn,
-       options->EmitNoCont, options->EmitNoLoops);
-   OPT(do_vec_index_to_swizzle, ir);
-   OPT(lower_vector_insert, ir, false);
-   OPT(optimize_swizzles, ir);
+       options->EmitNoCont);
 
-   /* Some drivers only call do_common_optimization() once rather than in a
-    * loop, and split arrays causes each element of a constant array to
-    * dereference is own copy of the entire array initilizer. This IR is not
-    * something that can be generated manually in a shader and is not
-    * accounted for by NIR optimisations, the result is an exponential slow
-    * down in compilation speed as a constant arrays element count grows. To
-    * avoid that here we make sure to always clean up the mess split arrays
-    * causes to constant arrays.
-    */
-   bool array_split = optimize_split_arrays(ir, linked);
-   if (array_split)
-      do_constant_propagation(ir);
-   progress |= array_split;
-
-   if (options->MaxUnrollIterations) {
-      loop_state *ls = analyze_loop_variables(ir);
-      if (ls->loop_found) {
-         bool loop_progress = unroll_loops(ir, ls, options);
-         while (loop_progress) {
-            loop_progress = false;
-            loop_progress |= do_constant_propagation(ir);
-            loop_progress |= do_if_simplification(ir);
-
-            /* Some drivers only call do_common_optimization() once rather
-             * than in a loop. So we must call do_lower_jumps() after
-             * unrolling a loop because for drivers that use LLVM validation
-             * will fail if a jump is not the last instruction in the block.
-             * For example the following will fail LLVM validation:
-             *
-             *   (loop (
-             *      ...
-             *   break
-             *   (assign  (x) (var_ref v124)  (expression int + (var_ref v124)
-             *      (constant int (1)) ) )
-             *   ))
-             */
-            loop_progress |= do_lower_jumps(ir, true, true,
-                                            options->EmitNoMainReturn,
-                                            options->EmitNoCont,
-                                            options->EmitNoLoops);
-         }
-         progress |= loop_progress;
-      }
-      delete ls;
-   }
-
-   /* If the PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY cap is set, this pass will
-    * only be called once rather than repeatedly until no further progress is
-    * made.
-    *
-    * If an optimization pass fails to preserve the invariant flag, calling
-    * the pass only once may result in incorrect code generation. Always call
+   /* If an optimization pass fails to preserve the invariant flag, calling
+    * the pass only once earlier may result in incorrect code generation. Always call
     * propagate_invariance() last to avoid this possibility.
     */
    OPT(propagate_invariance, ir);

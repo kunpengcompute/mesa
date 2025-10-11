@@ -37,8 +37,6 @@
 #include "util/u_suballoc.h"
 #include "util/u_threaded_context.h"
 
-#include <directx/d3d12.h>
-
 #define D3D12_GFX_SHADER_STAGES (PIPE_SHADER_TYPES - 1)
 
 enum d3d12_dirty_flags
@@ -160,13 +158,40 @@ struct dxil_validator;
 class ResourceStateManager;
 #endif
 
+#define D3D12_CONTEXT_NO_ID 0xffffffff
+
 struct d3d12_context {
    struct pipe_context base;
+
+   unsigned id;
    struct slab_child_pool transfer_pool;
    struct slab_child_pool transfer_pool_unsync;
+   struct list_head context_list_entry;
    struct threaded_context *threaded_context;
-   struct primconvert_context *primconvert;
+   struct d3d12_batch batches[8];
+   unsigned current_batch_idx;
+   struct util_dynarray recently_destroyed_bos;
+   struct util_dynarray barrier_scratch;
+   struct set *pending_barriers_bos;
+   struct util_dynarray local_pending_barriers_bos;
+   uint64_t submit_id;
+   ID3D12GraphicsCommandList *cmdlist;
+   ID3D12GraphicsCommandList2 *cmdlist2;
+   ID3D12GraphicsCommandList8 *cmdlist8;
+   ID3D12GraphicsCommandList *state_fixup_cmdlist;
+   struct hash_table_u64 *bo_state_table;
    struct blitter_context *blitter;
+   uint flags;
+   bool queries_disabled;
+
+#ifdef __cplusplus
+   ResourceStateManager *resource_state_manager;
+#else
+   void *resource_state_manager; /* opaque pointer; we don't know about classes in C */
+#endif
+
+#ifdef HAVE_GALLIUM_D3D12_GRAPHICS
+   struct primconvert_context *primconvert;
    struct u_suballocator query_allocator;
    struct u_suballocator so_allocator;
    struct hash_table *pso_cache;
@@ -177,9 +202,6 @@ struct d3d12_context {
    struct hash_table *tcs_variant_cache;
    struct hash_table *compute_transform_cache;
 
-   struct d3d12_batch batches[4];
-   unsigned current_batch_idx;
-
    struct pipe_constant_buffer cbufs[PIPE_SHADER_TYPES][PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_framebuffer_state fb;
    struct pipe_vertex_buffer vbs[PIPE_MAX_ATTRIBS];
@@ -187,7 +209,7 @@ struct d3d12_context {
    unsigned num_vbs;
    float flip_y;
    bool need_zero_one_depth_range;
-   enum pipe_prim_type initial_api_prim;
+   enum mesa_prim initial_api_prim;
    struct pipe_viewport_state viewport_states[PIPE_MAX_VIEWPORTS];
    D3D12_VIEWPORT viewports[PIPE_MAX_VIEWPORTS];
    unsigned num_viewports;
@@ -206,7 +228,10 @@ struct d3d12_context {
    struct d3d12_sampler_state *samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
    unsigned num_samplers[PIPE_SHADER_TYPES];
    D3D12_INDEX_BUFFER_VIEW ibv;
+
    dxil_wrap_sampler_state tex_wrap_states[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   dxil_wrap_sampler_state tex_wrap_states_shader_key[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+
    dxil_texture_swizzle_state tex_swizzle_state[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
    enum compare_func tex_compare_func[PIPE_SHADER_TYPES][PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
@@ -230,6 +255,10 @@ struct d3d12_context {
    struct d3d12_shader_selector *gfx_stages[D3D12_GFX_SHADER_STAGES];
    struct d3d12_shader_selector *compute_state;
 
+   bool has_flat_varyings;
+   bool missing_dual_src_outputs;
+   bool manual_depth_range;
+
    struct d3d12_gfx_pipeline_state gfx_pipeline_state;
    struct d3d12_compute_pipeline_state compute_pipeline_state;
    unsigned shader_dirty[PIPE_SHADER_TYPES];
@@ -239,34 +268,29 @@ struct d3d12_context {
    ID3D12PipelineState *current_compute_pso;
    uint16_t reverse_depth_range;
 
-   uint64_t submit_id;
-   ID3D12GraphicsCommandList *cmdlist;
-
    struct list_head active_queries;
-   bool queries_disabled;
 
    struct d3d12_descriptor_pool *sampler_pool;
    struct d3d12_descriptor_handle null_sampler;
 
    PFN_D3D12_SERIALIZE_VERSIONED_ROOT_SIGNATURE D3D12SerializeVersionedRootSignature;
+#ifndef _GAMING_XBOX
+   ID3D12DeviceConfiguration *dev_config;
+#endif
 #ifdef _WIN32
    struct dxil_validator *dxil_validator;
 #endif
 
    struct d3d12_resource *current_predication;
    bool predication_condition;
+   bool queries_suspended;
 
-   uint32_t transform_state_vars[4];
-
-#ifdef __cplusplus
-   ResourceStateManager *resource_state_manager;
-#else
-   void *resource_state_manager; /* opaque pointer; we don't know about classes in C */
-#endif
+   uint32_t transform_state_vars[8];
    struct pipe_query *timestamp_query;
 
    /* used by d3d12_blit.cpp */
    void *stencil_resolve_vs, *stencil_resolve_fs, *stencil_resolve_fs_no_flip, *sampler_state;
+#endif // HAVE_GALLIUM_D3D12_GRAPHICS
 };
 
 static inline struct d3d12_context *
@@ -307,16 +331,18 @@ void
 d3d12_flush_cmdlist_and_wait(struct d3d12_context *ctx);
 
 
-enum d3d12_bind_invalidate_option {
-   D3D12_BIND_INVALIDATE_NONE,
-   D3D12_BIND_INVALIDATE_FULL,
+enum d3d12_transition_flags {
+   D3D12_TRANSITION_FLAG_NONE = 0,
+   D3D12_TRANSITION_FLAG_INVALIDATE_BINDINGS = 1,
+   D3D12_TRANSITION_FLAG_ACCUMULATE_STATE = 2,
+   D3D12_TRANSITION_FLAG_PENDING_MEMORY_BARRIER = 4,
 };
 
 void
 d3d12_transition_resource_state(struct d3d12_context* ctx,
                                 struct d3d12_resource* res,
                                 D3D12_RESOURCE_STATES state,
-                                d3d12_bind_invalidate_option bind_invalidate);
+                                d3d12_transition_flags flags);
 
 void
 d3d12_transition_subresources_state(struct d3d12_context *ctx,
@@ -325,7 +351,7 @@ d3d12_transition_subresources_state(struct d3d12_context *ctx,
                                     unsigned start_layer, unsigned num_layers,
                                     unsigned start_plane, unsigned num_planes,
                                     D3D12_RESOURCE_STATES state,
-                                    d3d12_bind_invalidate_option bind_invalidate);
+                                    d3d12_transition_flags flags);
 
 void
 d3d12_apply_resource_states(struct d3d12_context* ctx, bool is_implicit_dispatch);
@@ -354,5 +380,25 @@ d3d12_need_zero_one_depth_range(struct d3d12_context *ctx);
 
 void
 d3d12_init_sampler_view_descriptor(struct d3d12_sampler_view *sampler_view);
+
+void
+d3d12_invalidate_context_bindings(struct d3d12_context *ctx, struct d3d12_resource *res);
+
+void
+d3d12_rebind_buffer(struct d3d12_context *ctx, struct d3d12_resource *res);
+
+void
+d3d12_init_null_sampler(struct d3d12_context *ctx);
+
+bool
+d3d12_init_polygon_stipple(struct pipe_context *pctx);
+
+void
+d3d12_init_graphics_context_functions(struct d3d12_context *ctx);
+
+#ifdef HAVE_GALLIUM_D3D12_VIDEO
+struct pipe_video_codec* d3d12_video_create_codec( struct pipe_context *context,
+                                                const struct pipe_video_codec *t);
+#endif
 
 #endif

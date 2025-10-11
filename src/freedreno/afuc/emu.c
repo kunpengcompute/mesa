@@ -1,24 +1,6 @@
 /*
  * Copyright © 2021 Google, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include <assert.h>
@@ -34,11 +16,17 @@
 
 #include "freedreno_pm4.h"
 
+#include "afuc-isa.h"
+
 #include "emu.h"
 #include "util.h"
 
 #define rotl32(x,r) (((x) << (r)) | ((x) >> (32 - (r))))
 #define rotl64(x,r) (((x) << (r)) | ((x) >> (64 - (r))))
+
+EMU_SQE_REG(SP);
+EMU_SQE_REG(STACK0);
+EMU_CONTROL_REG(DRAW_STATE_SET_HDR);
 
 /**
  * AFUC emulator.  Currently only supports a6xx
@@ -95,10 +83,17 @@ emu_alu(struct emu *emu, afuc_opc opc, uint32_t src1, uint32_t src2)
       else if (src1 == src2)
          return 0x2b;
       return 0x1e;
+   case OPC_BIC:
+      return src1 & ~src2;
    case OPC_MSB:
       if (!src2)
          return 0;
       return util_last_bit(src2) - 1;
+   case OPC_SETBIT: {
+      unsigned bit = src2 >> 1;
+      unsigned val = src2 & 1;
+      return (src1 & ~(1u << bit)) | (val << bit);
+   }
    default:
       printf("unhandled alu opc: 0x%02x\n", opc);
       exit(1);
@@ -120,37 +115,23 @@ load_store_addr(struct emu *emu, unsigned gpr)
 }
 
 static void
-emu_instr(struct emu *emu, afuc_instr *instr)
+emu_instr(struct emu *emu, struct afuc_instr *instr)
 {
    uint32_t rem = emu_get_gpr_reg(emu, REG_REM);
-   afuc_opc opc;
-   bool rep;
 
-   afuc_get_opc(instr, &opc, &rep);
-
-   switch (opc) {
+   switch (instr->opc) {
    case OPC_NOP:
       break;
-   case OPC_ADD ... OPC_CMP: {
-      uint32_t val = emu_alu(emu, opc,
-                             emu_get_gpr_reg(emu, instr->alui.src),
-                             instr->alui.uimm);
-      emu_set_gpr_reg(emu, instr->alui.dst, val);
-      break;
-   }
-   case OPC_MOVI: {
-      uint32_t val = instr->movi.uimm << instr->movi.shift;
-      emu_set_gpr_reg(emu, instr->movi.dst, val);
-      break;
-   }
-   case OPC_ALU: {
-      uint32_t val = emu_alu(emu, instr->alu.alu,
-                             emu_get_gpr_reg(emu, instr->alu.src1),
-                             emu_get_gpr_reg(emu, instr->alu.src2));
-      emu_set_gpr_reg(emu, instr->alu.dst, val);
+   case OPC_MSB:
+   case OPC_ADD ... OPC_BIC: {
+      uint32_t val = emu_alu(emu, instr->opc,
+                             emu_get_gpr_reg(emu, instr->src1),
+                             instr->has_immed ? instr->immed : 
+                             emu_get_gpr_reg_alu(emu, instr->src2, instr->peek));
+      emu_set_gpr_reg(emu, instr->dst, val);
 
-      if (instr->alu.xmov) {
-         unsigned m = MIN2(instr->alu.xmov, rem);
+      if (instr->xmov) {
+         unsigned m = MIN2(instr->xmov, rem);
 
          assert(m <= 3);
 
@@ -158,108 +139,163 @@ emu_instr(struct emu *emu, afuc_instr *instr)
             emu_set_gpr_reg(emu, REG_REM, --rem);
             emu_dump_state_change(emu);
             emu_set_gpr_reg(emu, REG_DATA,
-                            emu_get_gpr_reg(emu, instr->alu.src2));
+                            emu_get_gpr_reg(emu, instr->src2));
          } else if (m == 2) {
             emu_set_gpr_reg(emu, REG_REM, --rem);
             emu_dump_state_change(emu);
             emu_set_gpr_reg(emu, REG_DATA,
-                            emu_get_gpr_reg(emu, instr->alu.src2));
+                            emu_get_gpr_reg(emu, instr->src2));
             emu_set_gpr_reg(emu, REG_REM, --rem);
             emu_dump_state_change(emu);
             emu_set_gpr_reg(emu, REG_DATA,
-                            emu_get_gpr_reg(emu, instr->alu.src2));
+                            emu_get_gpr_reg(emu, instr->src2));
          } else if (m == 3) {
             emu_set_gpr_reg(emu, REG_REM, --rem);
             emu_dump_state_change(emu);
             emu_set_gpr_reg(emu, REG_DATA,
-                            emu_get_gpr_reg(emu, instr->alu.src2));
+                            emu_get_gpr_reg(emu, instr->src2));
             emu_set_gpr_reg(emu, REG_REM, --rem);
             emu_dump_state_change(emu);
-            emu_set_gpr_reg(emu, instr->alu.dst,
-                            emu_get_gpr_reg(emu, instr->alu.src2));
+            emu_set_gpr_reg(emu, instr->dst,
+                            emu_get_gpr_reg(emu, instr->src2));
             emu_set_gpr_reg(emu, REG_REM, --rem);
             emu_dump_state_change(emu);
             emu_set_gpr_reg(emu, REG_DATA,
-                            emu_get_gpr_reg(emu, instr->alu.src2));
+                            emu_get_gpr_reg(emu, instr->src2));
          }
       }
       break;
    }
-   case OPC_CWRITE6: {
-      uint32_t src1 = emu_get_gpr_reg(emu, instr->control.src1);
-      uint32_t src2 = emu_get_gpr_reg(emu, instr->control.src2);
-
-      if (instr->control.flags == 0x4) {
-         emu_set_gpr_reg(emu, instr->control.src2, src2 + instr->control.uimm);
-      } else if (instr->control.flags && !emu->quiet) {
-         printf("unhandled flags: %x\n", instr->control.flags);
-      }
-
-      emu_set_control_reg(emu, src2 + instr->control.uimm, src1);
+   case OPC_MOVI: {
+      uint32_t val = instr->immed << instr->shift;
+      emu_set_gpr_reg(emu, instr->dst, val);
       break;
    }
-   case OPC_CREAD6: {
-      uint32_t src2 = emu_get_gpr_reg(emu, instr->control.src2);
-
-      if (instr->control.flags == 0x4) {
-         emu_set_gpr_reg(emu, instr->control.src2, src2 + instr->control.uimm);
-      } else if (instr->control.flags && !emu->quiet) {
-         printf("unhandled flags: %x\n", instr->control.flags);
-      }
-
-      emu_set_gpr_reg(emu, instr->control.src1,
-                      emu_get_control_reg(emu, src2 + instr->control.uimm));
+   case OPC_SETBITI: {
+      uint32_t src = emu_get_gpr_reg(emu, instr->src1);
+      emu_set_gpr_reg(emu, instr->dst, src | (1u << instr->bit));
       break;
    }
-   case OPC_LOAD6: {
-      uintptr_t addr = load_store_addr(emu, instr->control.src2) +
-            instr->control.uimm;
+   case OPC_CLRBIT: {
+      uint32_t src = emu_get_gpr_reg(emu, instr->src1);
+      emu_set_gpr_reg(emu, instr->dst, src & ~(1u << instr->bit));
+      break;
+   }
+   case OPC_UBFX: {
+      uint32_t src = emu_get_gpr_reg(emu, instr->src1);
+      unsigned lo = instr->bit, hi = instr->immed;
+      uint32_t dst = (src >> lo) & BITFIELD_MASK(hi - lo + 1);
+      emu_set_gpr_reg(emu, instr->dst, dst);
+      break;
+   }
+   case OPC_BFI: {
+      uint32_t src = emu_get_gpr_reg(emu, instr->src1);
+      unsigned lo = instr->bit, hi = instr->immed;
+      src = (src & BITFIELD_MASK(hi - lo + 1)) << lo;
+      emu_set_gpr_reg(emu, instr->dst, emu_get_gpr_reg(emu, instr->dst) | src);
+      break;
+   }
+   case OPC_CWRITE: {
+      uint32_t src1 = emu_get_gpr_reg(emu, instr->src1);
+      uint32_t src2 = emu_get_gpr_reg(emu, instr->src2);
+      uint32_t reg = src2 + instr->immed;
 
-      if (instr->control.flags == 0x4) {
-         uint32_t src2 = emu_get_gpr_reg(emu, instr->control.src2);
-         emu_set_gpr_reg(emu, instr->control.src2, src2 + instr->control.uimm);
-      } else if (instr->control.flags && !emu->quiet) {
-         printf("unhandled flags: %x\n", instr->control.flags);
+      if (instr->preincrement) {
+         emu_set_gpr_reg(emu, instr->src2, reg);
+      }
+
+      emu_set_control_reg(emu, reg, src1);
+
+      for (unsigned i = 0; i < instr->sds; i++) {
+         uint32_t src1 = emu_get_gpr_reg(emu, instr->src1);
+
+         /* TODO: There is likely a DRAW_STATE_SET_BASE register on a6xx, as
+          * there is on a7xx, and we should be writing that instead of setting
+          * the base directly.
+          */
+         if (reg == emu_reg_offset(&DRAW_STATE_SET_HDR))
+            emu_set_draw_state_base(emu, i, src1);
+      }
+      break;
+   }
+   case OPC_CREAD: {
+      uint32_t src1 = emu_get_gpr_reg(emu, instr->src1);
+
+      if (instr->preincrement) {
+         emu_set_gpr_reg(emu, instr->src1, src1 + instr->immed);
+      }
+
+      emu_set_gpr_reg(emu, instr->dst,
+                      emu_get_control_reg(emu, src1 + instr->immed));
+      break;
+   }
+   case OPC_SWRITE: {
+      uint32_t src1 = emu_get_gpr_reg(emu, instr->src1);
+      uint32_t src2 = emu_get_gpr_reg(emu, instr->src2);
+
+      if (instr->preincrement) {
+         emu_set_gpr_reg(emu, instr->src2, src2 + instr->immed);
+      }
+
+      emu_set_sqe_reg(emu, src2 + instr->immed, src1);
+      break;
+   }
+   case OPC_SREAD: {
+      uint32_t src1 = emu_get_gpr_reg(emu, instr->src1);
+
+      if (instr->preincrement) {
+         emu_set_gpr_reg(emu, instr->src1, src1 + instr->immed);
+      }
+
+      emu_set_gpr_reg(emu, instr->dst,
+                      emu_get_sqe_reg(emu, src1 + instr->immed));
+      break;
+   }
+   case OPC_LOAD: {
+      uintptr_t addr = load_store_addr(emu, instr->src1) +
+            instr->immed;
+
+      if (instr->preincrement) {
+         uint32_t src1 = emu_get_gpr_reg(emu, instr->src1);
+         emu_set_gpr_reg(emu, instr->src1, src1 + instr->immed);
       }
 
       uint32_t val = emu_mem_read_dword(emu, addr);
 
-      emu_set_gpr_reg(emu, instr->control.src1, val);
+      emu_set_gpr_reg(emu, instr->dst, val);
 
       break;
    }
-   case OPC_STORE6: {
-      uintptr_t addr = load_store_addr(emu, instr->control.src2) +
-            instr->control.uimm;
+   case OPC_STORE: {
+      uintptr_t addr = load_store_addr(emu, instr->src2) +
+            instr->immed;
 
-      if (instr->control.flags == 0x4) {
-         uint32_t src2 = emu_get_gpr_reg(emu, instr->control.src2);
-         emu_set_gpr_reg(emu, instr->control.src2, src2 + instr->control.uimm);
-      } else if (instr->control.flags && !emu->quiet) {
-         printf("unhandled flags: %x\n", instr->control.flags);
+      if (instr->preincrement) {
+         uint32_t src2 = emu_get_gpr_reg(emu, instr->src2);
+         emu_set_gpr_reg(emu, instr->src2, src2 + instr->immed);
       }
 
-      uint32_t val = emu_get_gpr_reg(emu, instr->control.src1);
+      uint32_t val = emu_get_gpr_reg(emu, instr->src1);
 
       emu_mem_write_dword(emu, addr, val);
 
       break;
    }
    case OPC_BRNEI ... OPC_BREQB: {
-      uint32_t off = emu->gpr_regs.pc + instr->br.ioff;
-      uint32_t src = emu_get_gpr_reg(emu, instr->br.src);
+      uint32_t off = emu->gpr_regs.pc + instr->offset;
+      uint32_t src = emu_get_gpr_reg(emu, instr->src1);
 
-      if (opc == OPC_BRNEI) {
-         if (src != instr->br.bit_or_imm)
+      if (instr->opc == OPC_BRNEI) {
+         if (src != instr->immed)
             emu->branch_target = off;
-      } else if (opc == OPC_BREQI) {
-         if (src == instr->br.bit_or_imm)
+      } else if (instr->opc == OPC_BREQI) {
+         if (src == instr->immed)
             emu->branch_target = off;
-      } else if (opc == OPC_BRNEB) {
-         if (!(src & (1 << instr->br.bit_or_imm)))
+      } else if (instr->opc == OPC_BRNEB) {
+         if (!(src & (1 << instr->bit)))
             emu->branch_target = off;
-      } else if (opc == OPC_BREQB) {
-         if (src & (1 << instr->br.bit_or_imm))
+      } else if (instr->opc == OPC_BREQB) {
+         if (src & (1 << instr->bit))
             emu->branch_target = off;
       } else {
          assert(0);
@@ -267,42 +303,59 @@ emu_instr(struct emu *emu, afuc_instr *instr)
       break;
    }
    case OPC_RET: {
-      assert(emu->call_stack_idx > 0);
+      unsigned sp = emu_get_reg32(emu, &SP);
+      assert(sp > 0);
 
       /* counter-part to 'call' instruction, also has a delay slot: */
-      emu->branch_target = emu->call_stack[--emu->call_stack_idx];
+      emu->branch_target = emu_get_sqe_reg(emu, emu_reg_offset(&STACK0) + sp - 1);
+      emu_set_reg32(emu, &SP, sp - 1);
 
       break;
    }
    case OPC_CALL: {
-      assert(emu->call_stack_idx < ARRAY_SIZE(emu->call_stack));
+      unsigned sp = emu_get_reg32(emu, &SP);
+      assert(sp + emu_reg_offset(&STACK0) < ARRAY_SIZE(emu->sqe_regs.val));
 
       /* call looks to have same delay-slot behavior as branch/etc, so
        * presumably the return PC is two instructions later:
        */
-      emu->call_stack[emu->call_stack_idx++] = emu->gpr_regs.pc + 2;
-      emu->branch_target = instr->call.uoff;
+      emu_set_sqe_reg(emu, emu_reg_offset(&STACK0) + sp, emu->gpr_regs.pc + 2);
+      emu_set_reg32(emu, &SP, sp + 1);
+      emu->branch_target = instr->literal;
 
       break;
    }
-   case OPC_WIN: {
+   case OPC_WAITIN: {
       assert(!emu->branch_target);
       emu->run_mode = false;
       emu->waitin = true;
       break;
    }
-   /* OPC_PREEMPTLEAVE6 */
+   case OPC_BL: {
+      emu_set_gpr_reg(emu, REG_LR, emu->gpr_regs.pc + 2);
+      emu->branch_target = instr->literal;
+      break;
+   }
+   case OPC_JUMPR: {
+      emu->branch_target = emu_get_gpr_reg(emu, instr->src1);
+      break;
+   }
+   case OPC_SRET: {
+      emu->branch_target = emu_get_gpr_reg(emu, REG_LR);
+      /* TODO: read $sp and check for stack overflow? */
+      break;
+   }
    case OPC_SETSECURE: {
       // TODO this acts like a conditional branch, but in which case
       // does it branch?
       break;
    }
    default:
-      printf("unhandled opc: 0x%02x\n", opc);
+      printf("unhandled opc: 0x%02x\n", instr->opc);
       exit(1);
    }
 
-   if (rep) {
+   if (instr->rep) {
       assert(rem > 0);
       emu_set_gpr_reg(emu, REG_REM, --rem);
    }
@@ -311,9 +364,26 @@ emu_instr(struct emu *emu, afuc_instr *instr)
 void
 emu_step(struct emu *emu)
 {
-   afuc_instr *instr = (void *)&emu->instrs[emu->gpr_regs.pc];
-   afuc_opc opc;
-   bool rep;
+   struct afuc_instr *instr;
+   bool decoded =
+      afuc_isa_decode((void *)&instr, (void *)&emu->instrs[emu->gpr_regs.pc],
+                      &(struct isa_decode_options){
+                         .gpu_id = gpuver,
+                      });
+
+   if (!decoded) {
+      uint32_t instr_val = emu->instrs[emu->gpr_regs.pc];
+      if ((instr_val >> 27) == 0) {
+         /* This is printed as an undecoded literal to show the immediate
+          * payload, but when executing it's just a NOP.
+          */
+         instr = calloc(1, sizeof(struct afuc_instr));
+         instr->opc = OPC_NOP;
+      } else {
+         printf("unmatched instruction: 0x%08x\n", instr_val);
+         exit(1);
+      }
+   }
 
    emu_main_prompt(emu);
 
@@ -323,9 +393,7 @@ emu_step(struct emu *emu)
    bool waitin = emu->waitin;
    emu->waitin = false;
 
-   afuc_get_opc(instr, &opc, &rep);
-
-   if (rep) {
+   if (instr->rep) {
       do {
          if (!emu_get_gpr_reg(emu, REG_REM))
             break;
@@ -380,19 +448,30 @@ emu_step(struct emu *emu)
    }
 
    emu_dump_state_change(emu);
+
+   free(instr);
 }
 
 void
 emu_run_bootstrap(struct emu *emu)
 {
-   EMU_CONTROL_REG(PACKET_TABLE_WRITE_ADDR);
+   EMU_CONTROL_REG(THREAD_SYNC);
 
    emu->quiet = true;
    emu->run_mode = true;
+   emu->bootstrap_mode = true;
+   emu->bootstrap_finished = false;
 
-   while (emu_get_reg32(emu, &PACKET_TABLE_WRITE_ADDR) < 0x80) {
+   if (gpuver == 6 && emu->processor == EMU_PROC_LPAC) {
+      /* Emulate what the SQE bootstrap routine does after launching LPAC */
+      emu_set_reg32(emu, &THREAD_SYNC, 1u << 0);
+   }
+
+   while (!emu->bootstrap_finished && !emu->waitin) {
       emu_step(emu);
    }
+
+   emu->bootstrap_mode = false;
 }
 
 
@@ -451,17 +530,34 @@ emu_init(struct emu *emu)
 
    EMU_GPU_REG(CP_SQE_INSTR_BASE);
    EMU_GPU_REG(CP_LPAC_SQE_INSTR_BASE);
+   EMU_CONTROL_REG(BV_INSTR_BASE);
+   EMU_CONTROL_REG(LPAC_INSTR_BASE);
 
    /* Setup the address of the SQE fw, just use the normal CPU ptr address: */
-   if (emu->lpac) {
-      emu_set_reg64(emu, &CP_LPAC_SQE_INSTR_BASE, EMU_INSTR_BASE);
-   } else {
+   switch (emu->processor) {
+   case EMU_PROC_SQE:
       emu_set_reg64(emu, &CP_SQE_INSTR_BASE, EMU_INSTR_BASE);
+      break;
+   case EMU_PROC_BV:
+      emu_set_reg64(emu, &BV_INSTR_BASE, EMU_INSTR_BASE);
+      break;
+   case EMU_PROC_LPAC:
+      if (gpuver >= 7)
+         emu_set_reg64(emu, &LPAC_INSTR_BASE, EMU_INSTR_BASE);
+      else
+         emu_set_reg64(emu, &CP_LPAC_SQE_INSTR_BASE, EMU_INSTR_BASE);
+      break;
    }
 
-   if (emu->gpu_id == 660) {
+   if (emu->fw_id == AFUC_A750) {
+      emu_set_control_reg(emu, 0, 7 << 28);
+      emu_set_control_reg(emu, 2, 0x40 << 8);
+   } else if (emu->fw_id == AFUC_A730 || emu->fw_id == AFUC_A740) {
+      emu_set_control_reg(emu, 0xef, 1 << 21);
+      emu_set_control_reg(emu, 0, 7 << 28);
+   } else if (emu->fw_id == AFUC_A660) {
       emu_set_control_reg(emu, 0, 3 << 28);
-   } else if (emu->gpu_id == 650) {
+   } else if (emu->fw_id == AFUC_A650) {
       emu_set_control_reg(emu, 0, 1 << 28);
    }
 }
@@ -471,12 +567,12 @@ emu_fini(struct emu *emu)
 {
    uint32_t *instrs = emu->instrs;
    unsigned sizedwords = emu->sizedwords;
-   unsigned gpu_id = emu->gpu_id;
+   unsigned fw_id = emu->fw_id;
 
    munmap(emu->gpumem, EMU_MEMORY_SIZE);
    memset(emu, 0, sizeof(*emu));
 
    emu->instrs = instrs;
    emu->sizedwords = sizedwords;
-   emu->gpu_id = gpu_id;
+   emu->fw_id = fw_id;
 }

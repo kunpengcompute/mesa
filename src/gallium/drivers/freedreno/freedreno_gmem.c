@@ -1,39 +1,22 @@
 /*
- * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
  */
 
 #include "pipe/p_state.h"
-#include "util/debug.h"
 #include "util/format/u_format.h"
 #include "util/hash_table.h"
+#include "util/macros.h"
+#include "util/u_debug.h"
 #include "util/u_dump.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_string.h"
-#include "u_tracepoints.h"
 #include "util/u_trace_gallium.h"
+#include "u_tracepoints.h"
 
 #include "freedreno_context.h"
 #include "freedreno_fence.h"
@@ -300,6 +283,8 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
    gmem->width = key->width;
    gmem->height = key->height;
 
+   gmem->tile = rzalloc_array(gmem, struct fd_tile, gmem->nbins_x * gmem->nbins_y);
+
    if (BIN_DEBUG) {
       dump_gmem_state(gmem);
       dump_gmem_key(key);
@@ -313,7 +298,6 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
     * performance.
     */
 
-#define div_round_up(v, a) (((v) + (a)-1) / (a))
    /* figure out number of tiles per pipe: */
    if (is_a20x(screen)) {
       /* for a20x we want to minimize the number of "pipes"
@@ -324,16 +308,16 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
       tpp_y = 6;
    } else {
       tpp_x = tpp_y = 1;
-      while (div_round_up(gmem->nbins_y, tpp_y) > npipes)
+      while (DIV_ROUND_UP(gmem->nbins_y, tpp_y) > npipes)
          tpp_y += 2;
-      while ((div_round_up(gmem->nbins_y, tpp_y) *
-              div_round_up(gmem->nbins_x, tpp_x)) > npipes)
+      while ((DIV_ROUND_UP(gmem->nbins_y, tpp_y) *
+              DIV_ROUND_UP(gmem->nbins_x, tpp_x)) > npipes)
          tpp_x += 1;
    }
 
-#ifdef DEBUG
-   tpp_x = env_var_as_unsigned("TPP_X", tpp_x);
-   tpp_y = env_var_as_unsigned("TPP_Y", tpp_x);
+#if MESA_DEBUG
+   tpp_x = debug_get_num_option("TPP_X", tpp_x);
+   tpp_y = debug_get_num_option("TPP_Y", tpp_y);
 #endif
 
    gmem->maxpw = tpp_x;
@@ -396,10 +380,8 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
          struct fd_tile *tile = &gmem->tile[t];
          uint32_t p;
 
-         assert(t < ARRAY_SIZE(gmem->tile));
-
          /* pipe number: */
-         p = ((i / tpp_y) * div_round_up(gmem->nbins_x, tpp_x)) + (j / tpp_x);
+         p = ((i / tpp_y) * DIV_ROUND_UP(gmem->nbins_x, tpp_x)) + (j / tpp_x);
          assert(p < gmem->num_vsc_pipes);
 
          /* clip bin width: */
@@ -425,6 +407,19 @@ gmem_stateobj_init(struct fd_screen *screen, struct gmem_key *key)
       }
 
       yoff += bh;
+   }
+
+   /* Swap the order of alternating rows to form an 'S' pattern, to improve
+    * cache access patterns (ie. adjacent bins are likely to access adjacent
+    * portions of textures)
+    */
+   if (!FD_DBG(NOSBIN)) {
+      for (i = 0; i < gmem->nbins_y; i+=2) {
+         unsigned col0 = gmem->nbins_x * i;
+         for (j = 0; j < gmem->nbins_x/2; j++) {
+            SWAP(gmem->tile[col0 + j], gmem->tile[col0 + gmem->nbins_x - j - 1]);
+         }
+      }
    }
 
    if (BIN_DEBUG) {
@@ -467,9 +462,28 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
 
    if (has_zs || assume_zs) {
       struct fd_resource *rsc = fd_resource(pfb->zsbuf->texture);
-      key->zsbuf_cpp[0] = rsc->layout.cpp;
+      key->zsbuf_cpp[0] = rsc->layout.cpp * pfb->samples;
       if (rsc->stencil)
-         key->zsbuf_cpp[1] = rsc->stencil->layout.cpp;
+         key->zsbuf_cpp[1] = rsc->stencil->layout.cpp * pfb->samples;
+
+      /* If we clear z or s but not both, and we are using z24s8 (ie.
+       * !separate_stencil) then we need to restore the other, even if
+       * batch_draw_tracking_for_dirty_bits() never saw a draw with
+       * depth or stencil enabled.
+       *
+       * This only applies to the fast-clear path, clears done with
+       * u_blitter will show up as a normal draw with depth and/or
+       * stencil enabled.
+       */
+      unsigned zsclear = batch->cleared & (FD_BUFFER_DEPTH | FD_BUFFER_STENCIL);
+      if (zsclear) {
+         const struct util_format_description *desc =
+               util_format_description(pfb->zsbuf->format);
+         if (util_format_has_depth(desc) && !(zsclear & FD_BUFFER_DEPTH))
+            batch->restore |= FD_BUFFER_DEPTH;
+         if (util_format_has_stencil(desc) && !(zsclear & FD_BUFFER_STENCIL))
+            batch->restore |= FD_BUFFER_STENCIL;
+      }
    } else {
       /* we might have a zsbuf, but it isn't used */
       batch->restore &= ~(FD_BUFFER_DEPTH | FD_BUFFER_STENCIL);
@@ -500,15 +514,15 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
       if (FD_DBG(NOSCIS)) {
          scissor->minx = 0;
          scissor->miny = 0;
-         scissor->maxx = pfb->width;
-         scissor->maxy = pfb->height;
+         scissor->maxx = pfb->width - 1;
+         scissor->maxy = pfb->height - 1;
       }
 
       /* round down to multiple of alignment: */
       key->minx = scissor->minx & ~(screen->info->gmem_align_w - 1);
       key->miny = scissor->miny & ~(screen->info->gmem_align_h - 1);
-      key->width = scissor->maxx - key->minx;
-      key->height = scissor->maxy - key->miny;
+      key->width = scissor->maxx + 1 - key->minx;
+      key->height = scissor->maxy + 1 - key->miny;
    }
 
    if (is_a20x(screen) && batch->cleared) {
@@ -517,7 +531,7 @@ gmem_key_init(struct fd_batch *batch, bool assume_zs, bool no_scis_opt)
        */
       key->gmem_page_align = 8;
    } else if (is_a6xx(screen)) {
-      key->gmem_page_align = (screen->info->tile_align_w == 96) ? 3 : 1;
+      key->gmem_page_align = screen->info->num_ccu;
    } else {
       // TODO re-check this across gens.. maybe it should only
       // be a single page in some cases:
@@ -640,7 +654,11 @@ render_sysmem(struct fd_batch *batch) assert_dt
       trace_start_draw_ib(&batch->trace, batch->gmem);
    }
    /* emit IB to drawcmds: */
-   ctx->screen->emit_ib(batch->gmem, batch->draw);
+   if (ctx->emit_sysmem) {
+      ctx->emit_sysmem(batch);
+   } else {
+      ctx->screen->emit_ib(batch->gmem, batch->draw);
+   }
 
    if (!batch->nondraw) {
       trace_end_draw_ib(&batch->trace, batch->gmem);
@@ -655,14 +673,24 @@ render_sysmem(struct fd_batch *batch) assert_dt
 static void
 flush_ring(struct fd_batch *batch)
 {
-   if (FD_DBG(NOHW))
-      return;
-
-   fd_submit_flush(batch->submit, batch->in_fence_fd,
-                   batch->fence ? &batch->fence->submit_fence : NULL);
-
+   bool use_fence_fd = false;
    if (batch->fence)
-      fd_fence_set_batch(batch->fence, NULL);
+      use_fence_fd = batch->fence->use_fence_fd;
+
+   struct fd_fence *fence;
+
+   if (FD_DBG(NOHW)) {
+      /* construct a dummy fence: */
+      fence = fd_fence_new(batch->ctx->pipe, use_fence_fd);
+   } else {
+      fence = fd_submit_flush(batch->submit, batch->in_fence_fd, use_fence_fd);
+   }
+
+   if (batch->fence) {
+      fd_pipe_fence_set_submit_fence(batch->fence, fence);
+   } else {
+      fd_fence_del(fence);
+   }
 }
 
 void
@@ -673,6 +701,12 @@ fd_gmem_render_tiles(struct fd_batch *batch)
    bool sysmem = false;
 
    ctx->submit_count++;
+
+   /* Sometimes we need to flush a batch just to get a fence, with no
+    * clears or draws.. in this case promote to nondraw:
+    */
+   if (!(batch->cleared || batch->num_draws))
+      sysmem = true;
 
    if (!batch->nondraw) {
 #if HAVE_PERFETTO
@@ -716,7 +750,7 @@ fd_gmem_render_tiles(struct fd_batch *batch)
     * bypass.
     */
    if (batch->tessellation) {
-      debug_assert(ctx->emit_sysmem_prep);
+      assert(ctx->emit_sysmem_prep);
       sysmem = true;
    }
 
@@ -765,7 +799,7 @@ fd_gmem_render_tiles(struct fd_batch *batch)
 
    flush_ring(batch);
 
-   u_trace_flush(&batch->trace, NULL, false);
+   u_trace_flush(&batch->trace, NULL, U_TRACE_FRAME_UNKNOWN, false);
 }
 
 /* Determine a worst-case estimate (ie. assuming we don't eliminate an

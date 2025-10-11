@@ -1,30 +1,12 @@
 /*
  * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
  * Copyright 2010 Marek Olšák <maraeo@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "draw/draw_context.h"
 #include "draw/draw_private.h"
 
-#include "util/simple_list.h"
 #include "util/u_upload_mgr.h"
 
 #include "util/os_time.h"
@@ -62,13 +44,13 @@ static void r300_flush_and_cleanup(struct r300_context *r300, unsigned flags,
             r300_mark_atom_dirty(r300, atom);
         }
     }
-    r300->vertex_arrays_dirty = TRUE;
+    r300->vertex_arrays_dirty = true;
 
     /* Unmark HWTCL state for SWTCL. */
     if (!r300->screen->caps.has_tcl) {
-        r300->vs_state.dirty = FALSE;
-        r300->vs_constants.dirty = FALSE;
-        r300->clip_state.dirty = FALSE;
+        r300->vs_state.dirty = false;
+        r300->vs_constants.dirty = false;
+        r300->clip_state.dirty = false;
     }
 }
 
@@ -102,7 +84,7 @@ void r300_flush(struct pipe_context *pipe,
             r300->num_z_clears = 0;
         } else if (r300->hyperz_time_of_last_flush - os_time_get() > 2000000) {
             /* If there hasn't been a Z clear for 2 seconds, revoke Hyper-Z access. */
-            r300->hiz_in_use = FALSE;
+            r300->hiz_in_use = false;
 
             /* Decompress the Z buffer. */
             if (r300->zmask_in_use) {
@@ -113,14 +95,14 @@ void r300_flush(struct pipe_context *pipe,
                 }
 
                 if (fence && *fence)
-                    r300->rws->fence_reference(fence, NULL);
+                    r300->rws->fence_reference(r300->rws, fence, NULL);
                 r300_flush_and_cleanup(r300, flags, fence);
             }
 
             /* Revoke Hyper-Z access, so that some other process can take it. */
             r300->rws->cs_request_feature(&r300->cs, RADEON_FID_R300_HYPERZ_ACCESS,
-                                          FALSE);
-            r300->hyperz_enabled = FALSE;
+                                          false);
+            r300->hyperz_enabled = false;
         }
     }
 }

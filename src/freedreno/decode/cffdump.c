@@ -1,24 +1,6 @@
 /*
- * Copyright (c) 2012 Rob Clark <robdclark@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robdclark@gmail.com>
+ * SPDX-License-Identifier: MIT
  */
 
 #include <assert.h>
@@ -35,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -47,10 +30,9 @@
 #include "redump.h"
 #include "rnnutil.h"
 #include "script.h"
+#include "rdutil.h"
 
-static struct cffdec_options options = {
-   .gpu_id = 220,
-};
+static struct cffdec_options options;
 
 static bool needs_wfi = false;
 static bool is_blob = false;
@@ -66,7 +48,7 @@ print_usage(const char *name)
 {
    /* clang-format off */
    fprintf(stderr, "Usage:\n\n"
-           "\t%s [OPTSIONS]... FILE...\n\n"
+           "\t%s [OPTIONS]... FILE...\n\n"
            "Options:\n"
            "\t-v, --verbose    - more verbose disassembly\n"
            "\t--dump-shaders   - dump each shader to a raw file\n"
@@ -85,6 +67,7 @@ print_usage(const char *name)
            "\t-D, --draw=N     - decode only draw N\n"
            "\t-e, --exe=NAME   - only decode cmdstream from named process\n"
            "\t--textures       - dump texture contents (if possible)\n"
+           "\t--bindless       - dump bindless descriptors contents (if possible)\n"
            "\t-L, --script=LUA - run specified lua script to analyze state\n"
            "\t-q, --query=REG  - query mode, dump only specified query registers on\n"
            "\t                   each draw; multiple --query/-q args can be given to\n"
@@ -122,6 +105,7 @@ static const struct option opts[] = {
       { "no-pager",        no_argument, &interactive,           0 },
       { "pager",           no_argument, &interactive,           1 },
       { "textures",        no_argument, &options.dump_textures, 1 },
+      { "bindless",        no_argument, &options.dump_bindless, 1 },
       { "show-compositor", no_argument, &show_comp,             1 },
       { "query-all",       no_argument, &options.query_mode,    QUERY_ALL },
       { "query-written",   no_argument, &options.query_mode,    QUERY_WRITTEN },
@@ -241,25 +225,14 @@ main(int argc, char **argv)
    return ret;
 }
 
-static void
-parse_addr(uint32_t *buf, int sz, unsigned int *len, uint64_t *gpuaddr)
-{
-   *gpuaddr = buf[0];
-   *len = buf[1];
-   if (sz > 8)
-      *gpuaddr |= ((uint64_t)(buf[2])) << 32;
-}
-
 static int
 handle_file(const char *filename, int start, int end, int draw)
 {
-   enum rd_sect_type type = RD_NONE;
-   void *buf = NULL;
    struct io *io;
    int submit = 0, got_gpu_id = 0;
-   int sz, ret = 0;
    bool needs_reset = false;
    bool skip = false;
+   struct rd_parsed_section ps = {0};
 
    options.draw_filter = draw;
 
@@ -285,78 +258,50 @@ handle_file(const char *filename, int start, int end, int draw)
       uint64_t gpuaddr;
    } gpuaddr = {0};
 
-   while (true) {
-      uint32_t arr[2];
-
-      ret = io_readn(io, arr, 8);
-      if (ret <= 0)
-         goto end;
-
-      while ((arr[0] == 0xffffffff) && (arr[1] == 0xffffffff)) {
-         ret = io_readn(io, arr, 8);
-         if (ret <= 0)
-            goto end;
-      }
-
-      type = arr[0];
-      sz = arr[1];
-
-      if (sz < 0) {
-         ret = -1;
-         goto end;
-      }
-
-      free(buf);
-
+   while (parse_rd_section(io, &ps)) {
       needs_wfi = false;
 
-      buf = malloc(sz + 1);
-      ((char *)buf)[sz] = '\0';
-      ret = io_readn(io, buf, sz);
-      if (ret < 0)
-         goto end;
-
-      switch (type) {
+      switch (ps.type) {
       case RD_TEST:
-         printl(1, "test: %s\n", (char *)buf);
+         printl(1, "test: %s\n", (char *)ps.buf);
          break;
       case RD_CMD:
          is_blob = true;
-         printl(2, "cmd: %s\n", (char *)buf);
+         printl(2, "cmd: %s\n", (char *)ps.buf);
          skip = false;
          if (exename) {
-            skip |= (strstr(buf, exename) != buf);
+            skip |= (strstr(ps.buf, exename) != ps.buf);
          } else if (!show_comp) {
-            skip |= (strstr(buf, "fdperf") == buf);
-            skip |= (strstr(buf, "chrome") == buf);
-            skip |= (strstr(buf, "surfaceflinger") == buf);
-            skip |= ((char *)buf)[0] == 'X';
+            skip |= (strstr(ps.buf, "fdperf") == ps.buf);
+            skip |= (strstr(ps.buf, "chrome") == ps.buf);
+            skip |= (strstr(ps.buf, "surfaceflinger") == ps.buf);
+            skip |= ((char *)ps.buf)[0] == 'X';
          }
          break;
       case RD_VERT_SHADER:
-         printl(2, "vertex shader:\n%s\n", (char *)buf);
+         printl(2, "vertex shader:\n%s\n", (char *)ps.buf);
          break;
       case RD_FRAG_SHADER:
-         printl(2, "fragment shader:\n%s\n", (char *)buf);
+         printl(2, "fragment shader:\n%s\n", (char *)ps.buf);
          break;
       case RD_GPUADDR:
          if (needs_reset) {
             reset_buffers();
             needs_reset = false;
          }
-         parse_addr(buf, sz, &gpuaddr.len, &gpuaddr.gpuaddr);
+         parse_addr(ps.buf, ps.sz, &gpuaddr.len, &gpuaddr.gpuaddr);
          break;
       case RD_BUFFER_CONTENTS:
-         add_buffer(gpuaddr.gpuaddr, gpuaddr.len, buf);
-         buf = NULL;
+         add_buffer(gpuaddr.gpuaddr, gpuaddr.len, ps.buf);
+         ps.buf = NULL;
          break;
       case RD_CMDSTREAM_ADDR:
          if ((start <= submit) && (submit <= end)) {
             unsigned int sizedwords;
             uint64_t gpuaddr;
-            parse_addr(buf, sz, &sizedwords, &gpuaddr);
+            parse_addr(ps.buf, ps.sz, &sizedwords, &gpuaddr);
             printl(2, "############################################################\n");
-            printl(2, "cmdstream: %d dwords\n", sizedwords);
+            printl(2, "cmdstream[%d]: %d dwords\n", submit, sizedwords);
             if (!skip) {
                script_start_submit();
                dump_commands(hostptr(gpuaddr), sizedwords, 0);
@@ -370,22 +315,29 @@ handle_file(const char *filename, int start, int end, int draw)
          break;
       case RD_GPU_ID:
          if (!got_gpu_id) {
-            uint32_t gpu_id = *((unsigned int *)buf);
+            uint32_t gpu_id = parse_gpu_id(ps.buf);
             if (!gpu_id)
                break;
-            options.gpu_id = gpu_id;
-            printl(2, "gpu_id: %d\n", options.gpu_id);
+            options.dev_id.gpu_id = gpu_id;
+            printl(2, "gpu_id: %d\n", options.dev_id.gpu_id);
+
+            options.info = fd_dev_info_raw(&options.dev_id);
+            if (!options.info)
+               break;
+
             cffdec_init(&options);
             got_gpu_id = 1;
          }
          break;
       case RD_CHIP_ID:
          if (!got_gpu_id) {
-            uint64_t chip_id = *((uint64_t *)buf);
-            options.gpu_id = 100 * ((chip_id >> 24) & 0xff) +
-                  10 * ((chip_id >> 16) & 0xff) +
-                  ((chip_id >> 8) & 0xff);
-            printl(2, "gpu_id: %d\n", options.gpu_id);
+            options.dev_id.chip_id = parse_chip_id(ps.buf);
+            printl(2, "chip_id: 0x%" PRIx64 "\n", options.dev_id.chip_id);
+
+            options.info = fd_dev_info_raw(&options.dev_id);
+            if (!options.info)
+               break;
+
             cffdec_init(&options);
             got_gpu_id = 1;
          }
@@ -395,13 +347,14 @@ handle_file(const char *filename, int start, int end, int draw)
       }
    }
 
-end:
    script_end_cmdstream();
+
+   reset_buffers();
 
    io_close(io);
    fflush(stdout);
 
-   if (ret < 0) {
+   if (ps.ret < 0) {
       printf("corrupt file\n");
    }
    return 0;

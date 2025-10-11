@@ -36,34 +36,14 @@
 void
 anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
 {
-   const struct intel_device_info *devinfo = &device->info;
-
-   device->perf = NULL;
-
-   /* We need self modifying batches. The i915 parser prevents it on
-    * Gfx7.5 :( maybe one day.
-    */
-   if (devinfo->ver < 8)
-      return;
-
    struct intel_perf_config *perf = intel_perf_new(NULL);
 
    intel_perf_init_metrics(perf, &device->info, fd,
                            false /* pipeline statistics */,
                            true /* register snapshots */);
 
-   if (!perf->n_queries) {
-      if (perf->platform_supported) {
-         static bool warned_once = false;
-
-         if (!warned_once) {
-            mesa_logw("Performance support disabled, "
-                      "consider sysctl dev.i915.perf_stream_paranoid=0\n");
-            warned_once = true;
-         }
-      }
+   if (!perf->n_queries)
       goto err;
-   }
 
    /* We need DRM_I915_PERF_PROP_HOLD_PREEMPTION support, only available in
     * perf revision 2.
@@ -89,10 +69,14 @@ anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
          break;
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_PERFCNT:
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_RPSTAT:
+      case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_A:
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_B:
       case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_C:
+      case INTEL_PERF_QUERY_FIELD_TYPE_SRM_OA_PEC:
          device->n_perf_query_commands += field->size / 4;
          break;
+      default:
+         unreachable("Unhandled register type");
       }
    }
    device->n_perf_query_commands *= 2; /* Begin & End */
@@ -100,61 +84,72 @@ anv_physical_device_init_perf(struct anv_physical_device *device, int fd)
 
    return;
 
- err:
-   ralloc_free(perf);
+err:
+   intel_perf_free(perf);
 }
 
 void
 anv_device_perf_init(struct anv_device *device)
 {
    device->perf_fd = -1;
+   device->perf_queue = NULL;
+}
+
+void
+anv_device_perf_close(struct anv_device *device)
+{
+   if (device->perf_fd == -1)
+      return;
+
+   if (intel_bind_timeline_get_syncobj(&device->perf_timeline))
+      intel_bind_timeline_finish(&device->perf_timeline, device->fd);
+   close(device->perf_fd);
+   device->perf_fd = -1;
+}
+
+static uint32_t
+anv_device_perf_get_queue_context_or_exec_queue_id(struct anv_queue *queue)
+{
+   struct anv_device *device = queue->device;
+   uint32_t context_or_exec_queue_id;
+
+   switch (device->physical->info.kmd_type) {
+   case INTEL_KMD_TYPE_I915:
+      context_or_exec_queue_id = device->physical->has_vm_control ?
+                                 queue->context_id : device->context_id;
+      break;
+   case INTEL_KMD_TYPE_XE:
+      context_or_exec_queue_id = queue->exec_queue_id;
+      break;
+   default:
+      unreachable("missing");
+      context_or_exec_queue_id = 0;
+   }
+
+   return context_or_exec_queue_id;
 }
 
 static int
-anv_device_perf_open(struct anv_device *device, uint64_t metric_id)
+anv_device_perf_open(struct anv_device *device, struct anv_queue *queue, uint64_t metric_id)
 {
-   uint64_t properties[DRM_I915_PERF_PROP_MAX * 2];
-   struct drm_i915_perf_open_param param;
-   int p = 0, stream_fd;
+   uint64_t period_exponent = 31; /* slowest sampling period */
+   int ret;
 
-   properties[p++] = DRM_I915_PERF_PROP_SAMPLE_OA;
-   properties[p++] = true;
-
-   properties[p++] = DRM_I915_PERF_PROP_OA_METRICS_SET;
-   properties[p++] = metric_id;
-
-   properties[p++] = DRM_I915_PERF_PROP_OA_FORMAT;
-   properties[p++] = device->info.ver >= 8 ?
-      I915_OA_FORMAT_A32u40_A4u32_B8_C8 :
-      I915_OA_FORMAT_A45_B8_C8;
-
-   properties[p++] = DRM_I915_PERF_PROP_OA_EXPONENT;
-   properties[p++] = 31; /* slowest sampling period */
-
-   properties[p++] = DRM_I915_PERF_PROP_CTX_HANDLE;
-   properties[p++] = device->context_id;
-
-   properties[p++] = DRM_I915_PERF_PROP_HOLD_PREEMPTION;
-   properties[p++] = true;
-
-   /* If global SSEU is available, pin it to the default. This will ensure on
-    * Gfx11 for instance we use the full EU array. Initially when perf was
-    * enabled we would use only half on Gfx11 because of functional
-    * requirements.
-    */
-   if (intel_perf_has_global_sseu(device->physical->perf)) {
-      properties[p++] = DRM_I915_PERF_PROP_GLOBAL_SSEU;
-      properties[p++] = (uintptr_t) &device->physical->perf->sseu;
+   if (intel_perf_has_metric_sync(device->physical->perf)) {
+      if (!intel_bind_timeline_init(&device->perf_timeline, device->fd))
+         return -1;
    }
 
-   memset(&param, 0, sizeof(param));
-   param.flags = 0;
-   param.flags |= I915_PERF_FLAG_FD_CLOEXEC | I915_PERF_FLAG_FD_NONBLOCK;
-   param.properties_ptr = (uintptr_t)properties;
-   param.num_properties = p / 2;
+   ret = intel_perf_stream_open(device->physical->perf, device->fd,
+                                anv_device_perf_get_queue_context_or_exec_queue_id(queue),
+                                metric_id, period_exponent, true, true,
+                                &device->perf_timeline);
+   if (ret >= 0)
+      device->perf_queue = queue;
+   else
+      intel_bind_timeline_finish(&device->perf_timeline, device->fd);
 
-   stream_fd = intel_ioctl(device->fd, DRM_IOCTL_I915_PERF_OPEN, &param);
-   return stream_fd;
+   return ret;
 }
 
 /* VK_INTEL_performance_query */
@@ -234,10 +229,10 @@ VkResult anv_AcquirePerformanceConfigurationINTEL(
          return VK_INCOMPLETE;
       }
 
-      int ret =
+      uint64_t ret =
          intel_perf_store_configuration(device->physical->perf, device->fd,
                                       config->register_config, NULL /* guid */);
-      if (ret < 0) {
+      if (ret == 0) {
          ralloc_free(config->register_config);
          vk_object_free(&device->vk, NULL, config);
          return VK_INCOMPLETE;
@@ -259,13 +254,27 @@ VkResult anv_ReleasePerformanceConfigurationINTEL(
    ANV_FROM_HANDLE(anv_performance_configuration_intel, config, _configuration);
 
    if (!INTEL_DEBUG(DEBUG_NO_OACONFIG))
-      intel_ioctl(device->fd, DRM_IOCTL_I915_PERF_REMOVE_CONFIG, &config->config_id);
+      intel_perf_remove_configuration(device->physical->perf, device->fd, config->config_id);
 
    ralloc_free(config->register_config);
 
    vk_object_free(&device->vk, NULL, config);
 
    return VK_SUCCESS;
+}
+
+static struct anv_queue *
+anv_device_get_perf_queue(struct anv_device *device)
+{
+   for (uint32_t i = 0; i < device->queue_count; i++) {
+      struct anv_queue *queue = &device->queues[i];
+      const struct anv_queue_family *family = queue->family;
+
+      if (family->supports_perf)
+         return queue;
+   }
+
+   return NULL;
 }
 
 VkResult anv_QueueSetPerformanceConfigurationINTEL(
@@ -276,14 +285,22 @@ VkResult anv_QueueSetPerformanceConfigurationINTEL(
    ANV_FROM_HANDLE(anv_performance_configuration_intel, config, _configuration);
    struct anv_device *device = queue->device;
 
+   if (queue != anv_device_get_perf_queue(device))
+      return VK_ERROR_UNKNOWN;
+
    if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
       if (device->perf_fd < 0) {
-         device->perf_fd = anv_device_perf_open(device, config->config_id);
+         device->perf_fd = anv_device_perf_open(device, queue, config->config_id);
          if (device->perf_fd < 0)
             return VK_ERROR_INITIALIZATION_FAILED;
       } else {
-         int ret = intel_ioctl(device->perf_fd, I915_PERF_IOCTL_CONFIG,
-                               (void *)(uintptr_t) config->config_id);
+         uint32_t context_or_exec_queue = anv_device_perf_get_queue_context_or_exec_queue_id(device->perf_queue);
+         int ret = intel_perf_stream_set_metrics_id(device->physical->perf,
+                                                    device->fd,
+                                                    device->perf_fd,
+                                                    context_or_exec_queue,
+                                                    config->config_id,
+                                                    &device->perf_timeline);
          if (ret < 0)
             return vk_device_set_lost(&device->vk, "i915-perf config failed: %m");
       }
@@ -297,10 +314,7 @@ void anv_UninitializePerformanceApiINTEL(
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
 
-   if (device->perf_fd >= 0) {
-      close(device->perf_fd);
-      device->perf_fd = -1;
-   }
+   anv_device_perf_close(device);
 }
 
 /* VK_KHR_performance_query */
@@ -350,12 +364,21 @@ VkResult anv_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
    VK_OUTARRAY_MAKE_TYPED(VkPerformanceCounterDescriptionKHR, out_desc,
                           pCounterDescriptions, &desc_count);
 
+   /* We cannot support performance queries on anything other than RCS,
+    * because the MI_REPORT_PERF_COUNT command is not available on other
+    * engines.
+    */
+   struct anv_queue_family *queue_family =
+      &pdevice->queue.families[queueFamilyIndex];
+   if (queue_family->engine_class != INTEL_ENGINE_CLASS_RENDER)
+      return vk_outarray_status(&out);
+
    for (int c = 0; c < (perf ? perf->n_counters : 0); c++) {
       const struct intel_perf_query_counter *intel_counter = perf->counter_infos[c].counter;
 
       vk_outarray_append_typed(VkPerformanceCounterKHR, &out, counter) {
          counter->unit = intel_perf_counter_unit_to_vk_unit[intel_counter->units];
-         counter->scope = VK_QUERY_SCOPE_COMMAND_KHR;
+         counter->scope = VK_PERFORMANCE_COUNTER_SCOPE_COMMAND_KHR;
          counter->storage = intel_perf_counter_data_type_to_vk_storage[intel_counter->data_type];
 
          unsigned char sha1_result[20];
@@ -367,7 +390,10 @@ VkResult anv_EnumeratePhysicalDeviceQueueFamilyPerformanceQueryCountersKHR(
 
       vk_outarray_append_typed(VkPerformanceCounterDescriptionKHR, &out_desc, desc) {
          desc->flags = 0; /* None so far. */
-         snprintf(desc->name, sizeof(desc->name), "%s", intel_counter->name);
+         snprintf(desc->name, sizeof(desc->name), "%s",
+                  INTEL_DEBUG(DEBUG_PERF_SYMBOL_NAMES) ?
+                  intel_counter->symbol_name :
+                  intel_counter->name);
          snprintf(desc->category, sizeof(desc->category), "%s", intel_counter->category);
          snprintf(desc->description, sizeof(desc->description), "%s", intel_counter->desc);
       }
@@ -407,7 +433,11 @@ VkResult anv_AcquireProfilingLockKHR(
    assert(device->perf_fd == -1);
 
    if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
-      fd = anv_device_perf_open(device, first_metric_set->oa_metrics_set_id);
+      struct anv_queue *queue = anv_device_get_perf_queue(device);
+
+      if (queue == NULL)
+         return VK_ERROR_UNKNOWN;
+      fd = anv_device_perf_open(device, queue, first_metric_set->oa_metrics_set_id);
       if (fd < 0)
          return VK_TIMEOUT;
    }
@@ -421,11 +451,7 @@ void anv_ReleaseProfilingLockKHR(
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
 
-   if (!INTEL_DEBUG(DEBUG_NO_OACONFIG)) {
-      assert(device->perf_fd >= 0);
-      close(device->perf_fd);
-   }
-   device->perf_fd = -1;
+   anv_device_perf_close(device);
 }
 
 void
@@ -434,10 +460,12 @@ anv_perf_write_pass_results(struct intel_perf_config *perf,
                             const struct intel_perf_query_result *accumulated_results,
                             union VkPerformanceCounterResultKHR *results)
 {
+   const struct intel_perf_query_info *query = pool->pass_query[pass];
+
    for (uint32_t c = 0; c < pool->n_counters; c++) {
       const struct intel_perf_counter_pass *counter_pass = &pool->counter_pass[c];
 
-      if (counter_pass->pass != pass)
+      if (counter_pass->query != query)
          continue;
 
       switch (pool->pass_query[pass]->kind) {

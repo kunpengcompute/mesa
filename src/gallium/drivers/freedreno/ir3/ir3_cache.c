@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2015 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2015 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -97,8 +79,10 @@ ir3_cache_lookup(struct ir3_cache *cache, const struct ir3_cache_key *key,
       return entry->data;
    }
 
+   MESA_TRACE_FUNC();
+
    if (key->hs)
-      debug_assert(key->ds);
+      assert(key->ds);
 
    struct ir3_shader *shaders[MESA_SHADER_STAGES] = {
       [MESA_SHADER_VERTEX] = ir3_get_shader(key->vs),
@@ -108,7 +92,14 @@ ir3_cache_lookup(struct ir3_cache *cache, const struct ir3_cache_key *key,
       [MESA_SHADER_FRAGMENT] = ir3_get_shader(key->fs),
    };
 
-   struct ir3_shader_variant *variants[MESA_SHADER_STAGES];
+   if (shaders[MESA_SHADER_TESS_EVAL] && !shaders[MESA_SHADER_TESS_CTRL]) {
+      struct ir3_shader *vs = shaders[MESA_SHADER_VERTEX];
+      struct ir3_shader *hs =
+            ir3_shader_passthrough_tcs(vs, key->patch_vertices);
+      shaders[MESA_SHADER_TESS_CTRL] = hs;
+   }
+
+   const struct ir3_shader_variant *variants[MESA_SHADER_STAGES];
    struct ir3_shader_key shader_key = key->key;
 
    for (gl_shader_stage stage = MESA_SHADER_VERTEX; stage < MESA_SHADER_STAGES;
@@ -137,7 +128,7 @@ ir3_cache_lookup(struct ir3_cache *cache, const struct ir3_cache_key *key,
       }
    }
 
-   struct ir3_shader_variant *bs;
+   const struct ir3_shader_variant *bs;
 
    if (ir3_has_binning_vs(&key->key)) {
       /* starting with a6xx, the same const state is used for binning and draw

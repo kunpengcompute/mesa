@@ -30,9 +30,11 @@
 #include "util/u_upload_mgr.h"
 #include "drm-uapi/i915_drm.h"
 #include "crocus_context.h"
+#include "crocus_perf.h"
 #include "crocus_resource.h"
 #include "crocus_screen.h"
-#include "common/intel_defines.h"
+#include "common/i915/intel_defines.h"
+#include "common/intel_debug_identifier.h"
 #include "common/intel_sample_positions.h"
 
 /**
@@ -61,7 +63,7 @@ crocus_init_identifier_bo(struct crocus_context *ice)
 
    ice->workaround_bo->kflags |= EXEC_OBJECT_CAPTURE;
    ice->workaround_offset = ALIGN(
-      intel_debug_write_identifiers(bo_map, 4096, "Crocus") + 8, 8);
+      intel_debug_write_identifiers(bo_map, 4096, "Crocus"), 32);
 
    crocus_bo_unmap(ice->workaround_bo);
 
@@ -188,12 +190,22 @@ crocus_destroy_context(struct pipe_context *ctx)
 {
    struct crocus_context *ice = (struct crocus_context *)ctx;
    struct crocus_screen *screen = (struct crocus_screen *)ctx->screen;
+
+   blorp_finish(&ice->blorp);
+
+   intel_perf_free_context(ice->perf_ctx);
    if (ctx->stream_uploader)
       u_upload_destroy(ctx->stream_uploader);
 
    if (ice->blitter)
       util_blitter_destroy(ice->blitter);
    screen->vtbl.destroy_state(ice);
+
+   for (unsigned i = 0; i < ARRAY_SIZE(ice->shaders.scratch_bos); i++) {
+      for (unsigned j = 0; j < ARRAY_SIZE(ice->shaders.scratch_bos[i]); j++)
+         crocus_bo_unreference(ice->shaders.scratch_bos[i][j]);
+   }
+
    crocus_destroy_program_cache(ice);
    u_upload_destroy(ice->query_buffer_uploader);
 
@@ -258,7 +270,7 @@ crocus_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
 
    ctx->stream_uploader = u_upload_create_default(ctx);
    if (!ctx->stream_uploader) {
-      free(ctx);
+      ralloc_free(ice);
       return NULL;
    }
    ctx->const_uploader = ctx->stream_uploader;
@@ -277,6 +289,7 @@ crocus_create_context(struct pipe_screen *pscreen, void *priv, unsigned flags)
    crocus_init_program_functions(ctx);
    crocus_init_resource_functions(ctx);
    crocus_init_flush_functions(ctx);
+   crocus_init_perfquery_functions(ctx);
 
    crocus_init_program_cache(ice);
 

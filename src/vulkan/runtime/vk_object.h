@@ -23,10 +23,11 @@
 #ifndef VK_OBJECT_H
 #define VK_OBJECT_H
 
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 #include <vulkan/vk_icd.h>
 
 #include "c11/threads.h"
+#include "util/detect_os.h"
 #include "util/macros.h"
 #include "util/sparse_array.h"
 
@@ -49,6 +50,9 @@ struct vk_object_base {
     */
    VkObjectType type;
 
+   /* True if this object is fully constructed and visible to the client */
+   bool client_visible;
+
    /** Pointer to the device in which this object exists, if any
     *
     * This is NULL for instances and physical devices but should point to a
@@ -57,8 +61,13 @@ struct vk_object_base {
     */
    struct vk_device *device;
 
-   /* True if this object is fully constructed and visible to the client */
-   bool client_visible;
+   /** Pointer to the instance in which this object exists
+    *
+    * This is NULL for device level objects as it's main purpose is to make
+    * the instance allocator reachable for freeing data owned by instance
+    * level objects.
+    */
+   struct vk_instance *instance;
 
    /* For VK_EXT_private_data */
    struct util_sparse_array private_data;
@@ -69,19 +78,40 @@ struct vk_object_base {
 
 /** Initialize a vk_base_object
  *
- * @param[in]  device   The vk_device this object was created from or NULL
- * @param[out] base     The vk_object_base to initialize
- * @param[in]  obj_type The VkObjectType of the object being initialized
+ * :param device:       |in|  The vk_device this object was created from or NULL
+ * :param base:         |out| The vk_object_base to initialize
+ * :param obj_type:     |in|  The VkObjectType of the object being initialized
  */
 void vk_object_base_init(struct vk_device *device,
                          struct vk_object_base *base,
                          VkObjectType obj_type);
 
+/** Initialize a vk_base_object for an instance level object
+ *
+ * :param instance:     |in|  The vk_instance this object was created from
+ * :param base:         |out| The vk_object_base to initialize
+ * :param obj_type:     |in|  The VkObjectType of the object being initialized
+ */
+void vk_object_base_instance_init(struct vk_instance *instance,
+                                  struct vk_object_base *base,
+                                  VkObjectType obj_type);
+
 /** Tear down a vk_object_base
  *
- * @param[out] base     The vk_object_base being torn down
+ * :param base:         |out| The vk_object_base being torn down
  */
 void vk_object_base_finish(struct vk_object_base *base);
+
+/** Recycles a vk_object_base
+ *
+ * This should be called when an object is recycled and handed back to the
+ * client as if it were a new object.  When it's called is not important as
+ * long as it's called between when the client thinks the object was destroyed
+ * and when the client sees it again as a supposedly new object.
+ *
+ * :param base:         |inout| The vk_object_base being recycled
+ */
+void vk_object_base_recycle(struct vk_object_base *base);
 
 static inline void
 vk_object_base_assert_valid(ASSERTED struct vk_object_base *base,
@@ -107,16 +137,16 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
  * `VkObjectType` to assert that the object is of the correct type when
  * running with a debug build.
  *
- * @param __driver_type The name of the driver struct; it is assumed this is
- *                      the name of a struct type and `struct` will be
- *                      prepended automatically
+ * :param __driver_type: The name of the driver struct; it is assumed this is
+ *                       the name of a struct type and ``struct`` will be
+ *                       prepended automatically
  *
- * @param __base        The name of the vk_base_object member
+ * :param __base:        The name of the vk_base_object member
  *
- * @param __VkType      The Vulkan object type such as VkImage
+ * :param __VkType:      The Vulkan object type such as VkImage
  *
- * @param __VK_TYPE     The VkObjectType corresponding to __VkType, such as
- *                      VK_OBJECT_TYPE_IMAGE
+ * :param __VK_TYPE:     The VkObjectType corresponding to __VkType, such as
+ *                       VK_OBJECT_TYPE_IMAGE
  */
 #define VK_DEFINE_HANDLE_CASTS(__driver_type, __base, __VkType, __VK_TYPE) \
    static inline struct __driver_type *                                    \
@@ -131,9 +161,10 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
    static inline __VkType                                                  \
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
-      vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
-      if (_obj != NULL)                                                    \
+      if (_obj != NULL) {                                                  \
+         vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);            \
          _obj->__base.client_visible = true;                               \
+      }                                                                    \
       return (__VkType) _obj;                                              \
    }
 
@@ -146,19 +177,19 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
  * `VkObjectType` to assert that the object is of the correct type when
  * running with a debug build.
  *
- * @param __driver_type The name of the driver struct; it is assumed this is
- *                      the name of a struct type and `struct` will be
- *                      prepended automatically
+ * :param __driver_type: The name of the driver struct; it is assumed this is
+ *                       the name of a struct type and ``struct`` will be
+ *                       prepended automatically
  *
- * @param __base        The name of the vk_base_object member
+ * :param __base:        The name of the vk_base_object member
  *
- * @param __VkType      The Vulkan object type such as VkImage
+ * :param __VkType:      The Vulkan object type such as VkImage
  *
- * @param __VK_TYPE     The VkObjectType corresponding to __VkType, such as
- *                      VK_OBJECT_TYPE_IMAGE
+ * :param __VK_TYPE:     The VkObjectType corresponding to __VkType, such as
+ *                       VK_OBJECT_TYPE_IMAGE
  */
 #define VK_DEFINE_NONDISP_HANDLE_CASTS(__driver_type, __base, __VkType, __VK_TYPE) \
-   static inline struct __driver_type *                                    \
+   UNUSED static inline struct __driver_type *                             \
    __driver_type ## _from_handle(__VkType _handle)                         \
    {                                                                       \
       struct vk_object_base *base =                                        \
@@ -168,25 +199,26 @@ vk_object_base_from_u64_handle(uint64_t handle, VkObjectType obj_type)
       return (struct __driver_type *)base;                                 \
    }                                                                       \
                                                                            \
-   static inline __VkType                                                  \
+   UNUSED static inline __VkType                                           \
    __driver_type ## _to_handle(struct __driver_type *_obj)                 \
    {                                                                       \
-      vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);               \
-      if (_obj != NULL)                                                    \
+      if (_obj != NULL) {                                                  \
+         vk_object_base_assert_valid(&_obj->__base, __VK_TYPE);            \
          _obj->__base.client_visible = true;                               \
+      }                                                                    \
       return (__VkType)(uintptr_t) _obj;                                   \
    }
 
 /** Declares a __driver_type pointer which represents __handle
  *
- * @param __driver_type The name of the driver struct; it is assumed this is
- *                      the name of a struct type and `struct` will be
- *                      prepended automatically
+ * :param __driver_type: The name of the driver struct; it is assumed this is
+ *                       the name of a struct type and ``struct`` will be
+ *                       prepended automatically
  *
- * @param __name        The name of the declared pointer
+ * :param __name:        The name of the declared pointer
  *
- * @param __handle      The Vulkan object handle with which to initialize
- *                      `__name`
+ * :param __handle:      The Vulkan object handle with which to initialize
+ *                       `__name`
  */
 #define VK_FROM_HANDLE(__driver_type, __name, __handle) \
    struct __driver_type *__name = __driver_type ## _from_handle(__handle)
@@ -229,29 +261,29 @@ struct vk_private_data_slot {
    uint32_t index;
 };
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_private_data_slot, base,
-                               VkPrivateDataSlotEXT,
-                               VK_OBJECT_TYPE_PRIVATE_DATA_SLOT_EXT);
+                               VkPrivateDataSlot,
+                               VK_OBJECT_TYPE_PRIVATE_DATA_SLOT);
 
 VkResult
 vk_private_data_slot_create(struct vk_device *device,
-                            const VkPrivateDataSlotCreateInfoEXT* pCreateInfo,
+                            const VkPrivateDataSlotCreateInfo* pCreateInfo,
                             const VkAllocationCallbacks* pAllocator,
-                            VkPrivateDataSlotEXT* pPrivateDataSlot);
+                            VkPrivateDataSlot* pPrivateDataSlot);
 void
 vk_private_data_slot_destroy(struct vk_device *device,
-                             VkPrivateDataSlotEXT privateDataSlot,
+                             VkPrivateDataSlot privateDataSlot,
                              const VkAllocationCallbacks *pAllocator);
 VkResult
 vk_object_base_set_private_data(struct vk_device *device,
                                 VkObjectType objectType,
                                 uint64_t objectHandle,
-                                VkPrivateDataSlotEXT privateDataSlot,
+                                VkPrivateDataSlot privateDataSlot,
                                 uint64_t data);
 void
 vk_object_base_get_private_data(struct vk_device *device,
                                 VkObjectType objectType,
                                 uint64_t objectHandle,
-                                VkPrivateDataSlotEXT privateDataSlot,
+                                VkPrivateDataSlot privateDataSlot,
                                 uint64_t *pData);
 
 const char *

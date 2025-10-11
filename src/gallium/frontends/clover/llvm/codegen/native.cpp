@@ -40,7 +40,7 @@ using clover::build_error;
 using namespace clover::llvm;
 using ::llvm::TargetMachine;
 
-#ifdef HAVE_CLOVER_NATIVE
+#if defined(USE_LIBELF)
 
 #include <libelf.h>
 #include <gelf.h>
@@ -116,8 +116,16 @@ namespace {
 
       std::unique_ptr<TargetMachine> tm {
          t->createTargetMachine(target.triple, target.cpu, "", {},
+#if LLVM_VERSION_MAJOR >= 16
+                                std::nullopt, std::nullopt,
+#else
                                 ::llvm::None, ::llvm::None,
+#endif
+#if LLVM_VERSION_MAJOR >= 18
+                                ::llvm::CodeGenOptLevel::Default) };
+#else
                                 ::llvm::CodeGenOpt::Default) };
+#endif
       if (!tm)
          fail(r_log, build_error(),
               "Could not create TargetMachine: " + target.triple);

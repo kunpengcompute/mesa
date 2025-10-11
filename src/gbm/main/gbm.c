@@ -273,6 +273,8 @@ gbm_bo_get_bpp(struct gbm_bo *bo)
       case GBM_FORMAT_RGBA1010102:
       case GBM_FORMAT_BGRA1010102:
          return 32;
+      case GBM_FORMAT_XBGR16161616:
+      case GBM_FORMAT_ABGR16161616:
       case GBM_FORMAT_XBGR16161616F:
       case GBM_FORMAT_ABGR16161616F:
          return 64;
@@ -497,20 +499,6 @@ gbm_bo_create(struct gbm_device *gbm,
 }
 
 GBM_EXPORT struct gbm_bo *
-gbm_bo_create_native(struct gbm_device *gbm,
-                     uint32_t width, uint32_t height,
-                     uint32_t format, uint32_t usage,
-                     unsigned long **texture)
-{
-   if (width == 0 || height == 0) {
-      errno = EINVAL;
-      return NULL;
-   }
-
-   return gbm->v0.bo_create_native(gbm, width, height, format, usage, NULL, 0,texture);
-}
-
-GBM_EXPORT struct gbm_bo *
 gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                              uint32_t width, uint32_t height,
                              uint32_t format,
@@ -636,20 +624,6 @@ gbm_bo_map(struct gbm_bo *bo,
 
    return bo->gbm->v0.bo_map(bo, x, y, width, height,
                              flags, stride, map_data);
-}
-
-GBM_EXPORT void *
-gbm_bo_map_native(struct gbm_bo *bo,
-                  uint32_t x, uint32_t y,
-                  uint32_t width, uint32_t height,
-                  uint32_t flags, uint32_t *stride, void **map_data)
-{
-   if (!bo || width == 0 || height == 0 || !stride || !map_data) {
-      errno = EINVAL;
-      return NULL;
-   }
-
-   return bo->gbm->v0.bo_map_native(bo, x, y, width, height, flags, stride, map_data);
 }
 
 /**

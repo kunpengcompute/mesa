@@ -391,7 +391,6 @@ init_pipe_state(struct vl_mc *r)
    sampler.mag_img_filter = PIPE_TEX_FILTER_LINEAR;
    sampler.compare_mode = PIPE_TEX_COMPARE_NONE;
    sampler.compare_func = PIPE_FUNC_ALWAYS;
-   sampler.normalized_coords = 1;
    r->sampler_ref = r->pipe->create_sampler_state(r->pipe, &sampler);
    if (!r->sampler_ref)
       goto error_sampler_ref;
@@ -626,7 +625,7 @@ vl_mc_render_ref(struct vl_mc *renderer, struct vl_mc_buffer *buffer, struct pip
    renderer->pipe->bind_sampler_states(renderer->pipe, PIPE_SHADER_FRAGMENT,
                                        0, 1, &renderer->sampler_ref);
 
-   util_draw_arrays_instanced(renderer->pipe, PIPE_PRIM_QUADS, 0, 4, 0,
+   util_draw_arrays_instanced(renderer->pipe, MESA_PRIM_QUADS, 0, 4, 0,
                               renderer->buffer_width / VL_MACROBLOCK_WIDTH *
                               renderer->buffer_height / VL_MACROBLOCK_HEIGHT);
 
@@ -648,11 +647,11 @@ vl_mc_render_ycbcr(struct vl_mc *renderer, struct vl_mc_buffer *buffer, unsigned
    renderer->pipe->bind_vs_state(renderer->pipe, renderer->vs_ycbcr);
    renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ycbcr);
 
-   util_draw_arrays_instanced(renderer->pipe, PIPE_PRIM_QUADS, 0, 4, 0, num_instances);
+   util_draw_arrays_instanced(renderer->pipe, MESA_PRIM_QUADS, 0, 4, 0, num_instances);
    
    if (buffer->surface_cleared) {
       renderer->pipe->bind_blend_state(renderer->pipe, renderer->blend_sub[mask]);
       renderer->pipe->bind_fs_state(renderer->pipe, renderer->fs_ycbcr_sub);
-      util_draw_arrays_instanced(renderer->pipe, PIPE_PRIM_QUADS, 0, 4, 0, num_instances);
+      util_draw_arrays_instanced(renderer->pipe, MESA_PRIM_QUADS, 0, 4, 0, num_instances);
    }
 }

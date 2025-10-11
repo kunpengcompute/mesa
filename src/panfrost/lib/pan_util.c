@@ -23,7 +23,7 @@
 
 #include <stdio.h>
 #include "pan_texture.h"
- 
+
 /* Translate a PIPE swizzle quad to a 12-bit Mali swizzle code. PIPE
  * swizzles line up with Mali swizzles for the XYZW01, but PIPE swizzles have
  * an additional "NONE" field that we have to mask out to zero. Additionally,
@@ -32,52 +32,40 @@
 unsigned
 panfrost_translate_swizzle_4(const unsigned char swizzle[4])
 {
-        unsigned out = 0;
+   unsigned out = 0;
 
-        for (unsigned i = 0; i < 4; ++i) {
-                unsigned translated = (swizzle[i] > PIPE_SWIZZLE_1) ? PIPE_SWIZZLE_0 : swizzle[i];
-                out |= (translated << (3*i));
-        }
+   for (unsigned i = 0; i < 4; ++i) {
+      assert(swizzle[i] <= PIPE_SWIZZLE_1);
+      out |= (swizzle[i] << (3 * i));
+   }
 
-        return out;
+   return out;
 }
 
 void
 panfrost_invert_swizzle(const unsigned char *in, unsigned char *out)
 {
-        /* First, default to all zeroes to prevent uninitialized junk */
+   /* First, default to all zeroes, both to prevent uninitialized junk
+      and to provide a known baseline so we can tell when components
+      have been modified
+    */
 
-        for (unsigned c = 0; c < 4; ++c)
-                out[c] = PIPE_SWIZZLE_0;
+   for (unsigned c = 0; c < 4; ++c)
+      out[c] = PIPE_SWIZZLE_0;
 
-        /* Now "do" what the swizzle says */
+   /* Now "do" what the swizzle says */
 
-        for (unsigned c = 0; c < 4; ++c) {
-                unsigned char i = in[c];
+   for (unsigned c = 0; c < 4; ++c) {
+      unsigned char i = in[c];
 
-                /* Who cares? */
-                assert(PIPE_SWIZZLE_X == 0);
-                if (i > PIPE_SWIZZLE_W)
-                        continue;
+      /* Who cares? */
+      assert(PIPE_SWIZZLE_X == 0);
+      if (i > PIPE_SWIZZLE_W)
+         continue;
 
-                /* Invert */
-                unsigned idx = i - PIPE_SWIZZLE_X;
-                out[idx] = PIPE_SWIZZLE_X + c;
-        }
-}
-
-/* Formats requiring blend shaders are stored raw in the tilebuffer and will
- * have 0 as their pixel format. Assumes dithering is set, I don't know of a
- * case when it makes sense to turn off dithering. */
-
-unsigned
-panfrost_format_to_bifrost_blend(const struct panfrost_device *dev,
-                                 enum pipe_format format,
-                                 bool dithered)
-{
-        mali_pixel_format pixfmt = (dev->arch >= 7) ?
-                panfrost_blendable_formats_v7[format].bifrost[dithered] :
-                panfrost_blendable_formats_v6[format].bifrost[dithered];
-
-        return pixfmt ?: dev->formats[format].hw;
+      /* Invert (only if we haven't already applied) */
+      unsigned idx = i - PIPE_SWIZZLE_X;
+      if (out[idx] == PIPE_SWIZZLE_0)
+         out[idx] = PIPE_SWIZZLE_X + c;
+   }
 }

@@ -1,5 +1,6 @@
 /*
  * Copyright © 2008 Keith Packard
+ * Copyright © 2014 Intel Corporation
  *
  * Permission to use, copy, modify, distribute, and sell this software and its
  * documentation for any purpose is hereby granted without fee, provided that
@@ -20,24 +21,24 @@
  * OF THIS SOFTWARE.
  */
 
-#include <stdio.h>
-#include <string.h>
+#include <inttypes.h>
 #include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
+#include "brw_disasm.h"
+#include "brw_disasm_info.h"
 #include "brw_eu_defines.h"
-#include "brw_inst.h"
-#include "brw_shader.h"
-#include "brw_reg.h"
-#include "brw_inst.h"
 #include "brw_eu.h"
+#include "brw_inst.h"
+#include "brw_isa_info.h"
+#include "brw_reg.h"
 #include "util/half_float.h"
 
 bool
 brw_has_jip(const struct intel_device_info *devinfo, enum opcode opcode)
 {
-   if (devinfo->ver < 6)
-      return false;
-
    return opcode == BRW_OPCODE_IF ||
           opcode == BRW_OPCODE_ELSE ||
           opcode == BRW_OPCODE_ENDIF ||
@@ -50,25 +51,36 @@ brw_has_jip(const struct intel_device_info *devinfo, enum opcode opcode)
 bool
 brw_has_uip(const struct intel_device_info *devinfo, enum opcode opcode)
 {
-   if (devinfo->ver < 6)
-      return false;
-
-   return (devinfo->ver >= 7 && opcode == BRW_OPCODE_IF) ||
-          (devinfo->ver >= 8 && opcode == BRW_OPCODE_ELSE) ||
+   return opcode == BRW_OPCODE_IF ||
+          opcode == BRW_OPCODE_ELSE ||
           opcode == BRW_OPCODE_BREAK ||
           opcode == BRW_OPCODE_CONTINUE ||
           opcode == BRW_OPCODE_HALT;
 }
 
-static bool
-has_branch_ctrl(const struct intel_device_info *devinfo, enum opcode opcode)
+bool
+brw_has_branch_ctrl(const struct intel_device_info *devinfo, enum opcode opcode)
 {
-   if (devinfo->ver < 8)
+   switch (opcode) {
+   case BRW_OPCODE_IF:
+   case BRW_OPCODE_ELSE:
+   case BRW_OPCODE_GOTO:
+   case BRW_OPCODE_BREAK:
+   case BRW_OPCODE_CALL:
+   case BRW_OPCODE_CALLA:
+   case BRW_OPCODE_CONTINUE:
+   case BRW_OPCODE_ENDIF:
+   case BRW_OPCODE_HALT:
+   case BRW_OPCODE_JMPI:
+   case BRW_OPCODE_RET:
+   case BRW_OPCODE_WHILE:
+   case BRW_OPCODE_BRC:
+   case BRW_OPCODE_BRD:
+      /* TODO: "join" should also be here if added */
+      return true;
+   default:
       return false;
-
-   return opcode == BRW_OPCODE_IF ||
-          opcode == BRW_OPCODE_ELSE;
-          /* opcode == BRW_OPCODE_GOTO; */
+   }
 }
 
 static bool
@@ -227,17 +239,16 @@ static const char *const pred_ctrl_align1[16] = {
    [BRW_PREDICATE_ALIGN1_ALL32H] = ".all32h",
 };
 
+static const char *const xe2_pred_ctrl[4] = {
+   [BRW_PREDICATE_NORMAL]        = "",
+   [XE2_PREDICATE_ANY]           = ".any",
+   [XE2_PREDICATE_ALL]           = ".all",
+};
+
 static const char *const thread_ctrl[4] = {
    [BRW_THREAD_NORMAL] = "",
    [BRW_THREAD_ATOMIC] = "atomic",
    [BRW_THREAD_SWITCH] = "switch",
-};
-
-static const char *const compr_ctrl[4] = {
-   [0] = "",
-   [1] = "sechalf",
-   [2] = "compr",
-   [3] = "compr4",
 };
 
 static const char *const dep_ctrl[4] = {
@@ -247,21 +258,15 @@ static const char *const dep_ctrl[4] = {
    [3] = "NoDDClr,NoDDChk",
 };
 
-static const char *const mask_ctrl[4] = {
-   [0] = "",
-   [1] = "nomask",
-};
-
 static const char *const access_mode[2] = {
    [0] = "align1",
    [1] = "align16",
 };
 
 static const char *const reg_file[4] = {
-   [0] = "A",
-   [1] = "g",
-   [2] = "m",
-   [3] = "imm",
+   [ARF]       = "A",
+   [FIXED_GRF] = "g",
+   [IMM]       = "imm",
 };
 
 static const char *const writemask[16] = {
@@ -288,22 +293,8 @@ static const char *const end_of_thread[2] = {
    [1] = "EOT"
 };
 
-/* SFIDs on Gfx4-5 */
-static const char *const gfx4_sfid[16] = {
-   [BRW_SFID_NULL]            = "null",
-   [BRW_SFID_MATH]            = "math",
-   [BRW_SFID_SAMPLER]         = "sampler",
-   [BRW_SFID_MESSAGE_GATEWAY] = "gateway",
-   [BRW_SFID_DATAPORT_READ]   = "read",
-   [BRW_SFID_DATAPORT_WRITE]  = "write",
-   [BRW_SFID_URB]             = "urb",
-   [BRW_SFID_THREAD_SPAWNER]  = "thread_spawner",
-   [BRW_SFID_VME]             = "vme",
-};
-
 static const char *const gfx6_sfid[16] = {
    [BRW_SFID_NULL]                     = "null",
-   [BRW_SFID_MATH]                     = "math",
    [BRW_SFID_SAMPLER]                  = "sampler",
    [BRW_SFID_MESSAGE_GATEWAY]          = "gateway",
    [BRW_SFID_URB]                      = "urb",
@@ -331,63 +322,6 @@ static const char *const gfx7_gateway_subfuncid[8] = {
    [BRW_MESSAGE_GATEWAY_SFID_MMIO_READ_WRITE] = "mmio read/write",
 };
 
-static const char *const gfx4_dp_read_port_msg_type[4] = {
-   [0b00] = "OWord Block Read",
-   [0b01] = "OWord Dual Block Read",
-   [0b10] = "Media Block Read",
-   [0b11] = "DWord Scattered Read",
-};
-
-static const char *const g45_dp_read_port_msg_type[8] = {
-   [0b000] = "OWord Block Read",
-   [0b010] = "OWord Dual Block Read",
-   [0b100] = "Media Block Read",
-   [0b110] = "DWord Scattered Read",
-   [0b001] = "Render Target UNORM Read",
-   [0b011] = "AVC Loop Filter Read",
-};
-
-static const char *const dp_write_port_msg_type[8] = {
-   [0b000] = "OWord block write",
-   [0b001] = "OWord dual block write",
-   [0b010] = "media block write",
-   [0b011] = "DWord scattered write",
-   [0b100] = "RT write",
-   [0b101] = "streamed VB write",
-   [0b110] = "RT UNORM write", /* G45+ */
-   [0b111] = "flush render cache",
-};
-
-static const char *const dp_rc_msg_type_gfx6[16] = {
-   [BRW_DATAPORT_READ_MESSAGE_OWORD_BLOCK_READ] = "OWORD block read",
-   [GFX6_DATAPORT_READ_MESSAGE_RENDER_UNORM_READ] = "RT UNORM read",
-   [GFX6_DATAPORT_READ_MESSAGE_OWORD_DUAL_BLOCK_READ] = "OWORD dual block read",
-   [GFX6_DATAPORT_READ_MESSAGE_MEDIA_BLOCK_READ] = "media block read",
-   [GFX6_DATAPORT_READ_MESSAGE_OWORD_UNALIGN_BLOCK_READ] =
-      "OWORD unaligned block read",
-   [GFX6_DATAPORT_READ_MESSAGE_DWORD_SCATTERED_READ] = "DWORD scattered read",
-   [GFX6_DATAPORT_WRITE_MESSAGE_DWORD_ATOMIC_WRITE] = "DWORD atomic write",
-   [GFX6_DATAPORT_WRITE_MESSAGE_OWORD_BLOCK_WRITE] = "OWORD block write",
-   [GFX6_DATAPORT_WRITE_MESSAGE_OWORD_DUAL_BLOCK_WRITE] =
-      "OWORD dual block write",
-   [GFX6_DATAPORT_WRITE_MESSAGE_MEDIA_BLOCK_WRITE] = "media block write",
-   [GFX6_DATAPORT_WRITE_MESSAGE_DWORD_SCATTERED_WRITE] =
-      "DWORD scattered write",
-   [GFX6_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_WRITE] = "RT write",
-   [GFX6_DATAPORT_WRITE_MESSAGE_STREAMED_VB_WRITE] = "streamed VB write",
-   [GFX6_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_UNORM_WRITE] = "RT UNORM write",
-};
-
-static const char *const dp_rc_msg_type_gfx7[16] = {
-   [GFX7_DATAPORT_RC_MEDIA_BLOCK_READ] = "media block read",
-   [GFX7_DATAPORT_RC_TYPED_SURFACE_READ] = "typed surface read",
-   [GFX7_DATAPORT_RC_TYPED_ATOMIC_OP] = "typed atomic op",
-   [GFX7_DATAPORT_RC_MEMORY_FENCE] = "memory fence",
-   [GFX7_DATAPORT_RC_MEDIA_BLOCK_WRITE] = "media block write",
-   [GFX7_DATAPORT_RC_RENDER_TARGET_WRITE] = "RT write",
-   [GFX7_DATAPORT_RC_TYPED_SURFACE_WRITE] = "typed surface write"
-};
-
 static const char *const dp_rc_msg_type_gfx9[16] = {
    [GFX9_DATAPORT_RC_RENDER_TARGET_WRITE] = "RT write",
    [GFX9_DATAPORT_RC_RENDER_TARGET_READ] = "RT read"
@@ -396,10 +330,7 @@ static const char *const dp_rc_msg_type_gfx9[16] = {
 static const char *const *
 dp_rc_msg_type(const struct intel_device_info *devinfo)
 {
-   return (devinfo->ver >= 9 ? dp_rc_msg_type_gfx9 :
-           devinfo->ver >= 7 ? dp_rc_msg_type_gfx7 :
-           devinfo->ver >= 6 ? dp_rc_msg_type_gfx6 :
-           dp_write_port_msg_type);
+   return dp_rc_msg_type_gfx9;
 }
 
 static const char *const m_rt_write_subtype[] = {
@@ -410,6 +341,16 @@ static const char *const m_rt_write_subtype[] = {
    [0b100] = "SIMD8",
    [0b101] = "SIMD8/ImageWrite",   /* Gfx6+ */
    [0b111] = "SIMD16/RepData-111", /* no idea how this is different than 1 */
+};
+
+static const char *const m_rt_write_subtype_xe2[] = {
+   [0b000] = "SIMD16",
+   [0b001] = "SIMD32",
+   [0b010] = "SIMD16/DualSrc",
+   [0b011] = "invalid",
+   [0b100] = "invalid",
+   [0b101] = "invalid",
+   [0b111] = "invalid",
 };
 
 static const char *const dp_dc0_msg_type_gfx7[16] = {
@@ -509,7 +450,6 @@ static const char *const math_function[16] = {
    [BRW_MATH_FUNCTION_RSQ]    = "rsq",
    [BRW_MATH_FUNCTION_SIN]    = "sin",
    [BRW_MATH_FUNCTION_COS]    = "cos",
-   [BRW_MATH_FUNCTION_SINCOS] = "sincos",
    [BRW_MATH_FUNCTION_FDIV]   = "fdiv",
    [BRW_MATH_FUNCTION_POW]    = "pow",
    [BRW_MATH_FUNCTION_INT_DIV_QUOTIENT_AND_REMAINDER] = "intdivmod",
@@ -523,40 +463,12 @@ static const char *const sync_function[16] = {
    [TGL_SYNC_NOP] = "nop",
    [TGL_SYNC_ALLRD] = "allrd",
    [TGL_SYNC_ALLWR] = "allwr",
+   [TGL_SYNC_FENCE] = "fence",
    [TGL_SYNC_BAR] = "bar",
    [TGL_SYNC_HOST] = "host",
 };
 
-static const char *const math_saturate[2] = {
-   [0] = "",
-   [1] = "sat"
-};
-
-static const char *const math_signed[2] = {
-   [0] = "",
-   [1] = "signed"
-};
-
-static const char *const math_scalar[2] = {
-   [0] = "",
-   [1] = "scalar"
-};
-
-static const char *const math_precision[2] = {
-   [0] = "",
-   [1] = "partial_precision"
-};
-
-static const char *const gfx5_urb_opcode[] = {
-   [0] = "urb_write",
-   [1] = "ff_sync",
-};
-
 static const char *const gfx7_urb_opcode[] = {
-   [BRW_URB_OPCODE_WRITE_HWORD] = "write HWord",
-   [BRW_URB_OPCODE_WRITE_OWORD] = "write OWord",
-   [BRW_URB_OPCODE_READ_HWORD] = "read HWord",
-   [BRW_URB_OPCODE_READ_OWORD] = "read OWord",
    [GFX7_URB_OPCODE_ATOMIC_MOV] = "atomic mov",  /* Gfx7+ */
    [GFX7_URB_OPCODE_ATOMIC_INC] = "atomic inc",  /* Gfx7+ */
    [GFX8_URB_OPCODE_ATOMIC_ADD] = "atomic add",  /* Gfx8+ */
@@ -570,21 +482,6 @@ static const char *const urb_swizzle[4] = {
    [BRW_URB_SWIZZLE_NONE]       = "",
    [BRW_URB_SWIZZLE_INTERLEAVE] = "interleave",
    [BRW_URB_SWIZZLE_TRANSPOSE]  = "transpose",
-};
-
-static const char *const urb_allocate[2] = {
-   [0] = "",
-   [1] = "allocate"
-};
-
-static const char *const urb_used[2] = {
-   [0] = "",
-   [1] = "used"
-};
-
-static const char *const urb_complete[2] = {
-   [0] = "",
-   [1] = "complete"
 };
 
 static const char *const gfx5_sampler_msg_type[] = {
@@ -613,6 +510,41 @@ static const char *const gfx5_sampler_msg_type[] = {
    [GFX7_SAMPLER_MESSAGE_SAMPLE_LD2DSS]       = "ld2dss",
 };
 
+static const char *const xe2_sampler_msg_type[] = {
+   [GFX5_SAMPLER_MESSAGE_SAMPLE]              = "sample",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_BIAS]         = "sample_b",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_LOD]          = "sample_l",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_COMPARE]      = "sample_c",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_DERIVS]       = "sample_d",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_BIAS_COMPARE] = "sample_b_c",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_LOD_COMPARE]  = "sample_l_c",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_LD]           = "ld",
+   [GFX7_SAMPLER_MESSAGE_SAMPLE_GATHER4]      = "gather4",
+   [GFX5_SAMPLER_MESSAGE_LOD]                 = "lod",
+   [GFX5_SAMPLER_MESSAGE_SAMPLE_RESINFO]      = "resinfo",
+   [GFX6_SAMPLER_MESSAGE_SAMPLE_SAMPLEINFO]   = "sampleinfo",
+   [GFX7_SAMPLER_MESSAGE_SAMPLE_GATHER4_C]    = "gather4_c",
+   [GFX7_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO]   = "gather4_po",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_MLOD]          = "sample_mlod",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_COMPARE_MLOD]  = "sample_c_mlod",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_I]    = "gather4_i",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_L]    = "gather4_l",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_B]    = "gather4_b",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_I_C]  = "gather4_i_c",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_L_C]  = "gather4_l_c",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO_L] = "gather4_po_l",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO_L_C] = "gather4_po_l_c",
+   [XE2_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO_B]  = "gather4_po_b",
+   [HSW_SAMPLER_MESSAGE_SAMPLE_DERIV_COMPARE] = "sample_d_c",
+   [GFX9_SAMPLER_MESSAGE_SAMPLE_LZ]           = "sample_lz",
+   [GFX9_SAMPLER_MESSAGE_SAMPLE_C_LZ]         = "sample_c_lz",
+   [GFX9_SAMPLER_MESSAGE_SAMPLE_LD_LZ]        = "ld_lz",
+   [GFX9_SAMPLER_MESSAGE_SAMPLE_LD2DMS_W]     = "ld2dms_w",
+   [GFX7_SAMPLER_MESSAGE_SAMPLE_LD_MCS]       = "ld_mcs",
+   [GFX7_SAMPLER_MESSAGE_SAMPLE_LD2DMS]       = "ld2dms",
+   [GFX7_SAMPLER_MESSAGE_SAMPLE_LD2DSS]       = "ld2dss",
+};
+
 static const char *const gfx5_sampler_simd_mode[7] = {
    [BRW_SAMPLER_SIMD_MODE_SIMD4X2]   = "SIMD4x2",
    [BRW_SAMPLER_SIMD_MODE_SIMD8]     = "SIMD8",
@@ -622,10 +554,11 @@ static const char *const gfx5_sampler_simd_mode[7] = {
    [GFX10_SAMPLER_SIMD_MODE_SIMD16H] = "SIMD16H",
 };
 
-static const char *const sampler_target_format[4] = {
-   [0] = "F",
-   [2] = "UD",
-   [3] = "D"
+static const char *const xe2_sampler_simd_mode[7] = {
+   [XE2_SAMPLER_SIMD_MODE_SIMD16]  = "SIMD16",
+   [XE2_SAMPLER_SIMD_MODE_SIMD32]  = "SIMD32",
+   [XE2_SAMPLER_SIMD_MODE_SIMD16H] = "SIMD16H",
+   [XE2_SAMPLER_SIMD_MODE_SIMD32H] = "SIMD32H",
 };
 
 static const char *const lsc_operation[] = {
@@ -655,12 +588,26 @@ static const char *const lsc_operation[] = {
    [LSC_OP_ATOMIC_XOR]      = "atomic_xor",
 };
 
+const char *
+brw_lsc_op_to_string(unsigned op)
+{
+   assert(op < ARRAY_SIZE(lsc_operation));
+   return lsc_operation[op];
+}
+
 static const char *const lsc_addr_surface_type[] = {
    [LSC_ADDR_SURFTYPE_FLAT] = "flat",
    [LSC_ADDR_SURFTYPE_BSS]  = "bss",
    [LSC_ADDR_SURFTYPE_SS]   = "ss",
    [LSC_ADDR_SURFTYPE_BTI]  = "bti",
 };
+
+const char *
+brw_lsc_addr_surftype_to_string(unsigned t)
+{
+   assert(t < ARRAY_SIZE(lsc_addr_surface_type));
+   return lsc_addr_surface_type[t];
+}
 
 static const char* const lsc_fence_scope[] = {
    [LSC_FENCE_THREADGROUP]     = "threadgroup",
@@ -702,6 +649,13 @@ static const char* const lsc_data_size[] = {
    [LSC_DATA_SIZE_D16U32]  = "d16u32",
    [LSC_DATA_SIZE_D16BF32] = "d16bf32",
 };
+
+const char *
+brw_lsc_data_size_to_string(unsigned s)
+{
+   assert(s < ARRAY_SIZE(lsc_data_size));
+   return lsc_data_size[s];
+}
 
 static const char* const lsc_vect_size_str[] = {
    [LSC_VECT_SIZE_V1] = "V1",
@@ -752,6 +706,37 @@ static const char* const lsc_cache_store[] = {
    [LSC_CACHE_STORE_L1S_L3UC]        = "L1S_L3UC",
    [LSC_CACHE_STORE_L1S_L3WB]        = "L1S_L3WB",
    [LSC_CACHE_STORE_L1WB_L3WB]       = "L1WB_L3WB",
+};
+
+static const char* const xe2_lsc_cache_load[] = {
+   [XE2_LSC_CACHE_LOAD_L1STATE_L3MOCS]   = "L1STATE_L3MOCS",
+   [XE2_LSC_CACHE_LOAD_L1UC_L3UC]        = "L1UC_L3UC",
+   [XE2_LSC_CACHE_LOAD_L1UC_L3C]         = "L1UC_L3C",
+   [XE2_LSC_CACHE_LOAD_L1UC_L3CC]        = "L1UC_L3CC",
+   [XE2_LSC_CACHE_LOAD_L1C_L3UC]         = "L1C_L3UC",
+   [XE2_LSC_CACHE_LOAD_L1C_L3C]          = "L1C_L3C",
+   [XE2_LSC_CACHE_LOAD_L1C_L3CC]         = "L1C_L3CC",
+   [XE2_LSC_CACHE_LOAD_L1S_L3UC]         = "L1S_L3UC",
+   [XE2_LSC_CACHE_LOAD_L1S_L3C]          = "L1S_L3C",
+   [XE2_LSC_CACHE_LOAD_L1IAR_L3IAR]      = "L1IAR_L3IAR",
+};
+
+static const char* const xe2_lsc_cache_store[] = {
+   [XE2_LSC_CACHE_STORE_L1STATE_L3MOCS]  = "L1STATE_L3MOCS",
+   [XE2_LSC_CACHE_STORE_L1UC_L3UC]       = "L1UC_L3UC",
+   [XE2_LSC_CACHE_STORE_L1UC_L3WB]       = "L1UC_L3WB",
+   [XE2_LSC_CACHE_STORE_L1WT_L3UC]       = "L1WT_L3UC",
+   [XE2_LSC_CACHE_STORE_L1WT_L3WB]       = "L1WT_L3WB",
+   [XE2_LSC_CACHE_STORE_L1S_L3UC]        = "L1S_L3UC",
+   [XE2_LSC_CACHE_STORE_L1S_L3WB]        = "L1S_L3WB",
+   [XE2_LSC_CACHE_STORE_L1WB_L3WB]       = "L1WB_L3WB",
+};
+
+static const char* const dpas_systolic_depth[4] = {
+   [0] = "16",
+   [1] = "2",
+   [2] = "4",
+   [3] = "8"
 };
 
 static int column;
@@ -816,10 +801,10 @@ control(FILE *file, const char *name, const char *const ctrl[],
 }
 
 static int
-print_opcode(FILE *file, const struct intel_device_info *devinfo,
+print_opcode(FILE *file, const struct brw_isa_info *isa,
              enum opcode id)
 {
-   const struct opcode_desc *desc = brw_opcode_desc(devinfo, id);
+   const struct opcode_desc *desc = brw_opcode_desc(isa, id);
    if (!desc) {
       format(file, "*** invalid opcode value %d ", id);
       return 1;
@@ -833,11 +818,7 @@ reg(FILE *file, unsigned _reg_file, unsigned _reg_nr)
 {
    int err = 0;
 
-   /* Clear the Compr4 instruction compression bit. */
-   if (_reg_file == BRW_MESSAGE_REGISTER_FILE)
-      _reg_nr &= ~BRW_MRF_COMPR4;
-
-   if (_reg_file == BRW_ARCHITECTURE_REGISTER_FILE) {
+   if (_reg_file == ARF) {
       switch (_reg_nr & 0xf0) {
       case BRW_ARF_NULL:
          string(file, "null");
@@ -853,12 +834,6 @@ reg(FILE *file, unsigned _reg_file, unsigned _reg_nr)
          break;
       case BRW_ARF_MASK:
          format(file, "mask%d", _reg_nr & 0x0f);
-         break;
-      case BRW_ARF_MASK_STACK:
-         format(file, "ms%d", _reg_nr & 0x0f);
-         break;
-      case BRW_ARF_MASK_STACK_DEPTH:
-         format(file, "msd%d", _reg_nr & 0x0f);
          break;
       case BRW_ARF_STATE:
          format(file, "sr%d", _reg_nr & 0x0f);
@@ -891,15 +866,16 @@ reg(FILE *file, unsigned _reg_file, unsigned _reg_nr)
 }
 
 static int
-dest(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
+dest(FILE *file, const struct brw_isa_info *isa, const brw_inst *inst)
 {
+   const struct intel_device_info *devinfo = isa->devinfo;
    enum brw_reg_type type = brw_inst_dst_type(devinfo, inst);
-   unsigned elem_size = brw_reg_type_to_size(type);
+   unsigned elem_size = brw_type_size_bytes(type);
    int err = 0;
 
-   if (is_split_send(devinfo, brw_inst_opcode(devinfo, inst))) {
+   if (is_split_send(devinfo, brw_inst_opcode(isa, inst))) {
       /* These are fixed for split sends */
-      type = BRW_REGISTER_TYPE_UD;
+      type = BRW_TYPE_UD;
       elem_size = 4;
       if (devinfo->ver >= 12) {
          err |= reg(file, brw_inst_send_dst_reg_file(devinfo, inst),
@@ -983,14 +959,12 @@ dest_3src(FILE *file, const struct intel_device_info *devinfo,
    if (devinfo->ver < 10 && is_align1)
       return 0;
 
-   if (devinfo->ver == 6 && brw_inst_3src_a16_dst_reg_file(devinfo, inst))
-      reg_file = BRW_MESSAGE_REGISTER_FILE;
-   else if (devinfo->ver >= 12)
+   if (devinfo->ver >= 12)
       reg_file = brw_inst_3src_a1_dst_reg_file(devinfo, inst);
    else if (is_align1 && brw_inst_3src_a1_dst_reg_file(devinfo, inst))
-      reg_file = BRW_ARCHITECTURE_REGISTER_FILE;
+      reg_file = ARF;
    else
-      reg_file = BRW_GENERAL_REGISTER_FILE;
+      reg_file = FIXED_GRF;
 
    err |= reg(file, reg_file, brw_inst_3src_dst_reg_nr(devinfo, inst));
    if (err == -1)
@@ -1001,9 +975,9 @@ dest_3src(FILE *file, const struct intel_device_info *devinfo,
       subreg_nr = brw_inst_3src_a1_dst_subreg_nr(devinfo, inst);
    } else {
       type = brw_inst_3src_a16_dst_type(devinfo, inst);
-      subreg_nr = brw_inst_3src_a16_dst_subreg_nr(devinfo, inst) * 4;
+      subreg_nr = brw_inst_3src_a16_dst_subreg_nr(devinfo, inst);
    }
-   subreg_nr /= brw_reg_type_to_size(type);
+   subreg_nr /= brw_type_size_bytes(type);
 
    if (subreg_nr)
       format(file, ".%u", subreg_nr);
@@ -1013,6 +987,27 @@ dest_3src(FILE *file, const struct intel_device_info *devinfo,
       err |= control(file, "writemask", writemask,
                      brw_inst_3src_a16_dst_writemask(devinfo, inst), NULL);
    }
+   string(file, brw_reg_type_to_letters(type));
+
+   return 0;
+}
+
+static int
+dest_dpas_3src(FILE *file, const struct intel_device_info *devinfo,
+               const brw_inst *inst)
+{
+   uint32_t reg_file = brw_inst_dpas_3src_dst_reg_file(devinfo, inst);
+
+   if (reg(file, reg_file, brw_inst_dpas_3src_dst_reg_nr(devinfo, inst)) == -1)
+      return 0;
+
+   enum brw_reg_type type = brw_inst_dpas_3src_dst_type(devinfo, inst);
+   unsigned subreg_nr = brw_inst_dpas_3src_dst_subreg_nr(devinfo, inst);
+
+   if (subreg_nr)
+      format(file, ".%u", subreg_nr);
+   string(file, "<1>");
+
    string(file, brw_reg_type_to_letters(type));
 
    return 0;
@@ -1045,7 +1040,7 @@ src_da1(FILE *file,
 {
    int err = 0;
 
-   if (devinfo->ver >= 8 && is_logic_instruction(opcode))
+   if (is_logic_instruction(opcode))
       err |= control(file, "bitnot", m_bitnot, _negate, NULL);
    else
       err |= control(file, "negate", m_negate, _negate, NULL);
@@ -1056,7 +1051,7 @@ src_da1(FILE *file,
    if (err == -1)
       return 0;
    if (sub_reg_num) {
-      unsigned elem_size = brw_reg_type_to_size(type);
+      unsigned elem_size = brw_type_size_bytes(type);
       format(file, ".%d", sub_reg_num / elem_size);   /* use formal style like spec */
    }
    src_align1_region(file, _vert_stride, _width, _horiz_stride);
@@ -1077,7 +1072,7 @@ src_ia1(FILE *file,
 {
    int err = 0;
 
-   if (devinfo->ver >= 8 && is_logic_instruction(opcode))
+   if (is_logic_instruction(opcode))
       err |= control(file, "bitnot", m_bitnot, _negate, NULL);
    else
       err |= control(file, "negate", m_negate, _negate, NULL);
@@ -1132,7 +1127,7 @@ src_da16(FILE *file,
 {
    int err = 0;
 
-   if (devinfo->ver >= 8 && is_logic_instruction(opcode))
+   if (is_logic_instruction(opcode))
       err |= control(file, "bitnot", m_bitnot, _negate, NULL);
    else
       err |= control(file, "negate", m_negate, _negate, NULL);
@@ -1143,7 +1138,7 @@ src_da16(FILE *file,
    if (err == -1)
       return 0;
    if (_subreg_nr) {
-      unsigned elem_size = brw_reg_type_to_size(type);
+      unsigned elem_size = brw_type_size_bytes(type);
 
       /* bit4 for subreg number byte addressing. Make this same meaning as
          in da1 case, so output looks consistent. */
@@ -1216,6 +1211,7 @@ implied_width(enum brw_vertical_stride _vert_stride,
    /* "2. Width is equal to vertical stride when Horizontal Stride is zero." */
    } else if (_horiz_stride == BRW_HORIZONTAL_STRIDE_0) {
       switch (_vert_stride) {
+      case BRW_VERTICAL_STRIDE_1: return BRW_WIDTH_1;
       case BRW_VERTICAL_STRIDE_2: return BRW_WIDTH_2;
       case BRW_VERTICAL_STRIDE_4: return BRW_WIDTH_4;
       case BRW_VERTICAL_STRIDE_8: return BRW_WIDTH_8;
@@ -1260,24 +1256,16 @@ src0_3src(FILE *file, const struct intel_device_info *devinfo,
       return 0;
 
    if (is_align1) {
-      if (devinfo->ver >= 12 && !brw_inst_3src_a1_src0_is_imm(devinfo, inst)) {
-         _file = brw_inst_3src_a1_src0_reg_file(devinfo, inst);
-      } else if (brw_inst_3src_a1_src0_reg_file(devinfo, inst) ==
-                 BRW_ALIGN1_3SRC_GENERAL_REGISTER_FILE) {
-         _file = BRW_GENERAL_REGISTER_FILE;
-      } else if (brw_inst_3src_a1_src0_type(devinfo, inst) ==
-                 BRW_REGISTER_TYPE_NF) {
-         _file = BRW_ARCHITECTURE_REGISTER_FILE;
-      } else {
-         _file = BRW_IMMEDIATE_VALUE;
+      _file = brw_inst_3src_a1_src0_reg_file(devinfo, inst);
+      if (_file == IMM) {
          uint16_t imm_val = brw_inst_3src_a1_src0_imm(devinfo, inst);
          enum brw_reg_type type = brw_inst_3src_a1_src0_type(devinfo, inst);
 
-         if (type == BRW_REGISTER_TYPE_W) {
+         if (type == BRW_TYPE_W) {
             format(file, "%dW", imm_val);
-         } else if (type == BRW_REGISTER_TYPE_UW) {
+         } else if (type == BRW_TYPE_UW) {
             format(file, "0x%04xUW", imm_val);
-         } else if (type == BRW_REGISTER_TYPE_HF) {
+         } else if (type == BRW_TYPE_HF) {
             format(file, "0x%04xHF", imm_val);
          }
          return 0;
@@ -1292,9 +1280,9 @@ src0_3src(FILE *file, const struct intel_device_info *devinfo,
                          brw_inst_3src_a1_src0_hstride(devinfo, inst));
       _width = implied_width(_vert_stride, _horiz_stride);
    } else {
-      _file = BRW_GENERAL_REGISTER_FILE;
+      _file = FIXED_GRF;
       reg_nr = brw_inst_3src_src0_reg_nr(devinfo, inst);
-      subreg_nr = brw_inst_3src_a16_src0_subreg_nr(devinfo, inst) * 4;
+      subreg_nr = brw_inst_3src_a16_src0_subreg_nr(devinfo, inst);
       type = brw_inst_3src_a16_src_type(devinfo, inst);
 
       if (brw_inst_3src_a16_src0_rep_ctrl(devinfo, inst)) {
@@ -1311,7 +1299,7 @@ src0_3src(FILE *file, const struct intel_device_info *devinfo,
                       _width == BRW_WIDTH_1 &&
                       _horiz_stride == BRW_HORIZONTAL_STRIDE_0;
 
-   subreg_nr /= brw_reg_type_to_size(type);
+   subreg_nr /= brw_type_size_bytes(type);
 
    err |= control(file, "negate", m_negate,
                   brw_inst_3src_src0_negate(devinfo, inst), NULL);
@@ -1347,15 +1335,7 @@ src1_3src(FILE *file, const struct intel_device_info *devinfo,
       return 0;
 
    if (is_align1) {
-      if (devinfo->ver >= 12) {
-         _file = brw_inst_3src_a1_src1_reg_file(devinfo, inst);
-      } else if (brw_inst_3src_a1_src1_reg_file(devinfo, inst) ==
-                 BRW_ALIGN1_3SRC_GENERAL_REGISTER_FILE) {
-         _file = BRW_GENERAL_REGISTER_FILE;
-      } else {
-         _file = BRW_ARCHITECTURE_REGISTER_FILE;
-      }
-
+      _file = brw_inst_3src_a1_src1_reg_file(devinfo, inst);
       reg_nr = brw_inst_3src_src1_reg_nr(devinfo, inst);
       subreg_nr = brw_inst_3src_a1_src1_subreg_nr(devinfo, inst);
       type = brw_inst_3src_a1_src1_type(devinfo, inst);
@@ -1366,9 +1346,9 @@ src1_3src(FILE *file, const struct intel_device_info *devinfo,
                          brw_inst_3src_a1_src1_hstride(devinfo, inst));
       _width = implied_width(_vert_stride, _horiz_stride);
    } else {
-      _file = BRW_GENERAL_REGISTER_FILE;
+      _file = FIXED_GRF;
       reg_nr = brw_inst_3src_src1_reg_nr(devinfo, inst);
-      subreg_nr = brw_inst_3src_a16_src1_subreg_nr(devinfo, inst) * 4;
+      subreg_nr = brw_inst_3src_a16_src1_subreg_nr(devinfo, inst);
       type = brw_inst_3src_a16_src_type(devinfo, inst);
 
       if (brw_inst_3src_a16_src1_rep_ctrl(devinfo, inst)) {
@@ -1385,7 +1365,7 @@ src1_3src(FILE *file, const struct intel_device_info *devinfo,
                       _width == BRW_WIDTH_1 &&
                       _horiz_stride == BRW_HORIZONTAL_STRIDE_0;
 
-   subreg_nr /= brw_reg_type_to_size(type);
+   subreg_nr /= brw_type_size_bytes(type);
 
    err |= control(file, "negate", m_negate,
                   brw_inst_3src_src1_negate(devinfo, inst), NULL);
@@ -1421,21 +1401,16 @@ src2_3src(FILE *file, const struct intel_device_info *devinfo,
       return 0;
 
    if (is_align1) {
-      if (devinfo->ver >= 12 && !brw_inst_3src_a1_src2_is_imm(devinfo, inst)) {
-         _file = brw_inst_3src_a1_src2_reg_file(devinfo, inst);
-      } else if (brw_inst_3src_a1_src2_reg_file(devinfo, inst) ==
-                 BRW_ALIGN1_3SRC_GENERAL_REGISTER_FILE) {
-         _file = BRW_GENERAL_REGISTER_FILE;
-      } else {
-         _file = BRW_IMMEDIATE_VALUE;
+      _file = brw_inst_3src_a1_src2_reg_file(devinfo, inst);
+      if (_file == IMM) {
          uint16_t imm_val = brw_inst_3src_a1_src2_imm(devinfo, inst);
          enum brw_reg_type type = brw_inst_3src_a1_src2_type(devinfo, inst);
 
-         if (type == BRW_REGISTER_TYPE_W) {
+         if (type == BRW_TYPE_W) {
             format(file, "%dW", imm_val);
-         } else if (type == BRW_REGISTER_TYPE_UW) {
+         } else if (type == BRW_TYPE_UW) {
             format(file, "0x%04xUW", imm_val);
-         } else if (type == BRW_REGISTER_TYPE_HF) {
+         } else if (type == BRW_TYPE_HF) {
             format(file, "0x%04xHF", imm_val);
          }
          return 0;
@@ -1454,9 +1429,9 @@ src2_3src(FILE *file, const struct intel_device_info *devinfo,
                          brw_inst_3src_a1_src2_hstride(devinfo, inst));
       _width = implied_width(_vert_stride, _horiz_stride);
    } else {
-      _file = BRW_GENERAL_REGISTER_FILE;
+      _file = FIXED_GRF;
       reg_nr = brw_inst_3src_src2_reg_nr(devinfo, inst);
-      subreg_nr = brw_inst_3src_a16_src2_subreg_nr(devinfo, inst) * 4;
+      subreg_nr = brw_inst_3src_a16_src2_subreg_nr(devinfo, inst);
       type = brw_inst_3src_a16_src_type(devinfo, inst);
 
       if (brw_inst_3src_a16_src2_rep_ctrl(devinfo, inst)) {
@@ -1473,7 +1448,7 @@ src2_3src(FILE *file, const struct intel_device_info *devinfo,
                       _width == BRW_WIDTH_1 &&
                       _horiz_stride == BRW_HORIZONTAL_STRIDE_0;
 
-   subreg_nr /= brw_reg_type_to_size(type);
+   subreg_nr /= brw_type_size_bytes(type);
 
    err |= control(file, "negate", m_negate,
                   brw_inst_3src_src2_negate(devinfo, inst), NULL);
@@ -1492,32 +1467,106 @@ src2_3src(FILE *file, const struct intel_device_info *devinfo,
 }
 
 static int
-imm(FILE *file, const struct intel_device_info *devinfo, enum brw_reg_type type,
+src0_dpas_3src(FILE *file, const struct intel_device_info *devinfo,
+               const brw_inst *inst)
+{
+   uint32_t reg_file = brw_inst_dpas_3src_src0_reg_file(devinfo, inst);
+
+   if (reg(file, reg_file, brw_inst_dpas_3src_src0_reg_nr(devinfo, inst)) == -1)
+      return 0;
+
+   unsigned subreg_nr = brw_inst_dpas_3src_src0_subreg_nr(devinfo, inst);
+   enum brw_reg_type type = brw_inst_dpas_3src_src0_type(devinfo, inst);
+
+   if (subreg_nr)
+      format(file, ".%d", subreg_nr);
+   src_align1_region(file,
+                     BRW_VERTICAL_STRIDE_1,
+                     BRW_WIDTH_1,
+                     BRW_ALIGN1_3SRC_SRC_HORIZONTAL_STRIDE_0);
+
+   string(file, brw_reg_type_to_letters(type));
+
+   return 0;
+}
+
+static int
+src1_dpas_3src(FILE *file, const struct intel_device_info *devinfo,
+               const brw_inst *inst)
+{
+   uint32_t reg_file = brw_inst_dpas_3src_src1_reg_file(devinfo, inst);
+
+   if (reg(file, reg_file, brw_inst_dpas_3src_src1_reg_nr(devinfo, inst)) == -1)
+      return 0;
+
+   unsigned subreg_nr = brw_inst_dpas_3src_src1_subreg_nr(devinfo, inst);
+   enum brw_reg_type type = brw_inst_dpas_3src_src1_type(devinfo, inst);
+
+   if (subreg_nr)
+      format(file, ".%d", subreg_nr);
+   src_align1_region(file,
+                     BRW_VERTICAL_STRIDE_1,
+                     BRW_WIDTH_1,
+                     BRW_ALIGN1_3SRC_SRC_HORIZONTAL_STRIDE_0);
+
+   string(file, brw_reg_type_to_letters(type));
+
+   return 0;
+}
+
+static int
+src2_dpas_3src(FILE *file, const struct intel_device_info *devinfo,
+               const brw_inst *inst)
+{
+   uint32_t reg_file = brw_inst_dpas_3src_src2_reg_file(devinfo, inst);
+
+   if (reg(file, reg_file, brw_inst_dpas_3src_src2_reg_nr(devinfo, inst)) == -1)
+      return 0;
+
+   unsigned subreg_nr = brw_inst_dpas_3src_src2_subreg_nr(devinfo, inst);
+   enum brw_reg_type type = brw_inst_dpas_3src_src2_type(devinfo, inst);
+
+   if (subreg_nr)
+      format(file, ".%d", subreg_nr);
+   src_align1_region(file,
+                     BRW_VERTICAL_STRIDE_1,
+                     BRW_WIDTH_1,
+                     BRW_ALIGN1_3SRC_SRC_HORIZONTAL_STRIDE_0);
+
+   string(file, brw_reg_type_to_letters(type));
+
+   return 0;
+}
+
+static int
+imm(FILE *file, const struct brw_isa_info *isa, enum brw_reg_type type,
     const brw_inst *inst)
 {
+   const struct intel_device_info *devinfo = isa->devinfo;
+
    switch (type) {
-   case BRW_REGISTER_TYPE_UQ:
+   case BRW_TYPE_UQ:
       format(file, "0x%016"PRIx64"UQ", brw_inst_imm_uq(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_Q:
+   case BRW_TYPE_Q:
       format(file, "0x%016"PRIx64"Q", brw_inst_imm_uq(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_UD:
+   case BRW_TYPE_UD:
       format(file, "0x%08xUD", brw_inst_imm_ud(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_D:
+   case BRW_TYPE_D:
       format(file, "%dD", brw_inst_imm_d(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_UW:
+   case BRW_TYPE_UW:
       format(file, "0x%04xUW", (uint16_t) brw_inst_imm_ud(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_W:
+   case BRW_TYPE_W:
       format(file, "%dW", (int16_t) brw_inst_imm_d(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_UV:
+   case BRW_TYPE_UV:
       format(file, "0x%08xUV", brw_inst_imm_ud(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_VF:
+   case BRW_TYPE_VF:
       format(file, "0x%"PRIx64"VF", brw_inst_bits(inst, 127, 96));
       pad(file, 48);
       format(file, "/* [%-gF, %-gF, %-gF, %-gF]VF */",
@@ -1526,34 +1575,32 @@ imm(FILE *file, const struct intel_device_info *devinfo, enum brw_reg_type type,
              brw_vf_to_float(brw_inst_imm_ud(devinfo, inst) >> 16),
              brw_vf_to_float(brw_inst_imm_ud(devinfo, inst) >> 24));
       break;
-   case BRW_REGISTER_TYPE_V:
+   case BRW_TYPE_V:
       format(file, "0x%08xV", brw_inst_imm_ud(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_F:
+   case BRW_TYPE_F:
       /* The DIM instruction's src0 uses an F type but contains a
        * 64-bit immediate
        */
-      if (brw_inst_opcode(devinfo, inst) == BRW_OPCODE_DIM) {
-         format(file, "0x%"PRIx64"F", brw_inst_bits(inst, 127, 64));
-         pad(file, 48);
-         format(file, "/* %-gF */", brw_inst_imm_df(devinfo, inst));
-      } else {
-         format(file, "0x%"PRIx64"F", brw_inst_bits(inst, 127, 96));
-         pad(file, 48);
-         format(file, " /* %-gF */", brw_inst_imm_f(devinfo, inst));
-      }
+      format(file, "0x%"PRIx64"F", brw_inst_bits(inst, 127, 96));
+      pad(file, 48);
+      format(file, " /* %-gF */", brw_inst_imm_f(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_DF:
-      format(file, "0x%016"PRIx64"DF", brw_inst_bits(inst, 127, 64));
+   case BRW_TYPE_DF:
+      format(file, "0x%016"PRIx64"DF", brw_inst_imm_uq(devinfo, inst));
       pad(file, 48);
       format(file, "/* %-gDF */", brw_inst_imm_df(devinfo, inst));
       break;
-   case BRW_REGISTER_TYPE_HF:
-      string(file, "Half Float IMM");
+   case BRW_TYPE_HF:
+      format(file, "0x%04xHF",
+             (uint16_t) brw_inst_imm_ud(devinfo, inst));
+      pad(file, 48);
+      format(file, "/* %-gHF */",
+             _mesa_half_to_float((uint16_t) brw_inst_imm_ud(devinfo, inst)));
       break;
-   case BRW_REGISTER_TYPE_NF:
-   case BRW_REGISTER_TYPE_UB:
-   case BRW_REGISTER_TYPE_B:
+   case BRW_TYPE_UB:
+   case BRW_TYPE_B:
+   default:
       format(file, "*** invalid immediate type %d ", type);
    }
    return 0;
@@ -1611,37 +1658,39 @@ src_send_desc_ia(FILE *file,
 }
 
 static int
-src0(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
+src0(FILE *file, const struct brw_isa_info *isa, const brw_inst *inst)
 {
-   if (is_split_send(devinfo, brw_inst_opcode(devinfo, inst))) {
+   const struct intel_device_info *devinfo = isa->devinfo;
+
+   if (is_split_send(devinfo, brw_inst_opcode(isa, inst))) {
       if (devinfo->ver >= 12) {
          return src_sends_da(file,
                              devinfo,
-                             BRW_REGISTER_TYPE_UD,
+                             BRW_TYPE_UD,
                              brw_inst_send_src0_reg_file(devinfo, inst),
                              brw_inst_src0_da_reg_nr(devinfo, inst),
                              0);
       } else if (brw_inst_send_src0_address_mode(devinfo, inst) == BRW_ADDRESS_DIRECT) {
          return src_sends_da(file,
                              devinfo,
-                             BRW_REGISTER_TYPE_UD,
-                             BRW_GENERAL_REGISTER_FILE,
+                             BRW_TYPE_UD,
+                             FIXED_GRF,
                              brw_inst_src0_da_reg_nr(devinfo, inst),
                              brw_inst_src0_da16_subreg_nr(devinfo, inst));
       } else {
          return src_sends_ia(file,
                              devinfo,
-                             BRW_REGISTER_TYPE_UD,
+                             BRW_TYPE_UD,
                              brw_inst_send_src0_ia16_addr_imm(devinfo, inst),
                              brw_inst_src0_ia_subreg_nr(devinfo, inst));
       }
-   } else if (brw_inst_src0_reg_file(devinfo, inst) == BRW_IMMEDIATE_VALUE) {
-      return imm(file, devinfo, brw_inst_src0_type(devinfo, inst), inst);
+   } else if (brw_inst_src0_reg_file(devinfo, inst) == IMM) {
+      return imm(file, isa, brw_inst_src0_type(devinfo, inst), inst);
    } else if (brw_inst_access_mode(devinfo, inst) == BRW_ALIGN_1) {
       if (brw_inst_src0_address_mode(devinfo, inst) == BRW_ADDRESS_DIRECT) {
          return src_da1(file,
                         devinfo,
-                        brw_inst_opcode(devinfo, inst),
+                        brw_inst_opcode(isa, inst),
                         brw_inst_src0_type(devinfo, inst),
                         brw_inst_src0_reg_file(devinfo, inst),
                         brw_inst_src0_vstride(devinfo, inst),
@@ -1654,7 +1703,7 @@ src0(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
       } else {
          return src_ia1(file,
                         devinfo,
-                        brw_inst_opcode(devinfo, inst),
+                        brw_inst_opcode(isa, inst),
                         brw_inst_src0_type(devinfo, inst),
                         brw_inst_src0_ia1_addr_imm(devinfo, inst),
                         brw_inst_src0_ia_subreg_nr(devinfo, inst),
@@ -1668,7 +1717,7 @@ src0(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
       if (brw_inst_src0_address_mode(devinfo, inst) == BRW_ADDRESS_DIRECT) {
          return src_da16(file,
                          devinfo,
-                         brw_inst_opcode(devinfo, inst),
+                         brw_inst_opcode(isa, inst),
                          brw_inst_src0_type(devinfo, inst),
                          brw_inst_src0_reg_file(devinfo, inst),
                          brw_inst_src0_vstride(devinfo, inst),
@@ -1688,22 +1737,24 @@ src0(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
 }
 
 static int
-src1(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
+src1(FILE *file, const struct brw_isa_info *isa, const brw_inst *inst)
 {
-   if (is_split_send(devinfo, brw_inst_opcode(devinfo, inst))) {
+   const struct intel_device_info *devinfo = isa->devinfo;
+
+   if (is_split_send(devinfo, brw_inst_opcode(isa, inst))) {
       return src_sends_da(file,
                           devinfo,
-                          BRW_REGISTER_TYPE_UD,
+                          BRW_TYPE_UD,
                           brw_inst_send_src1_reg_file(devinfo, inst),
                           brw_inst_send_src1_reg_nr(devinfo, inst),
                           0 /* subreg_nr */);
-   } else if (brw_inst_src1_reg_file(devinfo, inst) == BRW_IMMEDIATE_VALUE) {
-      return imm(file, devinfo, brw_inst_src1_type(devinfo, inst), inst);
+   } else if (brw_inst_src1_reg_file(devinfo, inst) == IMM) {
+      return imm(file, isa, brw_inst_src1_type(devinfo, inst), inst);
    } else if (brw_inst_access_mode(devinfo, inst) == BRW_ALIGN_1) {
       if (brw_inst_src1_address_mode(devinfo, inst) == BRW_ADDRESS_DIRECT) {
          return src_da1(file,
                         devinfo,
-                        brw_inst_opcode(devinfo, inst),
+                        brw_inst_opcode(isa, inst),
                         brw_inst_src1_type(devinfo, inst),
                         brw_inst_src1_reg_file(devinfo, inst),
                         brw_inst_src1_vstride(devinfo, inst),
@@ -1716,7 +1767,7 @@ src1(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
       } else {
          return src_ia1(file,
                         devinfo,
-                        brw_inst_opcode(devinfo, inst),
+                        brw_inst_opcode(isa, inst),
                         brw_inst_src1_type(devinfo, inst),
                         brw_inst_src1_ia1_addr_imm(devinfo, inst),
                         brw_inst_src1_ia_subreg_nr(devinfo, inst),
@@ -1730,7 +1781,7 @@ src1(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
       if (brw_inst_src1_address_mode(devinfo, inst) == BRW_ADDRESS_DIRECT) {
          return src_da16(file,
                          devinfo,
-                         brw_inst_opcode(devinfo, inst),
+                         brw_inst_opcode(isa, inst),
                          brw_inst_src1_type(devinfo, inst),
                          brw_inst_src1_reg_file(devinfo, inst),
                          brw_inst_src1_vstride(devinfo, inst),
@@ -1755,7 +1806,7 @@ qtr_ctrl(FILE *file, const struct intel_device_info *devinfo,
 {
    int qtr_ctl = brw_inst_qtr_control(devinfo, inst);
    int exec_size = 1 << brw_inst_exec_size(devinfo, inst);
-   const unsigned nib_ctl = devinfo->ver < 7 ? 0 :
+   const unsigned nib_ctl = devinfo->ver >= 20 ? 0 :
                             brw_inst_nib_control(devinfo, inst);
 
    if (exec_size < 8 || nib_ctl) {
@@ -1784,18 +1835,51 @@ qtr_ctrl(FILE *file, const struct intel_device_info *devinfo,
    return 0;
 }
 
-static int
-swsb(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
+static bool
+inst_has_type(const struct brw_isa_info *isa,
+              const brw_inst *inst,
+              enum brw_reg_type type)
 {
-   const enum opcode opcode = brw_inst_opcode(devinfo, inst);
-   const uint8_t x = brw_inst_swsb(devinfo, inst);
-   const struct tgl_swsb swsb = tgl_swsb_decode(devinfo, opcode, x);
+   const struct intel_device_info *devinfo = isa->devinfo;
+   const unsigned num_sources = brw_num_sources_from_inst(isa, inst);
+
+   if (brw_inst_dst_type(devinfo, inst) == type)
+      return true;
+
+   if (num_sources >= 3) {
+      if (brw_inst_3src_access_mode(devinfo, inst) == BRW_ALIGN_1)
+         return brw_inst_3src_a1_src0_type(devinfo, inst) == type ||
+                brw_inst_3src_a1_src1_type(devinfo, inst) == type ||
+                brw_inst_3src_a1_src2_type(devinfo, inst) == type;
+      else
+         return brw_inst_3src_a16_src_type(devinfo, inst) == type;
+   } else if (num_sources == 2) {
+      return brw_inst_src0_type(devinfo, inst) == type ||
+             brw_inst_src1_type(devinfo, inst) == type;
+   } else {
+      return brw_inst_src0_type(devinfo, inst) == type;
+   }
+}
+
+static int
+swsb(FILE *file, const struct brw_isa_info *isa, const brw_inst *inst)
+{
+   const struct intel_device_info *devinfo = isa->devinfo;
+   const enum opcode opcode = brw_inst_opcode(isa, inst);
+   const uint32_t x = brw_inst_swsb(devinfo, inst);
+   const bool is_unordered =
+      opcode == BRW_OPCODE_SEND || opcode == BRW_OPCODE_SENDC ||
+      opcode == BRW_OPCODE_MATH || opcode == BRW_OPCODE_DPAS ||
+      (devinfo->has_64bit_float_via_math_pipe &&
+       inst_has_type(isa, inst, BRW_TYPE_DF));
+   const struct tgl_swsb swsb = tgl_swsb_decode(devinfo, is_unordered, x, opcode);
    if (swsb.regdist)
       format(file, " %s@%d",
              (swsb.pipe == TGL_PIPE_FLOAT ? "F" :
               swsb.pipe == TGL_PIPE_INT ? "I" :
               swsb.pipe == TGL_PIPE_LONG ? "L" :
-              swsb.pipe == TGL_PIPE_ALL ? "A"  : "" ),
+              swsb.pipe == TGL_PIPE_ALL ? "A"  :
+              swsb.pipe == TGL_PIPE_MATH ? "M" : "" ),
              swsb.regdist);
    if (swsb.mode)
       format(file, " $%d%s", swsb.sbid,
@@ -1804,15 +1888,15 @@ swsb(FILE *file, const struct intel_device_info *devinfo, const brw_inst *inst)
    return 0;
 }
 
-#ifdef DEBUG
+#if MESA_DEBUG
 static __attribute__((__unused__)) int
-brw_disassemble_imm(const struct intel_device_info *devinfo,
+brw_disassemble_imm(const struct brw_isa_info *isa,
                     uint32_t dw3, uint32_t dw2, uint32_t dw1, uint32_t dw0)
 {
    brw_inst inst;
    inst.data[0] = (((uint64_t) dw1) << 32) | ((uint64_t) dw0);
    inst.data[1] = (((uint64_t) dw3) << 32) | ((uint64_t) dw2);
-   return brw_disassemble_inst(stderr, devinfo, &inst, false, 0, NULL);
+   return brw_disassemble_inst(stderr, isa, &inst, false, 0, NULL);
 }
 #endif
 
@@ -1840,18 +1924,18 @@ lsc_disassemble_ex_desc(const struct intel_device_info *devinfo,
    const unsigned addr_type = lsc_msg_desc_addr_type(devinfo, imm_desc);
    switch (addr_type) {
    case LSC_ADDR_SURFTYPE_FLAT:
-      format(file, "base_offset %u ",
+      format(file, " base_offset %u ",
              lsc_flat_ex_desc_base_offset(devinfo, imm_ex_desc));
       break;
    case LSC_ADDR_SURFTYPE_BSS:
    case LSC_ADDR_SURFTYPE_SS:
-      format(file, "surface_state_index %u ",
+      format(file, " surface_state_index %u ",
              lsc_bss_ex_desc_index(devinfo, imm_ex_desc));
       break;
    case LSC_ADDR_SURFTYPE_BTI:
-      format(file, "BTI %u ",
+      format(file, " BTI %u ",
              lsc_bti_ex_desc_index(devinfo, imm_ex_desc));
-      format(file, "base_offset %u ",
+      format(file, " base_offset %u ",
              lsc_bti_ex_desc_base_offset(devinfo, imm_ex_desc));
       break;
    default:
@@ -1876,24 +1960,29 @@ brw_sfid_is_lsc(unsigned sfid)
 }
 
 int
-brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
+brw_disassemble_inst(FILE *file, const struct brw_isa_info *isa,
                      const brw_inst *inst, bool is_compacted,
                      int offset, const struct brw_label *root_label)
 {
+   const struct intel_device_info *devinfo = isa->devinfo;
+
    int err = 0;
    int space = 0;
 
-   const enum opcode opcode = brw_inst_opcode(devinfo, inst);
-   const struct opcode_desc *desc = brw_opcode_desc(devinfo, opcode);
+   const enum opcode opcode = brw_inst_opcode(isa, inst);
+   const struct opcode_desc *desc = brw_opcode_desc(isa, opcode);
 
    if (brw_inst_pred_control(devinfo, inst)) {
       string(file, "(");
       err |= control(file, "predicate inverse", pred_inv,
                      brw_inst_pred_inv(devinfo, inst), NULL);
       format(file, "f%"PRIu64".%"PRIu64,
-             devinfo->ver >= 7 ? brw_inst_flag_reg_nr(devinfo, inst) : 0,
+             brw_inst_flag_reg_nr(devinfo, inst),
              brw_inst_flag_subreg_nr(devinfo, inst));
-      if (brw_inst_access_mode(devinfo, inst) == BRW_ALIGN_1) {
+      if (devinfo->ver >= 20) {
+         err |= control(file, "predicate control", xe2_pred_ctrl,
+                        brw_inst_pred_control(devinfo, inst), NULL);
+      } else if (brw_inst_access_mode(devinfo, inst) == BRW_ALIGN_1) {
          err |= control(file, "predicate control align1", pred_ctrl_align1,
                         brw_inst_pred_control(devinfo, inst), NULL);
       } else {
@@ -1903,7 +1992,7 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
       string(file, ") ");
    }
 
-   err |= print_opcode(file, devinfo, opcode);
+   err |= print_opcode(file, isa, opcode);
 
    if (!is_send(opcode))
       err |= control(file, "saturate", saturate, brw_inst_saturate(devinfo, inst),
@@ -1922,7 +2011,19 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
       err |= control(file, "function", sync_function,
                      brw_inst_cond_modifier(devinfo, inst), NULL);
 
-   } else if (!is_send(opcode)) {
+   } else if (opcode == BRW_OPCODE_DPAS) {
+      string(file, ".");
+
+      err |= control(file, "systolic depth", dpas_systolic_depth,
+                     brw_inst_dpas_3src_sdepth(devinfo, inst), NULL);
+
+      const unsigned rcount = brw_inst_dpas_3src_rcount(devinfo, inst) + 1;
+
+      format(file, "x%d", rcount);
+   } else if (!is_send(opcode) &&
+              (devinfo->ver < 12 ||
+               brw_inst_src0_reg_file(devinfo, inst) != IMM ||
+               brw_type_size_bytes(brw_inst_src0_type(devinfo, inst)) < 8)) {
       err |= control(file, "conditional modifier", conditional_modifier,
                      brw_inst_cond_modifier(devinfo, inst), NULL);
 
@@ -1931,25 +2032,22 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
        * control flow doesn't update flags.
        */
       if (brw_inst_cond_modifier(devinfo, inst) &&
-          (devinfo->ver < 6 || (opcode != BRW_OPCODE_SEL &&
-                                opcode != BRW_OPCODE_CSEL &&
-                                opcode != BRW_OPCODE_IF &&
-                                opcode != BRW_OPCODE_WHILE))) {
+          (opcode != BRW_OPCODE_SEL &&
+           opcode != BRW_OPCODE_CSEL &&
+           opcode != BRW_OPCODE_IF &&
+           opcode != BRW_OPCODE_WHILE)) {
          format(file, ".f%"PRIu64".%"PRIu64,
-                devinfo->ver >= 7 ? brw_inst_flag_reg_nr(devinfo, inst) : 0,
+                brw_inst_flag_reg_nr(devinfo, inst),
                 brw_inst_flag_subreg_nr(devinfo, inst));
       }
    }
 
-   if (opcode != BRW_OPCODE_NOP && opcode != BRW_OPCODE_NENOP) {
+   if (opcode != BRW_OPCODE_NOP) {
       string(file, "(");
       err |= control(file, "execution size", exec_size,
                      brw_inst_exec_size(devinfo, inst), NULL);
       string(file, ")");
    }
-
-   if (opcode == BRW_OPCODE_SEND && devinfo->ver < 6)
-      format(file, " %"PRIu64, brw_inst_base_mrf(devinfo, inst));
 
    if (brw_has_uip(devinfo, opcode)) {
       /* Instructions that have UIP also have JIP. */
@@ -1961,35 +2059,27 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
       string(file, "UIP: ");
       write_label(file, devinfo, root_label, offset, brw_inst_uip(devinfo, inst));
    } else if (brw_has_jip(devinfo, opcode)) {
-      int jip;
-      if (devinfo->ver >= 7) {
-         jip = brw_inst_jip(devinfo, inst);
-      } else {
-         jip = brw_inst_gfx6_jump_count(devinfo, inst);
-      }
+      int jip = brw_inst_jip(devinfo, inst);
 
       pad(file, 16);
       string(file, "JIP: ");
       write_label(file, devinfo, root_label, offset, jip);
-   } else if (devinfo->ver < 6 && (opcode == BRW_OPCODE_BREAK ||
-                                   opcode == BRW_OPCODE_CONTINUE ||
-                                   opcode == BRW_OPCODE_ELSE)) {
-      pad(file, 16);
-      format(file, "Jump: %d", brw_inst_gfx4_jump_count(devinfo, inst));
-      pad(file, 32);
-      format(file, "Pop: %"PRIu64, brw_inst_gfx4_pop_count(devinfo, inst));
-   } else if (devinfo->ver < 6 && (opcode == BRW_OPCODE_IF ||
-                                   opcode == BRW_OPCODE_IFF ||
-                                   opcode == BRW_OPCODE_HALT ||
-                                   opcode == BRW_OPCODE_WHILE)) {
-      pad(file, 16);
-      format(file, "Jump: %d", brw_inst_gfx4_jump_count(devinfo, inst));
-   } else if (devinfo->ver < 6 && opcode == BRW_OPCODE_ENDIF) {
-      pad(file, 16);
-      format(file, "Pop: %"PRIu64, brw_inst_gfx4_pop_count(devinfo, inst));
    } else if (opcode == BRW_OPCODE_JMPI) {
       pad(file, 16);
-      err |= src1(file, devinfo, inst);
+      err |= src1(file, isa, inst);
+   } else if (opcode == BRW_OPCODE_DPAS) {
+      pad(file, 16);
+      err |= dest_dpas_3src(file, devinfo, inst);
+
+      pad(file, 32);
+      err |= src0_dpas_3src(file, devinfo, inst);
+
+      pad(file, 48);
+      err |= src1_dpas_3src(file, devinfo, inst);
+
+      pad(file, 64);
+      err |= src2_dpas_3src(file, devinfo, inst);
+
    } else if (desc && desc->nsrc == 3) {
       pad(file, 16);
       err |= dest_3src(file, devinfo, inst);
@@ -2005,17 +2095,17 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
    } else if (desc) {
       if (desc->ndst > 0) {
          pad(file, 16);
-         err |= dest(file, devinfo, inst);
+         err |= dest(file, isa, inst);
       }
 
       if (desc->nsrc > 0) {
          pad(file, 32);
-         err |= src0(file, devinfo, inst);
+         err |= src0(file, isa, inst);
       }
 
       if (desc->nsrc > 1) {
          pad(file, 48);
-         err |= src1(file, devinfo, inst);
+         err |= src1(file, isa, inst);
       }
    }
 
@@ -2046,10 +2136,10 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
             fprintf(file, "0x%08"PRIx32, imm_ex_desc);
          }
       } else {
-         if (brw_inst_src1_reg_file(devinfo, inst) != BRW_IMMEDIATE_VALUE) {
+         if (brw_inst_src1_reg_file(devinfo, inst) != IMM) {
             /* show the indirect descriptor source */
             pad(file, 48);
-            err |= src1(file, devinfo, inst);
+            err |= src1(file, isa, inst);
             pad(file, 64);
          } else {
             has_imm_desc = true;
@@ -2066,8 +2156,7 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
       space = 0;
 
       fprintf(file, "            ");
-      err |= control(file, "SFID", devinfo->ver >= 6 ? gfx6_sfid : gfx4_sfid,
-                     sfid, &space);
+      err |= control(file, "SFID", gfx6_sfid, sfid, &space);
       string(file, " MsgDesc:");
 
       if (!has_imm_desc) {
@@ -2075,100 +2164,69 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
       } else {
          bool unsupported = false;
          switch (sfid) {
-         case BRW_SFID_MATH:
-            err |= control(file, "math function", math_function,
-                           brw_inst_math_msg_function(devinfo, inst), &space);
-            err |= control(file, "math saturate", math_saturate,
-                           brw_inst_math_msg_saturate(devinfo, inst), &space);
-            err |= control(file, "math signed", math_signed,
-                           brw_inst_math_msg_signed_int(devinfo, inst), &space);
-            err |= control(file, "math scalar", math_scalar,
-                           brw_inst_math_msg_data_type(devinfo, inst), &space);
-            err |= control(file, "math precision", math_precision,
-                           brw_inst_math_msg_precision(devinfo, inst), &space);
-            break;
          case BRW_SFID_SAMPLER:
-            if (devinfo->ver >= 5) {
-               err |= control(file, "sampler message", gfx5_sampler_msg_type,
+            if (devinfo->ver >= 20) {
+               err |= control(file, "sampler message", xe2_sampler_msg_type,
                               brw_sampler_desc_msg_type(devinfo, imm_desc),
                               &space);
-               err |= control(file, "sampler simd mode", gfx5_sampler_simd_mode,
+               err |= control(file, "sampler simd mode", xe2_sampler_simd_mode,
                               brw_sampler_desc_simd_mode(devinfo, imm_desc),
                               &space);
-               if (devinfo->ver >= 8 &&
-                   brw_sampler_desc_return_format(devinfo, imm_desc)) {
+               if (brw_sampler_desc_return_format(devinfo, imm_desc)) {
                   string(file, " HP");
                }
                format(file, " Surface = %u Sampler = %u",
                       brw_sampler_desc_binding_table_index(devinfo, imm_desc),
                       brw_sampler_desc_sampler(devinfo, imm_desc));
             } else {
-               format(file, " (bti %u, sampler %u, msg_type %u, ",
-                      brw_sampler_desc_binding_table_index(devinfo, imm_desc),
-                      brw_sampler_desc_sampler(devinfo, imm_desc),
-                      brw_sampler_desc_msg_type(devinfo, imm_desc));
-               if (devinfo->verx10 != 45) {
-                  err |= control(file, "sampler target format",
-                                 sampler_target_format,
-                                 brw_sampler_desc_return_format(devinfo, imm_desc),
-                                 NULL);
+               err |= control(file, "sampler message", gfx5_sampler_msg_type,
+                              brw_sampler_desc_msg_type(devinfo, imm_desc),
+                              &space);
+               err |= control(file, "sampler simd mode",
+                              devinfo->ver >= 20 ? xe2_sampler_simd_mode :
+                                                   gfx5_sampler_simd_mode,
+                              brw_sampler_desc_simd_mode(devinfo, imm_desc),
+                              &space);
+               if (brw_sampler_desc_return_format(devinfo, imm_desc)) {
+                  string(file, " HP");
                }
-               string(file, ")");
+               format(file, " Surface = %u Sampler = %u",
+                      brw_sampler_desc_binding_table_index(devinfo, imm_desc),
+                      brw_sampler_desc_sampler(devinfo, imm_desc));
             }
             break;
          case GFX6_SFID_DATAPORT_SAMPLER_CACHE:
          case GFX6_SFID_DATAPORT_CONSTANT_CACHE:
-            /* aka BRW_SFID_DATAPORT_READ on Gfx4-5 */
-            if (devinfo->ver >= 6) {
-               format(file, " (bti %u, msg_ctrl %u, msg_type %u, write_commit %u)",
-                      brw_dp_desc_binding_table_index(devinfo, imm_desc),
-                      brw_dp_desc_msg_control(devinfo, imm_desc),
-                      brw_dp_desc_msg_type(devinfo, imm_desc),
-                      devinfo->ver >= 7 ? 0u :
-                      brw_dp_write_desc_write_commit(devinfo, imm_desc));
-            } else {
-               bool is_965 = devinfo->verx10 == 40;
-               err |= control(file, "DP read message type",
-                              is_965 ? gfx4_dp_read_port_msg_type :
-                                       g45_dp_read_port_msg_type,
-                              brw_dp_read_desc_msg_type(devinfo, imm_desc),
-                              &space);
-
-               format(file, " MsgCtrl = 0x%u",
-                      brw_dp_read_desc_msg_control(devinfo, imm_desc));
-
-               format(file, " Surface = %u",
-                      brw_dp_desc_binding_table_index(devinfo, imm_desc));
-            }
+            format(file, " (bti %u, msg_ctrl %u, msg_type %u)",
+                   brw_dp_desc_binding_table_index(devinfo, imm_desc),
+                   brw_dp_desc_msg_control(devinfo, imm_desc),
+                   brw_dp_desc_msg_type(devinfo, imm_desc));
             break;
 
          case GFX6_SFID_DATAPORT_RENDER_CACHE: {
             /* aka BRW_SFID_DATAPORT_WRITE on Gfx4-5 */
-            unsigned msg_type = brw_fb_write_desc_msg_type(devinfo, imm_desc);
+            unsigned msg_type = brw_fb_desc_msg_type(devinfo, imm_desc);
 
             err |= control(file, "DP rc message type",
                            dp_rc_msg_type(devinfo), msg_type, &space);
 
             bool is_rt_write = msg_type ==
-               (devinfo->ver >= 6 ? GFX6_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_WRITE
-                                  : BRW_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_WRITE);
+               GFX6_DATAPORT_WRITE_MESSAGE_RENDER_TARGET_WRITE;
 
             if (is_rt_write) {
-               err |= control(file, "RT message type", m_rt_write_subtype,
+               err |= control(file, "RT message type",
+                              devinfo->ver >= 20 ? m_rt_write_subtype_xe2 : m_rt_write_subtype,
                               brw_inst_rt_message_type(devinfo, inst), &space);
-               if (devinfo->ver >= 6 && brw_inst_rt_slot_group(devinfo, inst))
+               if (brw_inst_rt_slot_group(devinfo, inst))
                   string(file, " Hi");
                if (brw_fb_write_desc_last_render_target(devinfo, imm_desc))
                   string(file, " LastRT");
                if (devinfo->ver >= 10 &&
                    brw_fb_write_desc_coarse_write(devinfo, imm_desc))
                   string(file, " CoarseWrite");
-               if (devinfo->ver < 7 &&
-                   brw_fb_write_desc_write_commit(devinfo, imm_desc))
-                  string(file, " WriteCommit");
             } else {
                format(file, " MsgCtrl = 0x%u",
-                      brw_fb_write_desc_msg_control(devinfo, imm_desc));
+                      brw_fb_desc_msg_control(devinfo, imm_desc));
             }
 
             format(file, " Surface = %u",
@@ -2177,41 +2235,88 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
          }
 
          case BRW_SFID_URB: {
-            unsigned opcode = brw_inst_urb_opcode(devinfo, inst);
-
-            format(file, " offset %"PRIu64, brw_inst_urb_global_offset(devinfo, inst));
-
-            space = 1;
-
-            err |= control(file, "urb opcode",
-                           devinfo->ver >= 7 ? gfx7_urb_opcode
-                                             : gfx5_urb_opcode,
-                           opcode, &space);
-
-            if (devinfo->ver >= 7 &&
-                brw_inst_urb_per_slot_offset(devinfo, inst)) {
-               string(file, " per-slot");
-            }
-
-            if (opcode == GFX8_URB_OPCODE_SIMD8_WRITE ||
-                opcode == GFX8_URB_OPCODE_SIMD8_READ) {
-               if (brw_inst_urb_channel_mask_present(devinfo, inst))
-                  string(file, " masked");
-            } else if (opcode != GFX125_URB_OPCODE_FENCE) {
-               err |= control(file, "urb swizzle", urb_swizzle,
-                              brw_inst_urb_swizzle_control(devinfo, inst),
+            if (devinfo->ver >= 20) {
+               format(file, " (");
+               const enum lsc_opcode op = lsc_msg_desc_opcode(devinfo, imm_desc);
+               err |= control(file, "operation", lsc_operation,
+                              op, &space);
+               format(file, ",");
+               err |= control(file, "addr_size", lsc_addr_size,
+                              lsc_msg_desc_addr_size(devinfo, imm_desc),
                               &space);
-            }
 
-            if (devinfo->ver < 7) {
-               err |= control(file, "urb allocate", urb_allocate,
-                              brw_inst_urb_allocate(devinfo, inst), &space);
-               err |= control(file, "urb used", urb_used,
-                              brw_inst_urb_used(devinfo, inst), &space);
-            }
-            if (devinfo->ver < 8) {
-               err |= control(file, "urb complete", urb_complete,
-                              brw_inst_urb_complete(devinfo, inst), &space);
+               format(file, ",");
+               err |= control(file, "data_size", lsc_data_size,
+                              lsc_msg_desc_data_size(devinfo, imm_desc),
+                              &space);
+               format(file, ",");
+               if (lsc_opcode_has_cmask(op)) {
+                  err |= control(file, "component_mask",
+                                 lsc_cmask_str,
+                                 lsc_msg_desc_cmask(devinfo, imm_desc),
+                                 &space);
+               } else {
+                  err |= control(file, "vector_size",
+                                 lsc_vect_size_str,
+                                 lsc_msg_desc_vect_size(devinfo, imm_desc),
+                                 &space);
+                  if (lsc_msg_desc_transpose(devinfo, imm_desc))
+                     format(file, ", transpose");
+               }
+               switch(op) {
+               case LSC_OP_LOAD_CMASK:
+               case LSC_OP_LOAD:
+                  format(file, ",");
+                  err |= control(file, "cache_load",
+                                 devinfo->ver >= 20 ?
+                                 xe2_lsc_cache_load :
+                                 lsc_cache_load,
+                                 lsc_msg_desc_cache_ctrl(devinfo, imm_desc),
+                                 &space);
+                  break;
+               default:
+                  format(file, ",");
+                  err |= control(file, "cache_store",
+                                 devinfo->ver >= 20 ?
+                                 xe2_lsc_cache_store :
+                                 lsc_cache_store,
+                                 lsc_msg_desc_cache_ctrl(devinfo, imm_desc),
+                                 &space);
+                  break;
+               }
+
+               format(file, " dst_len = %u,",
+                      brw_message_desc_rlen(devinfo, imm_desc) / reg_unit(devinfo));
+               format(file, " src0_len = %u,",
+                      brw_message_desc_mlen(devinfo, imm_desc) / reg_unit(devinfo));
+               format(file, " src1_len = %d",
+                      brw_message_ex_desc_ex_mlen(devinfo, imm_ex_desc) / reg_unit(devinfo));
+               err |= control(file, "address_type", lsc_addr_surface_type,
+                              lsc_msg_desc_addr_type(devinfo, imm_desc), &space);
+               format(file, " )");
+            } else {
+               unsigned urb_opcode = brw_inst_urb_opcode(devinfo, inst);
+
+               format(file, " offset %"PRIu64, brw_inst_urb_global_offset(devinfo, inst));
+
+               space = 1;
+
+               err |= control(file, "urb opcode",
+                              gfx7_urb_opcode, urb_opcode, &space);
+
+               if (brw_inst_urb_per_slot_offset(devinfo, inst)) {
+                  string(file, " per-slot");
+               }
+
+               if (urb_opcode == GFX8_URB_OPCODE_SIMD8_WRITE ||
+                   urb_opcode == GFX8_URB_OPCODE_SIMD8_READ) {
+                  if (brw_inst_urb_channel_mask_present(devinfo, inst))
+                     string(file, " masked");
+               } else if (urb_opcode != GFX125_URB_OPCODE_FENCE) {
+                  err |= control(file, "urb swizzle", urb_swizzle,
+                                 brw_inst_urb_swizzle_control(devinfo, inst),
+                                 &space);
+               }
             }
             break;
          }
@@ -2274,6 +2379,8 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
                case LSC_OP_LOAD:
                   format(file, ",");
                   err |= control(file, "cache_load",
+                                 devinfo->ver >= 20 ?
+                                 xe2_lsc_cache_load :
                                  lsc_cache_load,
                                  lsc_msg_desc_cache_ctrl(devinfo, imm_desc),
                                  &space);
@@ -2281,15 +2388,23 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
                default:
                   format(file, ",");
                   err |= control(file, "cache_store",
+                                 devinfo->ver >= 20 ?
+                                 xe2_lsc_cache_store :
                                  lsc_cache_store,
                                  lsc_msg_desc_cache_ctrl(devinfo, imm_desc),
                                  &space);
                   break;
                }
             }
-            format(file, " dst_len = %u,", lsc_msg_desc_dest_len(devinfo, imm_desc));
-            format(file, " src0_len = %u,", lsc_msg_desc_src0_len(devinfo, imm_desc));
-            format(file, " src1_len = %d", brw_message_ex_desc_ex_mlen(devinfo, imm_ex_desc));
+            format(file, " dst_len = %u,",
+                   brw_message_desc_rlen(devinfo, imm_desc) / reg_unit(devinfo));
+            format(file, " src0_len = %u,",
+                   brw_message_desc_mlen(devinfo, imm_desc) / reg_unit(devinfo));
+
+            if (!brw_inst_send_sel_reg32_ex_desc(devinfo, inst))
+               format(file, " src1_len = %d",
+                      brw_message_ex_desc_ex_mlen(devinfo, imm_ex_desc) / reg_unit(devinfo));
+
             err |= control(file, "address_type", lsc_addr_surface_type,
                            lsc_msg_desc_addr_type(devinfo, imm_desc), &space);
             format(file, " )");
@@ -2297,111 +2412,99 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
          }
 
          case GFX7_SFID_DATAPORT_DATA_CACHE:
-            if (devinfo->ver >= 7) {
-               format(file, " (");
-               space = 0;
+            format(file, " (");
+            space = 0;
 
-               err |= control(file, "DP DC0 message type",
-                              dp_dc0_msg_type_gfx7,
-                              brw_dp_desc_msg_type(devinfo, imm_desc), &space);
+            err |= control(file, "DP DC0 message type",
+                           dp_dc0_msg_type_gfx7,
+                           brw_dp_desc_msg_type(devinfo, imm_desc), &space);
 
-               format(file, ", bti %u, ",
-                      brw_dp_desc_binding_table_index(devinfo, imm_desc));
+            format(file, ", bti %u, ",
+                   brw_dp_desc_binding_table_index(devinfo, imm_desc));
 
-               switch (brw_inst_dp_msg_type(devinfo, inst)) {
-               case GFX7_DATAPORT_DC_UNTYPED_ATOMIC_OP:
-                  control(file, "atomic op", aop,
-                          brw_dp_desc_msg_control(devinfo, imm_desc) & 0xf,
-                          &space);
-                  break;
-               case GFX7_DATAPORT_DC_OWORD_BLOCK_READ:
-               case GFX7_DATAPORT_DC_OWORD_BLOCK_WRITE: {
-                  unsigned msg_ctrl = brw_dp_desc_msg_control(devinfo, imm_desc);
-                  assert(dp_oword_block_rw[msg_ctrl & 7]);
-                  format(file, "owords = %s, aligned = %d",
-                        dp_oword_block_rw[msg_ctrl & 7], (msg_ctrl >> 3) & 3);
-                  break;
-               }
-               default:
-                  format(file, "%u",
-                         brw_dp_desc_msg_control(devinfo, imm_desc));
-               }
-               format(file, ")");
-            } else {
-               unsupported = true;
+            switch (brw_inst_dp_msg_type(devinfo, inst)) {
+            case GFX7_DATAPORT_DC_UNTYPED_ATOMIC_OP:
+               control(file, "atomic op", aop,
+                       brw_dp_desc_msg_control(devinfo, imm_desc) & 0xf,
+                       &space);
+               break;
+            case GFX7_DATAPORT_DC_OWORD_BLOCK_READ:
+            case GFX7_DATAPORT_DC_OWORD_BLOCK_WRITE: {
+               unsigned msg_ctrl = brw_dp_desc_msg_control(devinfo, imm_desc);
+               assert(dp_oword_block_rw[msg_ctrl & 7]);
+               format(file, "owords = %s, aligned = %d",
+                     dp_oword_block_rw[msg_ctrl & 7], (msg_ctrl >> 3) & 3);
+               break;
             }
+            default:
+               format(file, "%u",
+                      brw_dp_desc_msg_control(devinfo, imm_desc));
+            }
+            format(file, ")");
             break;
 
          case HSW_SFID_DATAPORT_DATA_CACHE_1: {
-            if (devinfo->ver >= 7) {
-               format(file, " (");
-               space = 0;
+            format(file, " (");
+            space = 0;
 
-               unsigned msg_ctrl = brw_dp_desc_msg_control(devinfo, imm_desc);
+            unsigned msg_ctrl = brw_dp_desc_msg_control(devinfo, imm_desc);
 
-               err |= control(file, "DP DC1 message type",
-                              dp_dc1_msg_type_hsw,
-                              brw_dp_desc_msg_type(devinfo, imm_desc), &space);
+            err |= control(file, "DP DC1 message type",
+                           dp_dc1_msg_type_hsw,
+                           brw_dp_desc_msg_type(devinfo, imm_desc), &space);
 
-               format(file, ", Surface = %u, ",
-                      brw_dp_desc_binding_table_index(devinfo, imm_desc));
+            format(file, ", Surface = %u, ",
+                   brw_dp_desc_binding_table_index(devinfo, imm_desc));
 
-               switch (brw_inst_dp_msg_type(devinfo, inst)) {
-               case HSW_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_OP:
-               case HSW_DATAPORT_DC_PORT1_TYPED_ATOMIC_OP:
-               case HSW_DATAPORT_DC_PORT1_ATOMIC_COUNTER_OP:
-                  format(file, "SIMD%d,", (msg_ctrl & (1 << 4)) ? 8 : 16);
-                  FALLTHROUGH;
-               case HSW_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_OP_SIMD4X2:
-               case HSW_DATAPORT_DC_PORT1_TYPED_ATOMIC_OP_SIMD4X2:
-               case HSW_DATAPORT_DC_PORT1_ATOMIC_COUNTER_OP_SIMD4X2:
-               case GFX8_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_OP:
-               case GFX12_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_HALF_INT_OP:
-                  control(file, "atomic op", aop, msg_ctrl & 0xf, &space);
-                  break;
-               case HSW_DATAPORT_DC_PORT1_UNTYPED_SURFACE_READ:
-               case HSW_DATAPORT_DC_PORT1_UNTYPED_SURFACE_WRITE:
-               case HSW_DATAPORT_DC_PORT1_TYPED_SURFACE_READ:
-               case HSW_DATAPORT_DC_PORT1_TYPED_SURFACE_WRITE:
-               case GFX8_DATAPORT_DC_PORT1_A64_UNTYPED_SURFACE_WRITE:
-               case GFX8_DATAPORT_DC_PORT1_A64_UNTYPED_SURFACE_READ: {
-                  static const char *simd_modes[] = { "4x2", "16", "8" };
-                  format(file, "SIMD%s, Mask = 0x%x",
-                         simd_modes[msg_ctrl >> 4], msg_ctrl & 0xf);
-                  break;
-               }
-               case GFX9_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_FLOAT_OP:
-               case GFX9_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_FLOAT_OP:
-               case GFX12_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_HALF_FLOAT_OP:
-                  format(file, "SIMD%d,", (msg_ctrl & (1 << 4)) ? 8 : 16);
-                  control(file, "atomic float op", aop_float, msg_ctrl & 0xf,
-                          &space);
-                  break;
-               case GFX9_DATAPORT_DC_PORT1_A64_OWORD_BLOCK_WRITE:
-               case GFX9_DATAPORT_DC_PORT1_A64_OWORD_BLOCK_READ:
-                  assert(dp_oword_block_rw[msg_ctrl & 7]);
-                  format(file, "owords = %s, aligned = %d",
-                        dp_oword_block_rw[msg_ctrl & 7], (msg_ctrl >> 3) & 3);
-                  break;
-               default:
-                  format(file, "0x%x", msg_ctrl);
-               }
-               format(file, ")");
-            } else {
-               unsupported = true;
+            switch (brw_inst_dp_msg_type(devinfo, inst)) {
+            case HSW_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_OP:
+            case HSW_DATAPORT_DC_PORT1_TYPED_ATOMIC_OP:
+            case HSW_DATAPORT_DC_PORT1_ATOMIC_COUNTER_OP:
+               format(file, "SIMD%d,", (msg_ctrl & (1 << 4)) ? 8 : 16);
+               FALLTHROUGH;
+            case HSW_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_OP_SIMD4X2:
+            case HSW_DATAPORT_DC_PORT1_TYPED_ATOMIC_OP_SIMD4X2:
+            case HSW_DATAPORT_DC_PORT1_ATOMIC_COUNTER_OP_SIMD4X2:
+            case GFX8_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_OP:
+            case GFX12_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_HALF_INT_OP:
+               control(file, "atomic op", aop, msg_ctrl & 0xf, &space);
+               break;
+            case HSW_DATAPORT_DC_PORT1_UNTYPED_SURFACE_READ:
+            case HSW_DATAPORT_DC_PORT1_UNTYPED_SURFACE_WRITE:
+            case HSW_DATAPORT_DC_PORT1_TYPED_SURFACE_READ:
+            case HSW_DATAPORT_DC_PORT1_TYPED_SURFACE_WRITE:
+            case GFX8_DATAPORT_DC_PORT1_A64_UNTYPED_SURFACE_WRITE:
+            case GFX8_DATAPORT_DC_PORT1_A64_UNTYPED_SURFACE_READ: {
+               static const char *simd_modes[] = { "4x2", "16", "8" };
+               format(file, "SIMD%s, Mask = 0x%x",
+                      simd_modes[msg_ctrl >> 4], msg_ctrl & 0xf);
+               break;
             }
+            case GFX9_DATAPORT_DC_PORT1_UNTYPED_ATOMIC_FLOAT_OP:
+            case GFX9_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_FLOAT_OP:
+            case GFX12_DATAPORT_DC_PORT1_A64_UNTYPED_ATOMIC_HALF_FLOAT_OP:
+               format(file, "SIMD%d,", (msg_ctrl & (1 << 4)) ? 8 : 16);
+               control(file, "atomic float op", aop_float, msg_ctrl & 0xf,
+                       &space);
+               break;
+            case GFX9_DATAPORT_DC_PORT1_A64_OWORD_BLOCK_WRITE:
+            case GFX9_DATAPORT_DC_PORT1_A64_OWORD_BLOCK_READ:
+               assert(dp_oword_block_rw[msg_ctrl & 7]);
+               format(file, "owords = %s, aligned = %d",
+                     dp_oword_block_rw[msg_ctrl & 7], (msg_ctrl >> 3) & 3);
+               break;
+            default:
+               format(file, "0x%x", msg_ctrl);
+            }
+            format(file, ")");
             break;
          }
 
          case GFX7_SFID_PIXEL_INTERPOLATOR:
-            if (devinfo->ver >= 7) {
-               format(file, " (%s, %s, 0x%02"PRIx64")",
-                      brw_inst_pi_nopersp(devinfo, inst) ? "linear" : "persp",
-                      pixel_interpolator_msg_types[brw_inst_pi_message_type(devinfo, inst)],
-                      brw_inst_pi_message_data(devinfo, inst));
-            } else {
-               unsupported = true;
-            }
+            format(file, " (%s, %s, 0x%02"PRIx64")",
+                   brw_inst_pi_nopersp(devinfo, inst) ? "linear" : "persp",
+                   pixel_interpolator_msg_types[brw_inst_pi_message_type(devinfo, inst)],
+                   brw_inst_pi_message_data(devinfo, inst));
             break;
 
          case GEN_RT_SFID_RAY_TRACE_ACCELERATOR:
@@ -2424,32 +2527,36 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
          if (space)
             string(file, " ");
       }
-      if (brw_sfid_is_lsc(sfid)) {
+      if (devinfo->verx10 >= 125 &&
+          brw_inst_send_sel_reg32_ex_desc(devinfo, inst) &&
+          brw_inst_send_ex_bso(devinfo, inst)) {
+         format(file, " src1_len = %u",
+                (unsigned) brw_inst_send_src1_len(devinfo, inst));
+
+         format(file, " ex_bso");
+      }
+      if (brw_sfid_is_lsc(sfid) ||
+          (sfid == BRW_SFID_URB && devinfo->ver >= 20)) {
             lsc_disassemble_ex_desc(devinfo, imm_desc, imm_ex_desc, file);
       } else {
          if (has_imm_desc)
-            format(file, "mlen %u", brw_message_desc_mlen(devinfo, imm_desc));
+            format(file, " mlen %u", brw_message_desc_mlen(devinfo, imm_desc) / reg_unit(devinfo));
          if (has_imm_ex_desc) {
             format(file, " ex_mlen %u",
-                   brw_message_ex_desc_ex_mlen(devinfo, imm_ex_desc));
+                   brw_message_ex_desc_ex_mlen(devinfo, imm_ex_desc) / reg_unit(devinfo));
          }
          if (has_imm_desc)
-            format(file, " rlen %u", brw_message_desc_rlen(devinfo, imm_desc));
+            format(file, " rlen %u", brw_message_desc_rlen(devinfo, imm_desc) / reg_unit(devinfo));
       }
    }
    pad(file, 64);
-   if (opcode != BRW_OPCODE_NOP && opcode != BRW_OPCODE_NENOP) {
+   if (opcode != BRW_OPCODE_NOP) {
       string(file, "{");
       space = 1;
       err |= control(file, "access mode", access_mode,
                      brw_inst_access_mode(devinfo, inst), &space);
-      if (devinfo->ver >= 6) {
-         err |= control(file, "write enable control", wectrl,
-                        brw_inst_mask_control(devinfo, inst), &space);
-      } else {
-         err |= control(file, "mask control", mask_ctrl,
-                        brw_inst_mask_control(devinfo, inst), &space);
-      }
+      err |= control(file, "write enable control", wectrl,
+                     brw_inst_mask_control(devinfo, inst), &space);
 
       if (devinfo->ver < 12) {
          err |= control(file, "dependency control", dep_ctrl,
@@ -2457,32 +2564,20 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
                          brw_inst_no_dd_clear(devinfo, inst)), &space);
       }
 
-      if (devinfo->ver >= 6)
-         err |= qtr_ctrl(file, devinfo, inst);
-      else {
-         if (brw_inst_qtr_control(devinfo, inst) == BRW_COMPRESSION_COMPRESSED &&
-             desc && desc->ndst > 0 &&
-             brw_inst_dst_reg_file(devinfo, inst) == BRW_MESSAGE_REGISTER_FILE &&
-             brw_inst_dst_da_reg_nr(devinfo, inst) & BRW_MRF_COMPR4) {
-            format(file, " compr4");
-         } else {
-            err |= control(file, "compression control", compr_ctrl,
-                           brw_inst_qtr_control(devinfo, inst), &space);
-         }
-      }
+      err |= qtr_ctrl(file, devinfo, inst);
 
       if (devinfo->ver >= 12)
-         err |= swsb(file, devinfo, inst);
+         err |= swsb(file, isa, inst);
 
       err |= control(file, "compaction", cmpt_ctrl, is_compacted, &space);
       err |= control(file, "thread control", thread_ctrl,
                      (devinfo->ver >= 12 ? brw_inst_atomic_control(devinfo, inst) :
                                            brw_inst_thread_control(devinfo, inst)),
                      &space);
-      if (has_branch_ctrl(devinfo, opcode)) {
+      if (brw_has_branch_ctrl(devinfo, opcode)) {
          err |= control(file, "branch ctrl", branch_ctrl,
                         brw_inst_branch_control(devinfo, inst), &space);
-      } else if (devinfo->ver >= 6) {
+      } else if (devinfo->ver < 20) {
          err |= control(file, "acc write control", accwr,
                         brw_inst_acc_wr_control(devinfo, inst), &space);
       }
@@ -2496,4 +2591,74 @@ brw_disassemble_inst(FILE *file, const struct intel_device_info *devinfo,
    string(file, ";");
    newline(file);
    return err;
+}
+
+int
+brw_disassemble_find_end(const struct brw_isa_info *isa,
+                         const void *assembly, int start)
+{
+   const struct intel_device_info *devinfo = isa->devinfo;
+   int offset = start;
+
+   /* This loop exits when send-with-EOT or when opcode is 0 */
+   while (true) {
+      const brw_inst *insn = assembly + offset;
+
+      if (brw_inst_cmpt_control(devinfo, insn)) {
+         offset += 8;
+      } else {
+         offset += 16;
+      }
+
+      /* Simplistic, but efficient way to terminate disasm */
+      uint32_t opcode = brw_inst_opcode(isa, insn);
+      if (opcode == 0 || (is_send(opcode) && brw_inst_eot(devinfo, insn))) {
+         break;
+      }
+   }
+
+   return offset;
+}
+
+void
+brw_disassemble_with_errors(const struct brw_isa_info *isa,
+                            const void *assembly, int start, FILE *out)
+{
+   int end = brw_disassemble_find_end(isa, assembly, start);
+
+   /* Make a dummy disasm structure that brw_validate_instructions
+    * can work from.
+    */
+   struct disasm_info *disasm_info = disasm_initialize(isa, NULL);
+   disasm_new_inst_group(disasm_info, start);
+   disasm_new_inst_group(disasm_info, end);
+
+   brw_validate_instructions(isa, assembly, start, end, disasm_info);
+
+   void *mem_ctx = ralloc_context(NULL);
+   const struct brw_label *root_label =
+      brw_label_assembly(isa, assembly, start, end, mem_ctx);
+
+   foreach_list_typed(struct inst_group, group, link,
+                      &disasm_info->group_list) {
+      struct exec_node *next_node = exec_node_get_next(&group->link);
+      if (exec_node_is_tail_sentinel(next_node))
+         break;
+
+      struct inst_group *next =
+         exec_node_data(struct inst_group, next_node, link);
+
+      int start_offset = group->offset;
+      int end_offset = next->offset;
+
+      brw_disassemble(isa, assembly, start_offset, end_offset,
+                      root_label, out);
+
+      if (group->error) {
+         fputs(group->error, out);
+      }
+   }
+
+   ralloc_free(mem_ctx);
+   ralloc_free(disasm_info);
 }

@@ -55,7 +55,7 @@ _mesa_is_valid_generate_texture_mipmap_target(struct gl_context *ctx,
       error = false;
       break;
    case GL_TEXTURE_3D:
-      error = ctx->API == API_OPENGLES;
+      error = _mesa_is_gles1(ctx);
       break;
    case GL_TEXTURE_CUBE_MAP:
       error = false;
@@ -87,15 +87,10 @@ _mesa_is_valid_generate_texture_mipmap_internalformat(struct gl_context *ctx,
        *  not specified with an unsized internal format from table 8.3 or a
        *  sized internal format that is both color-renderable and
        *  texture-filterable according to table 8.10."
-       *
-       * GL_EXT_texture_format_BGRA8888 adds a GL_BGRA_EXT unsized internal
-       * format, and includes it in a very similar looking table.  So we
-       * include it here as well.
        */
       return internalformat == GL_RGBA || internalformat == GL_RGB ||
              internalformat == GL_LUMINANCE_ALPHA ||
              internalformat == GL_LUMINANCE || internalformat == GL_ALPHA ||
-             internalformat == GL_BGRA_EXT ||
              (_mesa_is_es3_color_renderable(ctx, internalformat) &&
               _mesa_is_es3_texture_filterable(ctx, internalformat));
    }
@@ -161,7 +156,7 @@ generate_texture_mipmap(struct gl_context *ctx,
        *
        * and this text is gone from the GLES 3.0 spec.
        */
-      if (ctx->API == API_OPENGLES2 && ctx->Version < 30 &&
+      if (_mesa_is_gles2(ctx) && ctx->Version < 30 &&
           _mesa_is_format_compressed(srcImage->TexFormat)) {
          _mesa_unlock_texture(ctx, texObj);
          _mesa_error(ctx, GL_INVALID_OPERATION, "generate mipmaps on compressed texture");

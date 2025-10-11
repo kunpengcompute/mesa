@@ -191,11 +191,6 @@ xmlconfig_test::drirc_init(const char *driver, const char *drm,
                            const char *app, int appver,
                            const char *engine, int enginever)
 {
-   /* Make the parser look in the directory of config files for the test,
-    * passed in by meson.build.
-    */
-   driInjectDataDir(getenv("DRIRC_CONFIGDIR"));
-
    driInjectExecName(exec_name);
 
    driOptionDescription driconf[] = {
@@ -286,6 +281,17 @@ TEST_F(xmlconfig_test, drirc_exec_regexp)
                                      NULL, 0,
                                      NULL, 0);
    EXPECT_EQ(driQueryOptioni(&cache, "mesa_drirc_option"), 7);
+   driDestroyOptionCache(&cache);
+}
+
+TEST_F(xmlconfig_test, drirc_exec_override)
+{
+   putenv("MESA_DRICONF_EXECUTABLE_OVERRIDE=app1");
+   driOptionCache cache = drirc_init("driver", "drm",
+                                     NULL,
+                                     NULL, 0,
+                                     NULL, 0);
+   EXPECT_EQ(driQueryOptioni(&cache, "mesa_drirc_option"), 1);
    driDestroyOptionCache(&cache);
 }
 #endif

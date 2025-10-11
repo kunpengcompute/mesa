@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -50,8 +32,18 @@ struct fd_submit_sp {
 
    DECLARE_ARRAY(struct fd_bo *, bos);
 
+   /* Keep a separate table of sub-alloc BOs.. the backing objects are
+    * tracked in the main bos table (because this is what the kernel
+    * sees), but we need to attach userspace fences to the sub-alloc'd
+    * BOs so the driver knows when they are idle
+    */
+   DECLARE_ARRAY(struct fd_bo *, suballoc_bos);
+
    /* maps fd_bo to idx in bos table: */
    struct hash_table *bo_table;
+
+   /* maps fd_bo to idx in suballoc_bos table: */
+   struct hash_table *suballoc_bo_table;
 
    struct slab_child_pool ring_pool;
 
@@ -67,16 +59,18 @@ struct fd_submit_sp {
     * of submits to merge:
     */
    int in_fence_fd;
-   struct fd_submit_fence *out_fence;
+   struct fd_fence *out_fence;
 
    /* State for enqueued submits:
     */
    struct list_head submit_list;   /* includes this submit as last element */
 
-   /* Used in case out_fence==NULL: */
-   struct util_queue_fence fence;
+   /* Used by retire_queue, if used by backend: */
+   struct util_queue_fence retire_fence;
 
    flush_submit_list_fn flush_submit_list;
+
+   uint32_t seqno;
 };
 FD_DEFINE_CAST(fd_submit, fd_submit_sp);
 
@@ -102,6 +96,17 @@ struct fd_ringbuffer_sp {
       struct {
          struct fd_pipe *pipe;
          DECLARE_ARRAY(struct fd_bo *, reloc_bos);
+#ifndef NDEBUG
+         /* BOs to assert are attached to submit: */
+         DECLARE_ARRAY(struct fd_bo *, assert_bos);
+#endif
+
+         /**
+          * The seqno of the last submit we were emitted to.  For stateobjs
+          * it is common to be re-emitted multiple times to the same submit,
+          * we can use this to detect the case.
+          */
+         uint32_t last_submit_seqno;
       };
       /* for other cases: */
       struct {

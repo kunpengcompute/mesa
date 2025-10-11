@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2013 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -31,6 +13,7 @@
 #include "freedreno_query.h"
 #include "freedreno_query_hw.h"
 #include "freedreno_query_sw.h"
+#include "freedreno_resource.h"
 #include "freedreno_util.h"
 
 /*
@@ -93,6 +76,20 @@ fd_get_query_result(struct pipe_context *pctx, struct pipe_query *pq, bool wait,
    util_query_clear_result(result, q->type);
 
    return q->funcs->get_query_result(fd_context(pctx), q, wait, result);
+}
+
+static void
+fd_get_query_result_resource(struct pipe_context *pctx, struct pipe_query *pq,
+                             enum pipe_query_flags flags,
+                             enum pipe_query_value_type result_type,
+                             int index, struct pipe_resource *prsc,
+                             unsigned offset)
+   in_dt
+{
+   struct fd_query *q = fd_query(pq);
+
+   q->funcs->get_query_result_resource(fd_context(pctx), q, flags, result_type,
+                                       index, fd_resource(prsc), offset);
 }
 
 static void
@@ -179,7 +176,7 @@ fd_set_active_query_state(struct pipe_context *pctx, bool enable) assert_dt
 {
    struct fd_context *ctx = fd_context(pctx);
    ctx->active_queries = enable;
-   ctx->update_active_queries = true;
+   fd_context_dirty(ctx, FD_DIRTY_QUERY);
 }
 
 static enum pipe_driver_query_type
@@ -266,6 +263,7 @@ fd_query_context_init(struct pipe_context *pctx)
    pctx->begin_query = fd_begin_query;
    pctx->end_query = fd_end_query;
    pctx->get_query_result = fd_get_query_result;
+   pctx->get_query_result_resource  = fd_get_query_result_resource;
    pctx->set_active_query_state = fd_set_active_query_state;
    pctx->render_condition = fd_render_condition;
 }

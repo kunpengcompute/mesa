@@ -1,30 +1,12 @@
 /*
- * Copyright (C) 2017 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2017 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
  */
 
-/* NOTE: see https://github.com/freedreno/freedreno/wiki/A5xx-Queries */
+/* NOTE: see https://gitlab.freedesktop.org/freedreno/freedreno/-/wikis/A5xx-Queries */
 
 #include "freedreno_query_acc.h"
 #include "freedreno_resource.h"
@@ -35,10 +17,16 @@
 #include "fd5_query.h"
 
 struct PACKED fd5_query_sample {
+   struct fd_acc_query_sample base;
+
+   /* The RB_SAMPLE_COUNT_ADDR destination needs to be 16-byte aligned: */
+   uint64_t pad;
+
    uint64_t start;
    uint64_t result;
    uint64_t stop;
 };
+FD_DEFINE_CAST(fd_acc_query_sample, fd5_query_sample);
 
 /* offset of a single field of an array of fd5_query_sample: */
 #define query_sample_idx(aq, idx, field)                                       \
@@ -65,6 +53,8 @@ occlusion_resume(struct fd_acc_query *aq, struct fd_batch *batch)
    OUT_PKT4(ring, REG_A5XX_RB_SAMPLE_COUNT_CONTROL, 1);
    OUT_RING(ring, A5XX_RB_SAMPLE_COUNT_CONTROL_COPY);
 
+   ASSERT_ALIGNED(struct fd5_query_sample, start, 16);
+
    OUT_PKT4(ring, REG_A5XX_RB_SAMPLE_COUNT_ADDR_LO, 2);
    OUT_RELOC(ring, query_sample(aq, start));
 
@@ -88,6 +78,8 @@ occlusion_pause(struct fd_acc_query *aq, struct fd_batch *batch)
 
    OUT_PKT4(ring, REG_A5XX_RB_SAMPLE_COUNT_CONTROL, 1);
    OUT_RING(ring, A5XX_RB_SAMPLE_COUNT_CONTROL_COPY);
+
+   ASSERT_ALIGNED(struct fd5_query_sample, stop, 16);
 
    OUT_PKT4(ring, REG_A5XX_RB_SAMPLE_COUNT_ADDR_LO, 2);
    OUT_RELOC(ring, query_sample(aq, stop));
@@ -114,18 +106,20 @@ occlusion_pause(struct fd_acc_query *aq, struct fd_batch *batch)
 }
 
 static void
-occlusion_counter_result(struct fd_acc_query *aq, void *buf,
+occlusion_counter_result(struct fd_acc_query *aq,
+                         struct fd_acc_query_sample *s,
                          union pipe_query_result *result)
 {
-   struct fd5_query_sample *sp = buf;
+   struct fd5_query_sample *sp = fd5_query_sample(s);
    result->u64 = sp->result;
 }
 
 static void
-occlusion_predicate_result(struct fd_acc_query *aq, void *buf,
+occlusion_predicate_result(struct fd_acc_query *aq,
+                           struct fd_acc_query_sample *s,
                            union pipe_query_result *result)
 {
-   struct fd5_query_sample *sp = buf;
+   struct fd5_query_sample *sp = fd5_query_sample(s);
    result->b = !!sp->result;
 }
 
@@ -194,29 +188,21 @@ timestamp_pause(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
    OUT_RELOC(ring, query_sample(aq, start));  /* srcC */
 }
 
-static uint64_t
-ticks_to_ns(uint32_t ts)
-{
-   /* This is based on the 19.2MHz always-on rbbm timer.
-    *
-    * TODO we should probably query this value from kernel..
-    */
-   return ts * (1000000000 / 19200000);
-}
-
 static void
-time_elapsed_accumulate_result(struct fd_acc_query *aq, void *buf,
+time_elapsed_accumulate_result(struct fd_acc_query *aq,
+                               struct fd_acc_query_sample *s,
                                union pipe_query_result *result)
 {
-   struct fd5_query_sample *sp = buf;
+   struct fd5_query_sample *sp = fd5_query_sample(s);
    result->u64 = ticks_to_ns(sp->result);
 }
 
 static void
-timestamp_accumulate_result(struct fd_acc_query *aq, void *buf,
+timestamp_accumulate_result(struct fd_acc_query *aq,
+                            struct fd_acc_query_sample *s,
                             union pipe_query_result *result)
 {
-   struct fd5_query_sample *sp = buf;
+   struct fd5_query_sample *sp = fd5_query_sample(s);
    result->u64 = ticks_to_ns(sp->result);
 }
 
@@ -283,7 +269,7 @@ perfcntr_resume(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
       const struct fd_perfcntr_group *g = &screen->perfcntr_groups[entry->gid];
       unsigned counter_idx = counters_per_group[entry->gid]++;
 
-      debug_assert(counter_idx < g->num_counters);
+      assert(counter_idx < g->num_counters);
 
       OUT_PKT4(ring, g->counters[counter_idx].select_reg, 1);
       OUT_RING(ring, g->countables[entry->cid].selector);
@@ -345,11 +331,12 @@ perfcntr_pause(struct fd_acc_query *aq, struct fd_batch *batch) assert_dt
 }
 
 static void
-perfcntr_accumulate_result(struct fd_acc_query *aq, void *buf,
+perfcntr_accumulate_result(struct fd_acc_query *aq,
+                           struct fd_acc_query_sample *s,
                            union pipe_query_result *result)
 {
    struct fd_batch_query_data *data = aq->query_data;
-   struct fd5_query_sample *sp = buf;
+   struct fd5_query_sample *sp = fd5_query_sample(s);
 
    for (unsigned i = 0; i < data->num_query_entries; i++) {
       result->batch[i].u64 = sp[i].result;

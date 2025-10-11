@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -72,7 +54,8 @@ remove_unused_by_block(struct ir3_block *block)
    bool progress = false;
    foreach_instr_safe (instr, &block->instr_list) {
       if (instr->opc == OPC_END || instr->opc == OPC_CHSH ||
-          instr->opc == OPC_CHMASK)
+          instr->opc == OPC_CHMASK || instr->opc == OPC_LOCK ||
+          instr->opc == OPC_UNLOCK)
          continue;
       if (instr->flags & IR3_INSTR_UNUSED) {
          if (instr->opc == OPC_META_SPLIT) {
@@ -91,7 +74,7 @@ remove_unused_by_block(struct ir3_block *block)
                if (*srcp == instr)
                   *srcp = NULL;
 
-         list_delinit(&instr->node);
+         ir3_instr_remove(instr);
          progress = true;
       }
    }
@@ -111,12 +94,12 @@ find_and_remove_unused(struct ir3 *ir, struct ir3_shader_variant *so)
     */
    foreach_block (block, &ir->block_list) {
       foreach_instr (instr, &block->instr_list) {
-         /* special case, if pre-fs texture fetch used, we cannot
-          * eliminate the barycentric i/j input
-          */
-         if (so->num_sampler_prefetch && (instr->opc == OPC_META_INPUT) &&
-             (instr->input.sysval == SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL))
-            continue;
+         if (instr->opc == OPC_META_INPUT) {
+            /* Without GS header geometry shader is never invoked. */
+            if (instr->input.sysval == SYSTEM_VALUE_GS_HEADER_IR3)
+               continue;
+         }
+
          instr->flags |= IR3_INSTR_UNUSED;
       }
    }
@@ -129,8 +112,10 @@ find_and_remove_unused(struct ir3 *ir, struct ir3_shader_variant *so)
          instr_dce(block->keeps[i], false);
 
       /* We also need to account for if-condition: */
-      if (block->condition)
-         instr_dce(block->condition, false);
+      struct ir3_instruction *terminator = ir3_block_get_terminator(block);
+      if (terminator) {
+         instr_dce(terminator, false);
+      }
    }
 
    /* remove un-used instructions: */
@@ -170,12 +155,6 @@ find_and_remove_unused(struct ir3 *ir, struct ir3_shader_variant *so)
       struct ir3_instruction *instr = ir->a1_users[i];
       if (instr && (instr->flags & IR3_INSTR_UNUSED))
          ir->a1_users[i] = NULL;
-   }
-
-   for (i = 0; i < ir->predicates_count; i++) {
-      struct ir3_instruction *instr = ir->predicates[i];
-      if (instr && (instr->flags & IR3_INSTR_UNUSED))
-         ir->predicates[i] = NULL;
    }
 
    /* cleanup unused inputs: */

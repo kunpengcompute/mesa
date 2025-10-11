@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <stdbool.h>
 #include "util/ralloc.h"
+#include "brw_disasm.h"
 #include "brw_eu.h"
 
 #include <gtest/gtest.h>
@@ -59,12 +60,12 @@ test_compact_instruction(struct brw_codegen *p, brw_inst src)
    brw_compact_inst dst;
    memset(&dst, 0xd0, sizeof(dst));
 
-   if (brw_try_compact_instruction(p->devinfo, &dst, &src)) {
+   if (brw_try_compact_instruction(p->isa, &dst, &src)) {
       brw_inst uncompacted;
 
-      brw_uncompact_instruction(p->devinfo, &uncompacted, &dst);
+      brw_uncompact_instruction(p->isa, &uncompacted, &dst);
       if (memcmp(&uncompacted, &src, sizeof(src))) {
-	 brw_debug_compact_uncompact(p->devinfo, &src, &uncompacted);
+	 brw_debug_compact_uncompact(p->isa, &src, &uncompacted);
 	 return false;
       }
    } else {
@@ -74,7 +75,7 @@ test_compact_instruction(struct brw_codegen *p, brw_inst src)
       if (memcmp(&unchanged, &dst, sizeof(dst))) {
 	 fprintf(stderr, "Failed to compact, but dst changed\n");
 	 fprintf(stderr, "  Instruction: ");
-	 brw_disassemble_inst(stderr, p->devinfo, &src, false, 0, NULL);
+	 brw_disassemble_inst(stderr, p->isa, &src, false, 0, NULL);
 	 return false;
       }
    }
@@ -90,26 +91,23 @@ test_compact_instruction(struct brw_codegen *p, brw_inst src)
  * become meaningless once fuzzing twiddles a related bit.
  */
 static void
-clear_pad_bits(const struct intel_device_info *devinfo, brw_inst *inst)
+clear_pad_bits(const struct brw_isa_info *isa, brw_inst *inst)
 {
-   if (brw_inst_opcode(devinfo, inst) != BRW_OPCODE_SEND &&
-       brw_inst_opcode(devinfo, inst) != BRW_OPCODE_SENDC &&
-       brw_inst_src0_reg_file(devinfo, inst) != BRW_IMMEDIATE_VALUE &&
-       brw_inst_src1_reg_file(devinfo, inst) != BRW_IMMEDIATE_VALUE) {
-      brw_inst_set_bits(inst, 127, 111, 0);
-   }
+   const struct intel_device_info *devinfo = isa->devinfo;
 
-   if (devinfo->ver == 8 && devinfo->platform != INTEL_PLATFORM_CHV &&
-       is_3src(devinfo, brw_inst_opcode(devinfo, inst))) {
-      brw_inst_set_bits(inst, 105, 105, 0);
-      brw_inst_set_bits(inst, 84, 84, 0);
-      brw_inst_set_bits(inst, 36, 35, 0);
+   if (brw_inst_opcode(isa, inst) != BRW_OPCODE_SEND &&
+       brw_inst_opcode(isa, inst) != BRW_OPCODE_SENDC &&
+       brw_inst_src0_reg_file(devinfo, inst) != IMM &&
+       brw_inst_src1_reg_file(devinfo, inst) != IMM) {
+      brw_inst_set_bits(inst, 127, 111, 0);
    }
 }
 
 static bool
-skip_bit(const struct intel_device_info *devinfo, brw_inst *src, int bit)
+skip_bit(const struct brw_isa_info *isa, brw_inst *src, int bit)
 {
+   const struct intel_device_info *devinfo = isa->devinfo;
+
    /* pad bit */
    if (bit == 7)
       return true;
@@ -118,47 +116,25 @@ skip_bit(const struct intel_device_info *devinfo, brw_inst *src, int bit)
    if (bit == 29)
       return true;
 
-   if (is_3src(devinfo, brw_inst_opcode(devinfo, src))) {
-      if (devinfo->ver >= 9 || devinfo->platform == INTEL_PLATFORM_CHV) {
-         if (bit == 127)
-            return true;
-      } else {
-         if (bit >= 126 && bit <= 127)
-            return true;
-
-         if (bit == 105)
-            return true;
-
-         if (bit == 84)
-            return true;
-
-         if (bit >= 35 && bit <= 36)
-            return true;
-      }
+   if (is_3src(isa, brw_inst_opcode(isa, src))) {
+      if (bit == 127)
+         return true;
    } else {
       if (bit == 47)
          return true;
 
-      if (devinfo->ver >= 8) {
-         if (bit == 11)
-            return true;
+      if (bit == 11)
+         return true;
 
-         if (bit == 95)
-            return true;
-      } else {
-         if (devinfo->ver < 7 && bit == 90)
-            return true;
-
-         if (bit >= 91 && bit <= 95)
-            return true;
-      }
+      if (bit == 95)
+         return true;
    }
 
    /* sometimes these are pad bits. */
-   if (brw_inst_opcode(devinfo, src) != BRW_OPCODE_SEND &&
-       brw_inst_opcode(devinfo, src) != BRW_OPCODE_SENDC &&
-       brw_inst_src0_reg_file(devinfo, src) != BRW_IMMEDIATE_VALUE &&
-       brw_inst_src1_reg_file(devinfo, src) != BRW_IMMEDIATE_VALUE &&
+   if (brw_inst_opcode(isa, src) != BRW_OPCODE_SEND &&
+       brw_inst_opcode(isa, src) != BRW_OPCODE_SENDC &&
+       brw_inst_src0_reg_file(devinfo, src) != IMM &&
+       brw_inst_src1_reg_file(devinfo, src) != IMM &&
        bit >= 121) {
       return true;
    }
@@ -170,22 +146,22 @@ static bool
 test_fuzz_compact_instruction(struct brw_codegen *p, brw_inst src)
 {
    for (int bit0 = 0; bit0 < 128; bit0++) {
-      if (skip_bit(p->devinfo, &src, bit0))
+      if (skip_bit(p->isa, &src, bit0))
 	 continue;
 
       for (int bit1 = 0; bit1 < 128; bit1++) {
          brw_inst instr = src;
 	 uint64_t *bits = instr.data;
 
-         if (skip_bit(p->devinfo, &src, bit1))
+         if (skip_bit(p->isa, &src, bit1))
 	    continue;
 
 	 bits[bit0 / 64] ^= (1ull << (bit0 & 63));
 	 bits[bit1 / 64] ^= (1ull << (bit1 & 63));
 
-         clear_pad_bits(p->devinfo, &instr);
+         clear_pad_bits(p->isa, &instr);
 
-         if (!brw_validate_instruction(p->devinfo, &instr, 0, NULL))
+         if (!brw_validate_instruction(p->isa, &instr, 0, sizeof(brw_inst), NULL))
             continue;
 
 	 if (!test_compact_instruction(p, instr)) {
@@ -209,7 +185,8 @@ protected:
       devinfo->verx10 = params.verx10;
       devinfo->ver = devinfo->verx10 / 10;
 
-      brw_init_codegen(devinfo, p, p);
+      brw_init_isa_info(&isa, devinfo);
+      brw_init_codegen(&isa, p, p);
       brw_set_default_predicate_control(p, BRW_PREDICATE_NONE);
       brw_set_default_access_mode(p, params.align);
    };
@@ -223,39 +200,24 @@ protected:
    };
 
    void *mem_ctx;
+   struct brw_isa_info isa;
    intel_device_info *devinfo;
    brw_codegen *p;
 };
 
 class Instructions : public CompactTestFixture {};
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
    CompactTest,
    Instructions,
    testing::Values(
-      CompactParams{ 50,  BRW_ALIGN_1 }, CompactParams{ 50, BRW_ALIGN_16 },
-      CompactParams{ 60,  BRW_ALIGN_1 }, CompactParams{ 60, BRW_ALIGN_16 },
-      CompactParams{ 70,  BRW_ALIGN_1 }, CompactParams{ 70, BRW_ALIGN_16 },
-      CompactParams{ 75,  BRW_ALIGN_1 }, CompactParams{ 75, BRW_ALIGN_16 },
-      CompactParams{ 80,  BRW_ALIGN_1 }, CompactParams{ 80, BRW_ALIGN_16 },
       CompactParams{ 90,  BRW_ALIGN_1 }, CompactParams{ 90, BRW_ALIGN_16 },
       CompactParams{ 110, BRW_ALIGN_1 },
       CompactParams{ 120, BRW_ALIGN_1 },
-      CompactParams{ 125, BRW_ALIGN_1 }
+      CompactParams{ 125, BRW_ALIGN_1 },
+      CompactParams{ 200, BRW_ALIGN_1 }
    ),
    get_compact_params_name);
-
-class InstructionsBeforeIvyBridge : public CompactTestFixture {};
-
-INSTANTIATE_TEST_CASE_P(
-   CompactTest,
-   InstructionsBeforeIvyBridge,
-   testing::Values(
-      CompactParams{ 50,  BRW_ALIGN_1 }, CompactParams{ 50, BRW_ALIGN_16 },
-      CompactParams{ 60,  BRW_ALIGN_1 }, CompactParams{ 60, BRW_ALIGN_16 }
-   ),
-   get_compact_params_name);
-
 
 TEST_P(Instructions, ADD_GRF_GRF_GRF)
 {
@@ -276,8 +238,8 @@ TEST_P(Instructions, ADD_GRF_GRF_IMM)
 
 TEST_P(Instructions, ADD_GRF_GRF_IMM_d)
 {
-   struct brw_reg g0 = retype(brw_vec8_grf(0, 0), BRW_REGISTER_TYPE_D);
-   struct brw_reg g2 = retype(brw_vec8_grf(2, 0), BRW_REGISTER_TYPE_D);
+   struct brw_reg g0 = retype(brw_vec8_grf(0, 0), BRW_TYPE_D);
+   struct brw_reg g2 = retype(brw_vec8_grf(2, 0), BRW_TYPE_D);
 
    brw_ADD(p, g0, g2, brw_imm_d(1));
 }
@@ -290,15 +252,6 @@ TEST_P(Instructions, MOV_GRF_GRF)
    brw_MOV(p, g0, g2);
 }
 
-TEST_P(InstructionsBeforeIvyBridge, ADD_MRF_GRF_GRF)
-{
-   struct brw_reg m6 = brw_vec8_reg(BRW_MESSAGE_REGISTER_FILE, 6, 0);
-   struct brw_reg g2 = brw_vec8_grf(2, 0);
-   struct brw_reg g4 = brw_vec8_grf(4, 0);
-
-   brw_ADD(p, m6, g2, g4);
-}
-
 TEST_P(Instructions, ADD_vec1_GRF_GRF_GRF)
 {
    struct brw_reg g0 = brw_vec1_grf(0, 0);
@@ -306,15 +259,6 @@ TEST_P(Instructions, ADD_vec1_GRF_GRF_GRF)
    struct brw_reg g4 = brw_vec1_grf(4, 0);
 
    brw_ADD(p, g0, g2, g4);
-}
-
-TEST_P(InstructionsBeforeIvyBridge, PLN_MRF_GRF_GRF)
-{
-   struct brw_reg m6 = brw_vec8_reg(BRW_MESSAGE_REGISTER_FILE, 6, 0);
-   struct brw_reg interp = brw_vec1_grf(2, 0);
-   struct brw_reg g4 = brw_vec8_grf(4, 0);
-
-   brw_PLN(p, m6, interp, g4);
 }
 
 TEST_P(Instructions, f0_0_MOV_GRF_GRF)

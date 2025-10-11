@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -30,6 +12,8 @@
 #include "pipe/p_state.h"
 
 #include "ir3/ir3_shader.h"
+
+BEGINC;
 
 /*
  * An in-memory cache for mapping shader state objects plus shader key to
@@ -46,6 +30,7 @@ struct ir3_cache_key {
     * not the compiled shader:
     */
    unsigned clip_plane_enable : PIPE_MAX_CLIP_PLANES;
+   unsigned patch_vertices;
 };
 
 /* per-gen backend program state object should subclass this for it's
@@ -58,10 +43,10 @@ struct ir3_program_state {
 
 struct ir3_cache_funcs {
    struct ir3_program_state *(*create_state)(
-      void *data, struct ir3_shader_variant *bs, /* binning pass vs */
-      struct ir3_shader_variant *vs, struct ir3_shader_variant *hs,
-      struct ir3_shader_variant *ds, struct ir3_shader_variant *gs,
-      struct ir3_shader_variant *fs, const struct ir3_cache_key *key);
+      void *data, const struct ir3_shader_variant *bs, /* binning pass vs */
+      const struct ir3_shader_variant *vs, const struct ir3_shader_variant *hs,
+      const struct ir3_shader_variant *ds, const struct ir3_shader_variant *gs,
+      const struct ir3_shader_variant *fs, const struct ir3_cache_key *key);
    void (*destroy_state)(void *data, struct ir3_program_state *state);
 };
 
@@ -83,5 +68,7 @@ struct ir3_program_state *ir3_cache_lookup(struct ir3_cache *cache,
  * cache entries which reference that state object.
  */
 void ir3_cache_invalidate(struct ir3_cache *cache, void *stobj);
+
+ENDC;
 
 #endif /* IR3_CACHE_H_ */

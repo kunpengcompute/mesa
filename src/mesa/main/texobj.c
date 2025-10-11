@@ -117,7 +117,7 @@ struct gl_texture_object *
 _mesa_lookup_texture(struct gl_context *ctx, GLuint id)
 {
    return (struct gl_texture_object *)
-      _mesa_HashLookup(ctx->Shared->TexObjects, id);
+      _mesa_HashLookup(&ctx->Shared->TexObjects, id);
 }
 
 /**
@@ -143,7 +143,7 @@ struct gl_texture_object *
 _mesa_lookup_texture_locked(struct gl_context *ctx, GLuint id)
 {
    return (struct gl_texture_object *)
-      _mesa_HashLookupLocked(ctx->Shared->TexObjects, id);
+      _mesa_HashLookupLocked(&ctx->Shared->TexObjects, id);
 }
 
 /**
@@ -169,7 +169,8 @@ _mesa_get_current_tex_object(struct gl_context *ctx, GLenum target)
       case GL_TEXTURE_3D:
          return texUnit->CurrentTex[TEXTURE_3D_INDEX];
       case GL_PROXY_TEXTURE_3D:
-         return ctx->Texture.ProxyTex[TEXTURE_3D_INDEX];
+         return !(_mesa_is_gles2(ctx) && !ctx->Extensions.OES_texture_3D)
+             ? ctx->Texture.ProxyTex[TEXTURE_3D_INDEX] : NULL;
       case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
       case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
       case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
@@ -261,6 +262,55 @@ _mesa_get_texobj_by_target_and_texunit(struct gl_context *ctx, GLenum target,
    return texUnit->CurrentTex[targetIndex];
 }
 
+/**
+ * Return swizzle1(swizzle2)
+ */
+static unsigned
+swizzle_swizzle(unsigned swizzle1, unsigned swizzle2)
+{
+   unsigned i, swz[4];
+
+   if (swizzle1 == SWIZZLE_XYZW) {
+      /* identity swizzle, no change to swizzle2 */
+      return swizzle2;
+   }
+
+   for (i = 0; i < 4; i++) {
+      unsigned s = GET_SWZ(swizzle1, i);
+      switch (s) {
+      case SWIZZLE_X:
+      case SWIZZLE_Y:
+      case SWIZZLE_Z:
+      case SWIZZLE_W:
+         swz[i] = GET_SWZ(swizzle2, s);
+         break;
+      case SWIZZLE_ZERO:
+         swz[i] = SWIZZLE_ZERO;
+         break;
+      case SWIZZLE_ONE:
+         swz[i] = SWIZZLE_ONE;
+         break;
+      default:
+         assert(!"Bad swizzle term");
+         swz[i] = SWIZZLE_X;
+      }
+   }
+
+   return MAKE_SWIZZLE4(swz[0], swz[1], swz[2], swz[3]);
+}
+
+void
+_mesa_update_texture_object_swizzle(struct gl_context *ctx,
+                                    struct gl_texture_object *texObj)
+{
+   const struct gl_texture_image *img = _mesa_base_tex_image(texObj);
+   if (!img)
+      return;
+
+   /* Combine the texture format swizzle with user's swizzle */
+   texObj->Swizzle = swizzle_swizzle(texObj->Attrib._Swizzle, img->FormatSwizzle);
+   texObj->SwizzleGLSL130 = swizzle_swizzle(texObj->Attrib._Swizzle, img->FormatSwizzleGLSL130);
+}
 
 /**
  * Initialize a new texture object to default values.
@@ -343,7 +393,7 @@ _mesa_initialize_texture_object( struct gl_context *ctx,
    obj->Sampler.Attrib.CompareFunc = GL_LEQUAL;       /* ARB_shadow */
    obj->Sampler.Attrib.state.compare_mode = PIPE_TEX_COMPARE_NONE;
    obj->Sampler.Attrib.state.compare_func = PIPE_FUNC_LEQUAL;
-   obj->Attrib.DepthMode = ctx->API == API_OPENGL_CORE ? GL_RED : GL_LUMINANCE;
+   obj->Attrib.DepthMode = _mesa_is_desktop_gl_core(ctx) ? GL_RED : GL_LUMINANCE;
    obj->StencilSampling = false;
    obj->Sampler.Attrib.CubeMapSeamless = GL_FALSE;
    obj->Sampler.Attrib.state.seamless_cube_map = false;
@@ -356,10 +406,12 @@ _mesa_initialize_texture_object( struct gl_context *ctx,
    obj->Sampler.Attrib.sRGBDecode = GL_DECODE_EXT;
    obj->Sampler.Attrib.ReductionMode = GL_WEIGHTED_AVERAGE_EXT;
    obj->Sampler.Attrib.state.reduction_mode = PIPE_TEX_REDUCTION_WEIGHTED_AVERAGE;
-   obj->BufferObjectFormat = ctx->API == API_OPENGL_COMPAT ? GL_LUMINANCE8 : GL_R8;
-   obj->_BufferObjectFormat = ctx->API == API_OPENGL_COMPAT
+   obj->BufferObjectFormat = _mesa_is_desktop_gl_compat(ctx) ? GL_LUMINANCE8 : GL_R8;
+   obj->_BufferObjectFormat = _mesa_is_desktop_gl_compat(ctx)
       ? MESA_FORMAT_L_UNORM8 : MESA_FORMAT_R_UNORM8;
    obj->Attrib.ImageFormatCompatibilityType = GL_IMAGE_FORMAT_COMPATIBILITY_BY_SIZE;
+   obj->CompressionRate = GL_SURFACE_COMPRESSION_FIXED_RATE_NONE_EXT;
+   obj->AstcDecodePrecision = GL_RGBA16F;
 
    /* GL_ARB_bindless_texture */
    _mesa_init_texture_handles(obj);
@@ -384,7 +436,6 @@ _mesa_initialize_texture_object( struct gl_context *ctx,
  * Allocate and initialize a new texture object.  But don't put it into the
  * texture object hash table.
  *
- * \param shared the shared GL state structure to contain the texture object
  * \param name integer name for the texture object
  * \param target either GL_TEXTURE_1D, GL_TEXTURE_2D, GL_TEXTURE_3D,
  * GL_TEXTURE_CUBE_MAP or GL_TEXTURE_RECTANGLE_NV.  zero is ok for the sake
@@ -768,7 +819,8 @@ _mesa_test_texobj_completeness( const struct gl_context *ctx,
             return;
          }
          if (t->Image[face][baseLevel]->InternalFormat !=
-             baseImage->InternalFormat) {
+             baseImage->InternalFormat ||
+             t->Image[face][baseLevel]->TexFormat != baseImage->TexFormat) {
             incomplete(t, BASE, "Cube face format mismatch");
             return;
          }
@@ -827,7 +879,8 @@ _mesa_test_texobj_completeness( const struct gl_context *ctx,
                   incomplete(t, MIPMAP, "TexImage[%d] is missing", i);
                   return;
                }
-               if (img->InternalFormat != baseImage->InternalFormat) {
+               if (img->InternalFormat != baseImage->InternalFormat ||
+                   img->TexFormat != baseImage->TexFormat) {
                   incomplete(t, MIPMAP, "Format[i] != Format[baseLevel]");
                   return;
                }
@@ -923,14 +976,15 @@ _mesa_dirty_texobj(struct gl_context *ctx, struct gl_texture_object *texObj)
 
 /**
  * Return pointer to a default/fallback texture of the given type/target.
- * The texture is an RGBA texture with all texels = (0,0,0,1).
+ * The texture is an RGBA texture with all texels = (0,0,0,1) OR
+ * a depth texture that returns 0.
  * That's the value a GLSL sampler should get when sampling from an
  * incomplete texture.
  */
 struct gl_texture_object *
-_mesa_get_fallback_texture(struct gl_context *ctx, gl_texture_index tex)
+_mesa_get_fallback_texture(struct gl_context *ctx, gl_texture_index tex, bool is_depth)
 {
-   if (!ctx->Shared->FallbackTex[tex]) {
+   if (!ctx->Shared->FallbackTex[tex][is_depth]) {
       /* create fallback texture now */
       const GLsizei width = 1, height = 1;
       GLsizei depth = 1;
@@ -1016,9 +1070,14 @@ _mesa_get_fallback_texture(struct gl_context *ctx, gl_texture_index tex)
       texObj->Sampler.Attrib.state.min_mip_filter = PIPE_TEX_MIPFILTER_NONE;
       texObj->Sampler.Attrib.state.mag_img_filter = PIPE_TEX_FILTER_NEAREST;
 
-      texFormat = st_ChooseTextureFormat(ctx, target,
-                                         GL_RGBA, GL_RGBA,
-                                         GL_UNSIGNED_BYTE);
+      if (is_depth)
+         texFormat = st_ChooseTextureFormat(ctx, target,
+                                            GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT,
+                                            GL_UNSIGNED_INT);
+      else
+         texFormat = st_ChooseTextureFormat(ctx, target,
+                                            GL_RGBA, GL_RGBA,
+                                            GL_UNSIGNED_BYTE);
 
       /* need a loop here just for cube maps */
       for (face = 0; face < numFaces; face++) {
@@ -1027,29 +1086,54 @@ _mesa_get_fallback_texture(struct gl_context *ctx, gl_texture_index tex)
          /* initialize level[0] texture image */
          texImage = _mesa_get_tex_image(ctx, texObj, faceTarget, 0);
 
-         _mesa_init_teximage_fields(ctx, texImage,
-                                    width,
-                                    (dims > 1) ? height : 1,
-                                    (dims > 2) ? depth : 1,
-                                    0, /* border */
-                                    GL_RGBA, texFormat);
-
-         st_TexImage(ctx, dims, texImage,
-                     GL_RGBA, GL_UNSIGNED_BYTE, texel,
-                     &ctx->DefaultPacking);
+         GLenum internalFormat = is_depth ? GL_DEPTH_COMPONENT : GL_RGBA;
+         if (tex == TEXTURE_2D_MULTISAMPLE_INDEX ||
+             tex == TEXTURE_2D_MULTISAMPLE_ARRAY_INDEX) {
+            int samples[16];
+            st_QueryInternalFormat(ctx, 0, internalFormat, GL_SAMPLES, samples);
+            _mesa_init_teximage_fields_ms(ctx, texImage,
+                                          width,
+                                          (dims > 1) ? height : 1,
+                                          (dims > 2) ? depth : 1,
+                                          0, /* border */
+                                          internalFormat, texFormat,
+                                          samples[0],
+                                          GL_TRUE);
+         } else {
+            _mesa_init_teximage_fields(ctx, texImage,
+                                       width,
+                                       (dims > 1) ? height : 1,
+                                       (dims > 2) ? depth : 1,
+                                       0, /* border */
+                                       internalFormat, texFormat);
+         }
+         _mesa_update_texture_object_swizzle(ctx, texObj);
+         if (ctx->st->can_null_texture && is_depth) {
+            texObj->NullTexture = GL_TRUE;
+         } else {
+            if (is_depth)
+               st_TexImage(ctx, dims, texImage,
+                           GL_DEPTH_COMPONENT, GL_FLOAT, texel,
+                           &ctx->DefaultPacking);
+            else
+               st_TexImage(ctx, dims, texImage,
+                           GL_RGBA, GL_UNSIGNED_BYTE, texel,
+                           &ctx->DefaultPacking);
+         }
       }
 
       _mesa_test_texobj_completeness(ctx, texObj);
       assert(texObj->_BaseComplete);
       assert(texObj->_MipmapComplete);
 
-      ctx->Shared->FallbackTex[tex] = texObj;
+      ctx->Shared->FallbackTex[tex][is_depth] = texObj;
 
       /* Complete the driver's operation in case another context will also
        * use the same fallback texture. */
-      st_glFinish(ctx);
+      if (!ctx->st->can_null_texture || !is_depth)
+         st_glFinish(ctx);
    }
-   return ctx->Shared->FallbackTex[tex];
+   return ctx->Shared->FallbackTex[tex][is_depth];
 }
 
 
@@ -1100,7 +1184,7 @@ _mesa_total_texture_memory(struct gl_context *ctx)
 {
    GLuint tgt, total = 0;
 
-   _mesa_HashWalk(ctx->Shared->TexObjects, count_tex_size, &total);
+   _mesa_HashWalk(&ctx->Shared->TexObjects, count_tex_size, &total);
 
    /* plus, the default texture objects */
    for (tgt = 0; tgt < NUM_TEXTURE_TARGETS; tgt++) {
@@ -1198,25 +1282,25 @@ create_textures(struct gl_context *ctx, GLenum target,
    /*
     * This must be atomic (generation and allocation of texture IDs)
     */
-   _mesa_HashLockMutex(ctx->Shared->TexObjects);
+   _mesa_HashLockMutex(&ctx->Shared->TexObjects);
 
-   _mesa_HashFindFreeKeys(ctx->Shared->TexObjects, textures, n);
+   _mesa_HashFindFreeKeys(&ctx->Shared->TexObjects, textures, n);
 
    /* Allocate new, empty texture objects */
    for (i = 0; i < n; i++) {
       struct gl_texture_object *texObj;
       texObj = _mesa_new_texture_object(ctx, textures[i], target);
       if (!texObj) {
-         _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
+         _mesa_HashUnlockMutex(&ctx->Shared->TexObjects);
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", caller);
          return;
       }
 
       /* insert into hash table */
-      _mesa_HashInsertLocked(ctx->Shared->TexObjects, texObj->Name, texObj, true);
+      _mesa_HashInsertLocked(&ctx->Shared->TexObjects, texObj->Name, texObj);
    }
 
-   _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
+   _mesa_HashUnlockMutex(&ctx->Shared->TexObjects);
 }
 
 
@@ -1484,7 +1568,7 @@ delete_textures(struct gl_context *ctx, GLsizei n, const GLuint *textures)
             /* The texture _name_ is now free for re-use.
              * Remove it from the hash table now.
              */
-            _mesa_HashRemove(ctx->Shared->TexObjects, delObj->Name);
+            _mesa_HashRemove(&ctx->Shared->TexObjects, delObj->Name);
 
             st_texture_release_all_sampler_views(st_context(ctx), delObj);
 
@@ -1537,7 +1621,9 @@ _mesa_tex_target_to_index(const struct gl_context *ctx, GLenum target)
    case GL_TEXTURE_2D:
       return TEXTURE_2D_INDEX;
    case GL_TEXTURE_3D:
-      return ctx->API != API_OPENGLES ? TEXTURE_3D_INDEX : -1;
+      return (ctx->API != API_OPENGLES &&
+              !(_mesa_is_gles2(ctx) && !ctx->Extensions.OES_texture_3D))
+         ? TEXTURE_3D_INDEX : -1;
    case GL_TEXTURE_CUBE_MAP:
       return TEXTURE_CUBE_INDEX;
    case GL_TEXTURE_RECTANGLE:
@@ -1616,6 +1702,14 @@ bind_texture_object(struct gl_context *ctx, unsigned unit,
     */
    FLUSH_VERTICES(ctx, _NEW_TEXTURE_OBJECT, GL_TEXTURE_BIT);
 
+   /* if the previously bound texture uses GL_CLAMP, flag the driver here
+    * to ensure any emulation is disabled
+    */
+   if (texUnit->CurrentTex[targetIndex] &&
+       texUnit->CurrentTex[targetIndex]->Sampler.glclamp_mask !=
+       texObj->Sampler.glclamp_mask)
+      ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
+
    /* If the refcount on the previously bound texture is decremented to
     * zero, it'll be deleted here.
     */
@@ -1686,7 +1780,7 @@ _mesa_lookup_or_create_texture(struct gl_context *ctx, GLenum target,
             finish_texture_init(ctx, target, newTexObj, targetIndex);
          }
       } else {
-         if (!no_error && ctx->API == API_OPENGL_CORE) {
+         if (!no_error && _mesa_is_desktop_gl_core(ctx)) {
             _mesa_error(ctx, GL_INVALID_OPERATION,
                         "%s(non-gen name)", caller);
             return NULL;
@@ -1700,7 +1794,7 @@ _mesa_lookup_or_create_texture(struct gl_context *ctx, GLenum target,
          }
 
          /* and insert it into hash table */
-         _mesa_HashInsert(ctx->Shared->TexObjects, texName, newTexObj, false);
+         _mesa_HashInsert(&ctx->Shared->TexObjects, texName, newTexObj);
       }
    }
 
@@ -1883,7 +1977,7 @@ bind_textures(struct gl_context *ctx, GLuint first, GLsizei count,
        *       their parameters are valid and no other error occurs."
        */
 
-      _mesa_HashLockMutex(ctx->Shared->TexObjects);
+      _mesa_HashLockMutex(&ctx->Shared->TexObjects);
 
       for (i = 0; i < count; i++) {
          if (textures[i] != 0) {
@@ -1915,7 +2009,7 @@ bind_textures(struct gl_context *ctx, GLuint first, GLsizei count,
          }
       }
 
-      _mesa_HashUnlockMutex(ctx->Shared->TexObjects);
+      _mesa_HashUnlockMutex(&ctx->Shared->TexObjects);
    } else {
       /* Unbind all textures in the range <first> through <first>+<count>-1 */
       for (i = 0; i < count; i++)
@@ -2329,7 +2423,7 @@ texture_page_commitment(struct gl_context *ctx, GLenum target,
    }
 
    int px, py, pz;
-   bool ret = st_GetSparseTextureVirtualPageSize(
+   ASSERTED bool ret = st_GetSparseTextureVirtualPageSize(
       ctx, target, image->TexFormat, tex_obj->VirtualPageSizeIndex, &px, &py, &pz);
    assert(ret);
 

@@ -1,22 +1,5 @@
 # Copyright © 2020 Google, Inc
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 isa_depend_files = [
   'ir3-common.xml',
@@ -34,9 +17,10 @@ isa_depend_files = [
 ir3_isa = custom_target(
   'ir3-isa',
   input: ['ir3.xml'],
-  output: ['isaspec-isa.h', 'ir3-isa.c', 'ir3-isa.h'],
+  output: ['ir3-isa.c', 'ir3-isa.h'],
   command: [
-    prog_isaspec_decode, '@INPUT@', '@OUTPUT@'
+    prog_isaspec_decode, '--xml', '@INPUT@',
+    '--out-c', '@OUTPUT0@', '--out-h', '@OUTPUT1@',
   ],
   depend_files: isa_depend_files,
 )
@@ -46,24 +30,33 @@ decode_files = [
   'isa.h',
 ]
 
-libir3decode = static_library(
+_libir3decode = static_library(
   'ir3decode',
   decode_files,
   dependencies: [idep_mesautil, idep_isaspec_decode],
+  link_with: [libisaspec],
   include_directories: [
     inc_include,
     inc_src,
-    # Hack for src/util/half_float.h indirect dependency on
-    # gallium headers:
-    inc_gallium,
   ],
   gnu_symbol_visibility: 'hidden',
+)
+
+idep_libir3decode = declare_dependency(
+  include_directories : [
+    include_directories('.'),
+    inc_include,
+    inc_src
+  ],
+  link_with : _libir3decode,
+  dependencies: [idep_isaspec_decode],
+  sources : [ir3_isa],
 )
 
 ir3disasm = executable(
   'ir3-disasm',
   ['ir3-disasm.c'],
-  link_with: libir3decode,
+  dependencies: [idep_libir3decode, idep_libfreedreno_common],
   build_by_default: with_tools.contains('freedreno'),
   include_directories: [
     inc_src,
@@ -76,7 +69,7 @@ encode_h = custom_target(
   input: ['ir3.xml'],
   output: 'encode.h',
   command: [
-    prog_isaspec_encode, '@INPUT@', '@OUTPUT@'
+    prog_isaspec_encode, '--xml', '@INPUT@', '--out-h', '@OUTPUT@'
   ],
   depend_files: isa_depend_files,
 )
@@ -95,7 +88,6 @@ libir3encode = static_library(
     inc_src,
     inc_include,
     inc_freedreno,
-    inc_gallium,
   ],
   gnu_symbol_visibility: 'hidden',
 )

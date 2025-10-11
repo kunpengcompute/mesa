@@ -39,7 +39,7 @@
 #include "util/u_debug_describe.h"
 #include "util/u_debug_refcnt.h"
 #include "util/u_atomic.h"
-#include "util/u_box.h"
+#include "util/box.h"
 #include "util/u_math.h"
 
 
@@ -59,7 +59,7 @@ pipe_reference_init(struct pipe_reference *dst, unsigned count)
    dst->count = count;
 }
 
-static inline boolean
+static inline bool
 pipe_is_referenced(struct pipe_reference *src)
 {
    return p_atomic_read(&src->count) != 0;
@@ -71,7 +71,7 @@ pipe_is_referenced(struct pipe_reference *src)
  * Both 'dst' and 'src' may be NULL.
  * \return TRUE if the object's refcount hits zero and should be destroyed.
  */
-static inline boolean
+static inline bool
 pipe_reference_described(struct pipe_reference *dst,
                          struct pipe_reference *src,
                          debug_reference_descriptor get_desc)
@@ -96,7 +96,7 @@ pipe_reference_described(struct pipe_reference *dst,
    return false;
 }
 
-static inline boolean
+static inline bool
 pipe_reference(struct pipe_reference *dst, struct pipe_reference *src)
 {
    return pipe_reference_described(dst, src,
@@ -128,7 +128,8 @@ pipe_surface_release(struct pipe_context *pipe, struct pipe_surface **ptr)
 {
    struct pipe_surface *old = *ptr;
 
-   if (pipe_reference_described(&old->reference, NULL,
+   if (pipe_reference_described(old ? &old->reference : NULL,
+                                NULL,
                                 (debug_reference_descriptor)
                                 debug_describe_surface))
       pipe->surface_destroy(pipe, old);
@@ -257,7 +258,6 @@ pipe_vertex_buffer_reference(struct pipe_vertex_buffer *dst,
 {
    if (dst->buffer.resource == src->buffer.resource) {
       /* Just copy the fields, don't touch reference counts. */
-      dst->stride = src->stride;
       dst->is_user_buffer = src->is_user_buffer;
       dst->buffer_offset = src->buffer_offset;
       return;
@@ -267,7 +267,6 @@ pipe_vertex_buffer_reference(struct pipe_vertex_buffer *dst,
    /* Don't use memcpy because there is a hole between variables.
     * dst can be used as a hash key.
     */
-   dst->stride = src->stride;
    dst->is_user_buffer = src->is_user_buffer;
    dst->buffer_offset = src->buffer_offset;
 
@@ -300,7 +299,7 @@ pipe_surface_init(struct pipe_context *ctx, struct pipe_surface* ps,
 }
 
 /* Return true if the surfaces are equal. */
-static inline boolean
+static inline bool
 pipe_surface_equal(struct pipe_surface *s1, struct pipe_surface *s2)
 {
    return s1->texture == s2->texture &&
@@ -317,6 +316,13 @@ pipe_surface_equal(struct pipe_surface *s1, struct pipe_surface *s2)
 /*
  * Convenience wrappers for screen buffer functions.
  */
+
+
+static inline unsigned
+pipe_buffer_size(const struct pipe_resource *buffer)
+{
+    return buffer->width0;
+}
 
 
 /**
@@ -487,9 +493,7 @@ pipe_buffer_copy(struct pipe_context *pipe,
                  unsigned size)
 {
    struct pipe_box box;
-   /* only these fields are used */
-   box.x = (int)src_offset;
-   box.width = (int)size;
+   u_box_1d(src_offset, size, &box);
    pipe->resource_copy_region(pipe, dst, 0, dst_offset, 0, 0, src, 0, &box);
 }
 
@@ -519,9 +523,9 @@ pipe_buffer_read(struct pipe_context *pipe,
                  void *data)
 {
    struct pipe_transfer *src_transfer;
-   ubyte *map;
+   uint8_t *map;
 
-   map = (ubyte *) pipe_buffer_map_range(pipe,
+   map = (uint8_t *) pipe_buffer_map_range(pipe,
                                          buf,
                                          offset, size,
                                          PIPE_MAP_READ,
@@ -602,7 +606,7 @@ pipe_set_constant_buffer(struct pipe_context *pipe,
  * Get the polygon offset enable/disable flag for the given polygon fill mode.
  * \param fill_mode  one of PIPE_POLYGON_MODE_POINT/LINE/FILL
  */
-static inline boolean
+static inline bool
 util_get_offset(const struct pipe_rasterizer_state *templ,
                 unsigned fill_mode)
 {
@@ -615,7 +619,7 @@ util_get_offset(const struct pipe_rasterizer_state *templ,
       return templ->offset_tri;
    default:
       assert(0);
-      return FALSE;
+      return false;
    }
 }
 
@@ -638,7 +642,7 @@ util_query_clear_result(union pipe_query_result *result, unsigned type)
    case PIPE_QUERY_SO_OVERFLOW_PREDICATE:
    case PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE:
    case PIPE_QUERY_GPU_FINISHED:
-      result->b = FALSE;
+      result->b = false;
       break;
    case PIPE_QUERY_OCCLUSION_COUNTER:
    case PIPE_QUERY_TIMESTAMP:
@@ -884,13 +888,17 @@ util_writes_stencil(const struct pipe_stencil_state *s)
 }
 
 static inline bool
+util_writes_depth(const struct pipe_depth_stencil_alpha_state *zsa)
+{
+   return zsa->depth_enabled && zsa->depth_writemask &&
+         (zsa->depth_func != PIPE_FUNC_NEVER);
+}
+
+static inline bool
 util_writes_depth_stencil(const struct pipe_depth_stencil_alpha_state *zsa)
 {
-   if (zsa->depth_enabled && zsa->depth_writemask &&
-       (zsa->depth_func != PIPE_FUNC_NEVER))
-      return true;
-
-   return util_writes_stencil(&zsa->stencil[0]) ||
+   return util_writes_depth(zsa) ||
+          util_writes_stencil(&zsa->stencil[0]) ||
           util_writes_stencil(&zsa->stencil[1]);
 }
 
@@ -899,15 +907,36 @@ pipe_create_multimedia_context(struct pipe_screen *screen)
 {
    unsigned flags = 0;
 
-   if (!screen->get_param(screen, PIPE_CAP_GRAPHICS))
+   if (!screen->get_param(screen, PIPE_CAP_GRAPHICS) &&
+      !screen->get_param(screen, PIPE_CAP_COMPUTE))
+      flags |= PIPE_CONTEXT_MEDIA_ONLY;
+   else if (!screen->get_param(screen, PIPE_CAP_GRAPHICS))
       flags |= PIPE_CONTEXT_COMPUTE_ONLY;
 
    return screen->context_create(screen, NULL, flags);
 }
 
-static inline unsigned util_res_sample_count(struct pipe_resource *res)
+static inline unsigned util_res_sample_count(const struct pipe_resource *res)
 {
    return res->nr_samples > 0 ? res->nr_samples : 1;
+}
+
+static inline void
+util_set_vertex_buffers(struct pipe_context *pipe,
+                        unsigned num_buffers, bool take_ownership,
+                        const struct pipe_vertex_buffer *buffers)
+{
+   /* set_vertex_buffers requires that reference counts are incremented
+    * by the caller.
+    */
+   if (!take_ownership) {
+      for (unsigned i = 0; i < num_buffers; i++) {
+         if (!buffers[i].is_user_buffer && buffers[i].buffer.resource)
+            p_atomic_inc(&buffers[i].buffer.resource->reference.count);
+      }
+   }
+
+   pipe->set_vertex_buffers(pipe, num_buffers, buffers);
 }
 
 #ifdef __cplusplus

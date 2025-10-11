@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2017 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2017 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -34,7 +16,7 @@
 
 /* maybe move to fd5_program? */
 static void
-cs_program_emit(struct fd_ringbuffer *ring, struct ir3_shader_variant *v)
+cs_program_emit(struct fd_context *ctx, struct fd_ringbuffer *ring, struct ir3_shader_variant *v) assert_dt
 {
    const struct ir3_info *i = &v->info;
    enum a3xx_threadsize thrsz = i->double_threadsize ? FOUR_QUADS : TWO_QUADS;
@@ -60,7 +42,8 @@ cs_program_emit(struct fd_ringbuffer *ring, struct ir3_shader_variant *v)
                A5XX_SP_CS_CTRL_REG0_HALFREGFOOTPRINT(i->max_half_reg + 1) |
                A5XX_SP_CS_CTRL_REG0_FULLREGFOOTPRINT(i->max_reg + 1) |
                A5XX_SP_CS_CTRL_REG0_BRANCHSTACK(ir3_shader_branchstack_hw(v)) |
-               0x6 /* XXX */);
+               COND(instrlen != 0, A5XX_SP_CS_CTRL_REG0_BUFFER) |
+               0x2 /* XXX */);
 
    OUT_PKT4(ring, REG_A5XX_HLSQ_CS_CONFIG, 1);
    OUT_RING(ring, A5XX_HLSQ_CS_CONFIG_CONSTOBJECTOFFSET(0) |
@@ -82,8 +65,7 @@ cs_program_emit(struct fd_ringbuffer *ring, struct ir3_shader_variant *v)
    OUT_RING(ring, constlen); /* HLSQ_CS_CONSTLEN */
    OUT_RING(ring, instrlen); /* HLSQ_CS_INSTRLEN */
 
-   OUT_PKT4(ring, REG_A5XX_SP_CS_OBJ_START_LO, 2);
-   OUT_RELOC(ring, v->bo, 0, 0, 0); /* SP_CS_OBJ_START_LO/HI */
+   fd5_emit_shader_obj(ctx, ring, v, REG_A5XX_SP_CS_OBJ_START_LO);
 
    OUT_PKT4(ring, REG_A5XX_HLSQ_UPDATE_CNTL, 1);
    OUT_RING(ring, 0x1f00000);
@@ -119,7 +101,7 @@ fd5_launch_grid(struct fd_context *ctx,
       return;
 
    if (ctx->dirty_shader[PIPE_SHADER_COMPUTE] & FD_DIRTY_SHADER_PROG)
-      cs_program_emit(ring, v);
+      cs_program_emit(ctx, ring, v);
 
    fd5_emit_cs_state(ctx, ring, v);
    fd5_emit_cs_consts(v, ring, ctx, info);

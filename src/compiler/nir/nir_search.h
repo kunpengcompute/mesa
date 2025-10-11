@@ -19,24 +19,20 @@
  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
- *
- * Authors:
- *    Jason Ekstrand (jason@jlekstrand.net)
- *
  */
 
 #ifndef _NIR_SEARCH_
 #define _NIR_SEARCH_
 
+#include "util/u_dynarray.h"
 #include "nir.h"
 #include "nir_worklist.h"
-#include "util/u_dynarray.h"
 
 #define NIR_SEARCH_MAX_VARIABLES 16
 
 struct nir_builder;
 
-typedef enum PACKED {
+typedef enum ENUM_PACKED {
    nir_search_value_expression,
    nir_search_value_variable,
    nir_search_value_constant,
@@ -123,8 +119,6 @@ enum nir_search_op {
    nir_search_op_i2i,
    nir_search_op_b2f,
    nir_search_op_b2i,
-   nir_search_op_i2b,
-   nir_search_op_f2b,
    nir_num_search_ops,
 };
 
@@ -144,6 +138,15 @@ typedef struct {
 
    /** Don't make the replacement exact if the search expression is exact. */
    bool ignore_exact : 1;
+
+   /** Replacement does not preserve signed of zero. */
+   bool nsz : 1;
+
+   /** Replacement does not preserve NaN. */
+   bool nnan : 1;
+
+   /** Replacement does not preserve infinities. */
+   bool ninf : 1;
 
    /* One of nir_op or nir_search_op */
    uint16_t opcode : 13;
@@ -179,7 +182,7 @@ struct per_op_table {
 };
 
 struct transform {
-   uint16_t search; /* Index in table->values[] for the search expression. */
+   uint16_t search;  /* Index in table->values[] for the search expression. */
    uint16_t replace; /* Index in table->values[] for the replace value. */
    unsigned condition_offset;
 };
@@ -237,14 +240,6 @@ NIR_DEFINE_CAST(nir_search_value_as_expression, nir_search_value,
                 nir_search_expression, value,
                 type, nir_search_value_expression)
 
-nir_ssa_def *
-nir_replace_instr(struct nir_builder *b, nir_alu_instr *instr,
-                  struct hash_table *range_ht,
-                  struct util_dynarray *states,
-                  const nir_algebraic_table *table,
-                  const nir_search_expression *search,
-                  const nir_search_value *replace,
-                  nir_instr_worklist *algebraic_worklist);
 bool
 nir_algebraic_impl(nir_function_impl *impl,
                    const bool *condition_flags,

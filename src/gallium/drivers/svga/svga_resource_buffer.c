@@ -1,34 +1,16 @@
-/**********************************************************
- * Copyright 2008-2009 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2008-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "svga_cmd.h"
 
 #include "pipe/p_state.h"
 #include "pipe/p_defines.h"
 #include "util/u_inlines.h"
-#include "os/os_thread.h"
+#include "util/u_thread.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_resource.h"
@@ -50,7 +32,7 @@
  * do on vgpu10. Staging texture-upload buffers do when they are
  * supported.
  */
-static inline boolean
+static inline bool
 svga_buffer_needs_hw_storage(const struct svga_screen *ss,
                              const struct pipe_resource *template)
 {
@@ -74,24 +56,24 @@ svga_buffer_needs_hw_storage(const struct svga_screen *ss,
    }
 
    if (template->flags & PIPE_RESOURCE_FLAG_MAP_PERSISTENT)
-      return TRUE;
+      return true;
 
    return !!(template->bind & bind_mask);
 }
 
 
-static inline boolean
+static inline bool
 need_buf_readback(struct svga_context *svga,
                   struct pipe_transfer *st)
 {
    struct svga_buffer *sbuf = svga_buffer(st->resource);
 
    if (st->usage != PIPE_MAP_READ)
-      return FALSE;
+      return false;
 
    /* No buffer surface has been created */
    if (!sbuf->bufsurf)
-      return FALSE;
+      return false;
 
    return  ((sbuf->dirty ||
              sbuf->bufsurf->surface_state == SVGA_SURFACE_STATE_RENDERED) &&
@@ -176,7 +158,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
 
       svga_context_finish(svga);
 
-      sbuf->dirty = FALSE;
+      sbuf->dirty = false;
 
       /* Mark the buffer surface state as UPDATED */
       assert(sbuf->bufsurf);
@@ -210,7 +192,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
          }
 
          sbuf->map.num_ranges = 0;
-         sbuf->dma.flags.discard = TRUE;
+         sbuf->dma.flags.discard = true;
       }
 
       if (usage & PIPE_MAP_UNSYNCHRONIZED) {
@@ -220,7 +202,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
              * not synchronize on the next DMA command.
              */
 
-            sbuf->dma.flags.unsynchronized = TRUE;
+            sbuf->dma.flags.unsynchronized = true;
          }
       } else {
          /*
@@ -265,7 +247,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
             }
          }
 
-         sbuf->dma.flags.unsynchronized = FALSE;
+         sbuf->dma.flags.unsynchronized = false;
       }
    }
 
@@ -278,7 +260,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
          if (0) {
             debug_printf("%s: failed to allocate %u KB of DMA, "
                          "splitting DMA transfers\n",
-                         __FUNCTION__,
+                         __func__,
                          (sbuf->b.width0 + 1023)/1024);
          }
 
@@ -295,7 +277,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
       map = sbuf->swbuf;
    }
    else if (svga_buffer_has_hw_storage(sbuf)) {
-      boolean retry;
+      bool retry;
 
       map = SVGA_TRY_MAP(svga_buffer_hw_storage_map
                          (svga, sbuf, transfer->usage, &retry), retry);
@@ -388,7 +370,7 @@ svga_buffer_transfer_unmap(struct pipe_context *pipe,
 
          SVGA_DBG(DEBUG_DMA, "flushing the whole buffer\n");
 
-         sbuf->dma.flags.discard = TRUE;
+         sbuf->dma.flags.discard = true;
 
          if (!(svga->swc->force_coherent || sbuf->key.coherent) || sbuf->swbuf)
             svga_buffer_add_range(sbuf, 0, sbuf->b.width0);
@@ -455,11 +437,11 @@ svga_resource_destroy(struct pipe_screen *screen,
       svga_sampler_view_reference(&tex->cached_view, NULL);
 
       /*
-        DBG("%s deleting %p\n", __FUNCTION__, (void *) tex);
+        DBG("%s deleting %p\n", __func__, (void *) tex);
       */
       SVGA_DBG(DEBUG_DMA, "unref sid %p (texture)\n", tex->handle);
 
-      boolean to_invalidate = svga_was_texture_rendered_to(tex);
+      bool to_invalidate = svga_was_texture_rendered_to(tex);
       svga_screen_surface_destroy(ss, &tex->key, to_invalidate, &tex->handle);
 
       /* Destroy the backed surface handle if exists */
@@ -552,7 +534,7 @@ svga_buffer_create(struct pipe_screen *screen,
        * the default constant buffer.
        */
       if ((bind_flags & PIPE_BIND_CONSTANT_BUFFER) || !bind_flags)
-         sbuf->use_swbuf = TRUE;
+         sbuf->use_swbuf = true;
    }
 
    debug_reference(&sbuf->b.reference,
@@ -600,7 +582,7 @@ svga_user_buffer_create(struct pipe_screen *screen,
 
    sbuf->bind_flags = bind;
    sbuf->swbuf = ptr;
-   sbuf->user = TRUE;
+   sbuf->user = true;
 
    debug_reference(&sbuf->b.reference,
                    (debug_reference_descriptor)debug_describe_resource, 0);

@@ -1,5 +1,5 @@
 /*
- * Copyright Â 2019 Alyssa Rosenzweig
+ * Copyright © 2019 Alyssa Rosenzweig
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -26,20 +26,17 @@
 #define NIR_BLEND_H
 
 #include "compiler/nir/nir.h"
-#include "pipe/p_format.h"
+#include "util/blend.h"
+#include "util/format/u_formats.h"
 
 /* These structs encapsulates the blend state such that it can be lowered
  * cleanly
  */
 
 typedef struct {
-   enum blend_func func;
-
-   enum blend_factor src_factor;
-   bool invert_src_factor;
-
-   enum blend_factor dst_factor;
-   bool invert_dst_factor;
+   enum pipe_blend_func func;
+   enum pipe_blendfactor src_factor;
+   enum pipe_blendfactor dst_factor;
 } nir_lower_blend_channel;
 
 typedef struct {
@@ -55,15 +52,14 @@ typedef struct {
    enum pipe_format format[8];
 
    bool logicop_enable;
-   unsigned logicop_func;
-
-   nir_ssa_def *src1;
+   enum pipe_logicop logicop_func;
 
    /* If set, will use load_blend_const_color_{r,g,b,a}_float instead of
     * load_blend_const_color_rgba */
    bool scalar_blend_const;
 } nir_lower_blend_options;
 
-void nir_lower_blend(nir_shader *shader, nir_lower_blend_options options);
+bool nir_lower_blend(nir_shader *shader,
+                     const nir_lower_blend_options *options);
 
 #endif

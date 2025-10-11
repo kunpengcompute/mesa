@@ -1,8 +1,9 @@
+// SPDX-License-Identifier: MIT
 #ifndef R600_FORMATS_H
 #define R600_FORMATS_H
 
 #include "util/format/u_format.h"
-#include "r600_pipe.h"
+#include "util/u_endian.h"
 
 /* list of formats from R700 ISA document - apply across GPUs in different registers */
 #define     FMT_INVALID                     0x00000000
@@ -40,6 +41,7 @@
 #define     FMT_32_32_32_32                 0x00000022
 #define     FMT_32_32_32_32_FLOAT           0x00000023
 #define     FMT_1                           0x00000025
+#define     FMT_1_REVERSED                  0x00000026
 #define     FMT_GB_GR                       0x00000027
 #define     FMT_BG_RG                       0x00000028
 #define     FMT_32_AS_8                     0x00000029
@@ -66,7 +68,7 @@
 
 static inline unsigned r600_endian_swap(unsigned size)
 {
-	if (R600_BIG_ENDIAN) {
+	if (UTIL_ARCH_BIG_ENDIAN) {
 		switch (size) {
 		case 64:
 			return ENDIAN_8IN64;
@@ -90,15 +92,8 @@ static inline bool r600_is_buffer_format_supported(enum pipe_format format, bool
 	if (format == PIPE_FORMAT_R11G11B10_FLOAT)
 		return true;
 
-	if (!desc)
-		return false;
-
-	/* Find the first non-VOID channel. */
-	for (i = 0; i < 4; i++) {
-		if (desc->channel[i].type != UTIL_FORMAT_TYPE_VOID)
-			break;
-	}
-	if (i == 4)
+	i = util_format_get_first_non_void_channel(format);
+	if (i == -1)
 		return false;
 
 	/* No fixed, no double. */

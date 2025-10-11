@@ -24,6 +24,7 @@
 #include "anv_private.h"
 
 #include "util/os_time.h"
+#include "util/perf/cpu_trace.h"
 
 static struct anv_bo_sync *
 to_anv_bo_sync(struct vk_sync *sync)
@@ -45,7 +46,8 @@ anv_bo_sync_init(struct vk_device *vk_device,
 
    return anv_device_alloc_bo(device, "bo-sync", 4096,
                               ANV_BO_ALLOC_EXTERNAL |
-                              ANV_BO_ALLOC_IMPLICIT_SYNC,
+                              ANV_BO_ALLOC_IMPLICIT_SYNC |
+                              ANV_BO_ALLOC_INTERNAL,
                               0 /* explicit_address */,
                               &sync->bo);
 }
@@ -105,6 +107,7 @@ anv_bo_sync_wait(struct vk_device *vk_device,
 {
    struct anv_device *device = container_of(vk_device, struct anv_device, vk);
    VkResult result;
+   MESA_TRACE_FUNC();
 
    uint32_t pending = wait_count;
    while (pending) {

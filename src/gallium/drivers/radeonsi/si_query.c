@@ -2,26 +2,8 @@
  * Copyright 2010 Jerome Glisse <glisse@freedesktop.org>
  * Copyright 2014 Marek Olšák <marek.olsak@amd.com>
  * Copyright 2018 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "si_query.h"
@@ -34,7 +16,8 @@
 #include "util/u_suballoc.h"
 #include "util/u_upload_mgr.h"
 
-static const struct si_query_ops query_hw_ops;
+static const struct si_query_ops hw_query_ops;
+static const struct si_query_ops sw_query_ops;
 
 struct si_hw_query_params {
    unsigned start_offset;
@@ -130,9 +113,6 @@ static bool si_query_sw_begin(struct si_context *sctx, struct si_query *squery)
       break;
    case SI_QUERY_DECOMPRESS_CALLS:
       query->begin_result = sctx->num_decompress_calls;
-      break;
-   case SI_QUERY_PRIM_RESTART_CALLS:
-      query->begin_result = sctx->num_prim_restart_calls;
       break;
    case SI_QUERY_COMPUTE_CALLS:
       query->begin_result = sctx->num_compute_calls;
@@ -290,9 +270,6 @@ static bool si_query_sw_end(struct si_context *sctx, struct si_query *squery)
    case SI_QUERY_DECOMPRESS_CALLS:
       query->end_result = sctx->num_decompress_calls;
       break;
-   case SI_QUERY_PRIM_RESTART_CALLS:
-      query->end_result = sctx->num_prim_restart_calls;
-      break;
    case SI_QUERY_COMPUTE_CALLS:
       query->end_result = sctx->num_compute_calls;
       break;
@@ -448,7 +425,7 @@ static bool si_query_sw_get_result(struct si_context *sctx, struct si_query *squ
       struct pipe_screen *screen = sctx->b.screen;
       struct pipe_context *ctx = squery->b.flushed ? NULL : &sctx->b;
 
-      result->b = screen->fence_finish(screen, ctx, query->fence, wait ? PIPE_TIMEOUT_INFINITE : 0);
+      result->b = screen->fence_finish(screen, ctx, query->fence, wait ? OS_TIMEOUT_INFINITE : 0);
       return result->b;
    }
 
@@ -465,7 +442,7 @@ static bool si_query_sw_get_result(struct si_context *sctx, struct si_query *squ
       result->u32 = 0;
       return true;
    case SI_QUERY_GPIN_NUM_SIMD:
-      result->u32 = sctx->screen->info.num_good_compute_units;
+      result->u32 = sctx->screen->info.num_cu;
       return true;
    case SI_QUERY_GPIN_NUM_RB:
       result->u32 = sctx->screen->info.max_render_backends;
@@ -493,12 +470,6 @@ static bool si_query_sw_get_result(struct si_context *sctx, struct si_query *squ
 
    return true;
 }
-
-static const struct si_query_ops sw_query_ops = {.destroy = si_query_sw_destroy,
-                                                 .begin = si_query_sw_begin,
-                                                 .end = si_query_sw_end,
-                                                 .get_result = si_query_sw_get_result,
-                                                 .get_result_resource = NULL};
 
 static struct pipe_query *si_query_sw_create(unsigned query_type)
 {
@@ -549,8 +520,6 @@ void si_query_buffer_reset(struct si_context *sctx, struct si_query_buffer *buff
    if (si_cs_is_buffer_referenced(sctx, buffer->buf->buf, RADEON_USAGE_READWRITE) ||
        !sctx->ws->buffer_wait(sctx->ws, buffer->buf->buf, 0, RADEON_USAGE_READWRITE)) {
       si_resource_reference(&buffer->buf, NULL);
-   } else {
-      buffer->unprepared = true;
    }
 }
 
@@ -558,9 +527,6 @@ bool si_query_buffer_alloc(struct si_context *sctx, struct si_query_buffer *buff
                            bool (*prepare_buffer)(struct si_context *, struct si_query_buffer *),
                            unsigned size)
 {
-   bool unprepared = buffer->unprepared;
-   buffer->unprepared = false;
-
    if (!buffer->buf || buffer->results_end + size > buffer->buf->b.b.width0) {
       if (buffer->buf) {
          struct si_query_buffer *qbuf = MALLOC_STRUCT(si_query_buffer);
@@ -575,13 +541,19 @@ bool si_query_buffer_alloc(struct si_context *sctx, struct si_query_buffer *buff
        */
       struct si_screen *screen = sctx->screen;
       unsigned buf_size = MAX2(size, screen->info.min_alloc_size);
-      buffer->buf = si_resource(pipe_buffer_create(&screen->b, 0, PIPE_USAGE_STAGING, buf_size));
+
+      /* We need to bypass GL2 for queries if SET_PREDICATION accesses it uncached
+       * in a spinloop.
+       */
+      buffer->buf =  si_aligned_buffer_create(&screen->b,
+                                              screen->info.cp_sdma_ge_use_system_memory_scope ?
+                                                 SI_RESOURCE_FLAG_GL2_BYPASS : 0,
+                                              PIPE_USAGE_STAGING, buf_size, 256);
       if (unlikely(!buffer->buf))
          return false;
-      unprepared = true;
    }
 
-   if (unprepared && prepare_buffer) {
+   if (!buffer->results_end && prepare_buffer) {
       if (unlikely(!prepare_buffer(sctx, buffer))) {
          si_resource_reference(&buffer->buf, NULL);
          return false;
@@ -591,7 +563,7 @@ bool si_query_buffer_alloc(struct si_context *sctx, struct si_query_buffer *buff
    return true;
 }
 
-void si_query_hw_destroy(struct si_context *sctx, struct si_query *squery)
+static void si_query_hw_destroy(struct si_context *sctx, struct si_query *squery)
 {
    struct si_query_hw *query = (struct si_query_hw *)squery;
 
@@ -617,7 +589,7 @@ static bool si_query_hw_prepare_buffer(struct si_context *sctx, struct si_query_
        query->b.type == PIPE_QUERY_OCCLUSION_PREDICATE ||
        query->b.type == PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE) {
       unsigned max_rbs = screen->info.max_render_backends;
-      unsigned enabled_rb_mask = screen->info.enabled_rb_mask;
+      uint64_t enabled_rb_mask = screen->info.enabled_rb_mask;
       unsigned num_results;
       unsigned i, j;
 
@@ -625,7 +597,7 @@ static bool si_query_hw_prepare_buffer(struct si_context *sctx, struct si_query_
       num_results = qbuf->buf->b.b.width0 / query->result_size;
       for (j = 0; j < num_results; j++) {
          for (i = 0; i < max_rbs; i++) {
-            if (!(enabled_rb_mask & (1 << i))) {
+            if (!(enabled_rb_mask & (1ull << i))) {
                results[(i * 4) + 1] = 0x80000000;
                results[(i * 4) + 3] = 0x80000000;
             }
@@ -637,27 +609,39 @@ static bool si_query_hw_prepare_buffer(struct si_context *sctx, struct si_query_
    return true;
 }
 
-static void si_query_hw_get_result_resource(struct si_context *sctx, struct si_query *squery,
-                                            enum pipe_query_flags flags,
-                                            enum pipe_query_value_type result_type,
-                                            int index, struct pipe_resource *resource,
-                                            unsigned offset);
+static unsigned si_query_pipestats_num_results(struct si_screen *sscreen)
+{
+   return sscreen->info.gfx_level >= GFX11 ? 14 : 11;
+}
 
-static void si_query_hw_do_emit_start(struct si_context *sctx, struct si_query_hw *query,
-                                      struct si_resource *buffer, uint64_t va);
-static void si_query_hw_do_emit_stop(struct si_context *sctx, struct si_query_hw *query,
-                                     struct si_resource *buffer, uint64_t va);
-static void si_query_hw_add_result(struct si_screen *sscreen, struct si_query_hw *, void *buffer,
-                                   union pipe_query_result *result);
-static void si_query_hw_clear_result(struct si_query_hw *, union pipe_query_result *);
+static unsigned si_query_pipestat_dw_offset(enum pipe_statistics_query_index index)
+{
+   switch (index) {
+   case PIPE_STAT_QUERY_PS_INVOCATIONS: return 0;
+   case PIPE_STAT_QUERY_C_PRIMITIVES: return 2;
+   case PIPE_STAT_QUERY_C_INVOCATIONS: return 4;
+   case PIPE_STAT_QUERY_VS_INVOCATIONS: return 6;
+   case PIPE_STAT_QUERY_GS_INVOCATIONS: return 8;
+   case PIPE_STAT_QUERY_GS_PRIMITIVES: return 10;
+   case PIPE_STAT_QUERY_IA_PRIMITIVES: return 12;
+   case PIPE_STAT_QUERY_IA_VERTICES: return 14;
+   case PIPE_STAT_QUERY_HS_INVOCATIONS: return 16;
+   case PIPE_STAT_QUERY_DS_INVOCATIONS: return 18;
+   case PIPE_STAT_QUERY_CS_INVOCATIONS: return 20;
+   /* gfx11: MS_INVOCATIONS */
+   /* gfx11: MS_PRIMITIVES */
+   /* gfx11: TS_INVOCATIONS */
+   default:
+      assert(false);
+   }
+   return ~0;
+}
 
-static struct si_query_hw_ops query_hw_default_hw_ops = {
-   .prepare_buffer = si_query_hw_prepare_buffer,
-   .emit_start = si_query_hw_do_emit_start,
-   .emit_stop = si_query_hw_do_emit_stop,
-   .clear_result = si_query_hw_clear_result,
-   .add_result = si_query_hw_add_result,
-};
+unsigned si_query_pipestat_end_dw_offset(struct si_screen *sscreen,
+                                         enum pipe_statistics_query_index index)
+{
+   return si_query_pipestats_num_results(sscreen) * 2 + si_query_pipestat_dw_offset(index);
+}
 
 static struct pipe_query *si_query_hw_create(struct si_screen *sscreen, unsigned query_type,
                                              unsigned index)
@@ -667,8 +651,7 @@ static struct pipe_query *si_query_hw_create(struct si_screen *sscreen, unsigned
       return NULL;
 
    query->b.type = query_type;
-   query->b.ops = &query_hw_ops;
-   query->ops = &query_hw_default_hw_ops;
+   query->b.ops = &hw_query_ops;
 
    switch (query_type) {
    case PIPE_QUERY_OCCLUSION_COUNTER:
@@ -679,11 +662,13 @@ static struct pipe_query *si_query_hw_create(struct si_screen *sscreen, unsigned
       query->b.num_cs_dw_suspend = 6 + si_cp_write_fence_dwords(sscreen);
       break;
    case PIPE_QUERY_TIME_ELAPSED:
-      query->result_size = 24;
+      query->result_size = 16;
+      query->result_size += 8; /* for fence */
       query->b.num_cs_dw_suspend = 8 + si_cp_write_fence_dwords(sscreen);
       break;
    case PIPE_QUERY_TIMESTAMP:
-      query->result_size = 16;
+      query->result_size = 8;
+      query->result_size += 8; /* for fence */
       query->b.num_cs_dw_suspend = 8 + si_cp_write_fence_dwords(sscreen);
       query->flags = SI_QUERY_HW_FLAG_NO_START;
       break;
@@ -692,20 +677,31 @@ static struct pipe_query *si_query_hw_create(struct si_screen *sscreen, unsigned
    case PIPE_QUERY_SO_STATISTICS:
    case PIPE_QUERY_SO_OVERFLOW_PREDICATE:
       /* NumPrimitivesWritten, PrimitiveStorageNeeded. */
+      /* the 64th bit in qw is used as fence. it is set by hardware in streamout stats event. */
       query->result_size = 32;
       query->b.num_cs_dw_suspend = 6;
       query->stream = index;
       break;
    case PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE:
       /* NumPrimitivesWritten, PrimitiveStorageNeeded. */
+      /* the 64th bit in qw is used as fence. it is set by hardware in streamout stats event. */
       query->result_size = 32 * SI_MAX_STREAMS;
       query->b.num_cs_dw_suspend = 6 * SI_MAX_STREAMS;
       break;
    case PIPE_QUERY_PIPELINE_STATISTICS:
-      /* 11 values on GCN. */
-      query->result_size = 11 * 16;
+      query->result_size = si_query_pipestats_num_results(sscreen) * 16;
       query->result_size += 8; /* for the fence + alignment */
       query->b.num_cs_dw_suspend = 6 + si_cp_write_fence_dwords(sscreen);
+      query->index = index;
+      if ((index == PIPE_STAT_QUERY_GS_PRIMITIVES || index == PIPE_STAT_QUERY_GS_INVOCATIONS) &&
+          sscreen->use_ngg && (sscreen->info.gfx_level >= GFX10 && sscreen->info.gfx_level <= GFX10_3))
+         query->flags |= SI_QUERY_EMULATE_GS_COUNTERS;
+
+      /* GFX11 only emulates PIPE_STAT_QUERY_GS_PRIMITIVES because the shader culls,
+       * which makes the statistic incorrect.
+       */
+      if (sscreen->info.gfx_level >= GFX11 && index == PIPE_STAT_QUERY_GS_PRIMITIVES)
+         query->flags |= SI_QUERY_EMULATE_GS_COUNTERS;
       break;
    default:
       assert(0);
@@ -720,23 +716,45 @@ static void si_update_occlusion_query_state(struct si_context *sctx, unsigned ty
 {
    if (type == PIPE_QUERY_OCCLUSION_COUNTER || type == PIPE_QUERY_OCCLUSION_PREDICATE ||
        type == PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE) {
-      bool old_enable = sctx->num_occlusion_queries != 0;
-      bool old_perfect_enable = sctx->num_perfect_occlusion_queries != 0;
-      bool enable, perfect_enable;
-
-      sctx->num_occlusion_queries += diff;
-      assert(sctx->num_occlusion_queries >= 0);
-
-      if (type != PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE) {
-         sctx->num_perfect_occlusion_queries += diff;
-         assert(sctx->num_perfect_occlusion_queries >= 0);
+      switch (type) {
+      case PIPE_QUERY_OCCLUSION_COUNTER:
+         sctx->num_integer_occlusion_queries += diff;
+         break;
+      case PIPE_QUERY_OCCLUSION_PREDICATE:
+         sctx->num_boolean_occlusion_queries += diff;
+         break;
+      case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
+         sctx->num_conservative_occlusion_queries += diff;
+         break;
       }
 
-      enable = sctx->num_occlusion_queries != 0;
-      perfect_enable = sctx->num_perfect_occlusion_queries != 0;
+      assert(sctx->num_integer_occlusion_queries >= 0);
+      assert(sctx->num_boolean_occlusion_queries >= 0);
+      assert(sctx->num_conservative_occlusion_queries >= 0);
 
-      if (enable != old_enable || perfect_enable != old_perfect_enable) {
-         si_set_occlusion_query_state(sctx, old_perfect_enable);
+      enum si_occlusion_query_mode new_mode =
+         sctx->num_integer_occlusion_queries ? SI_OCCLUSION_QUERY_MODE_PRECISE_INTEGER :
+         sctx->num_boolean_occlusion_queries ? SI_OCCLUSION_QUERY_MODE_PRECISE_BOOLEAN :
+         sctx->num_conservative_occlusion_queries ? SI_OCCLUSION_QUERY_MODE_CONSERVATIVE_BOOLEAN :
+         SI_OCCLUSION_QUERY_MODE_DISABLE;
+
+      /* Conservative queries are only available on gfx10+. On gfx11+, they perform worse
+       * with late Z, but not early Z. Instead of trying to detect late Z, never enable
+       * conservative queries to keep it simple. This is the recommended programming.
+       */
+      if (new_mode == SI_OCCLUSION_QUERY_MODE_CONSERVATIVE_BOOLEAN &&
+          (sctx->gfx_level < GFX10 || sctx ->gfx_level >= GFX11))
+         new_mode = SI_OCCLUSION_QUERY_MODE_PRECISE_BOOLEAN;
+
+      if (sctx->occlusion_query_mode != new_mode) {
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.db_render_state);
+
+         if (sctx->screen->info.has_out_of_order_rast &&
+             (sctx->occlusion_query_mode == SI_OCCLUSION_QUERY_MODE_PRECISE_INTEGER) !=
+             (new_mode == SI_OCCLUSION_QUERY_MODE_PRECISE_INTEGER))
+            si_mark_atom_dirty(sctx, &sctx->atoms.s.msaa_config);
+
+         sctx->occlusion_query_mode = new_mode;
       }
    }
 }
@@ -776,8 +794,16 @@ static void si_query_hw_do_emit_start(struct si_context *sctx, struct si_query_h
    case PIPE_QUERY_OCCLUSION_PREDICATE:
    case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE: {
       radeon_begin(cs);
-      radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
-      radeon_emit(EVENT_TYPE(V_028A90_ZPASS_DONE) | EVENT_INDEX(1));
+      if (sctx->gfx_level >= GFX11 &&
+          sctx->screen->info.pfp_fw_version >= EVENT_WRITE_ZPASS_PFP_VERSION) {
+         radeon_emit(PKT3(PKT3_EVENT_WRITE_ZPASS, 1, 0));
+      } else {
+         radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
+         if (sctx->gfx_level >= GFX11)
+            radeon_emit(EVENT_TYPE(V_028A90_PIXEL_PIPE_STAT_DUMP) | EVENT_INDEX(1));
+         else
+            radeon_emit(EVENT_TYPE(V_028A90_ZPASS_DONE) | EVENT_INDEX(1));
+      }
       radeon_emit(va);
       radeon_emit(va >> 32);
       radeon_end();
@@ -798,12 +824,44 @@ static void si_query_hw_do_emit_start(struct si_context *sctx, struct si_query_h
                         EOP_DATA_SEL_TIMESTAMP, NULL, va, 0, query->b.type);
       break;
    case PIPE_QUERY_PIPELINE_STATISTICS: {
-      radeon_begin(cs);
-      radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
-      radeon_emit(EVENT_TYPE(V_028A90_SAMPLE_PIPELINESTAT) | EVENT_INDEX(2));
-      radeon_emit(va);
-      radeon_emit(va >> 32);
-      radeon_end();
+      if (sctx->screen->use_ngg && query->flags & SI_QUERY_EMULATE_GS_COUNTERS) {
+         /* The hw GS primitive counter doesn't work when ngg is active.
+          * So if use_ngg is true, we don't use the hw version but instead
+          * emulate it in the GS shader.
+          * The value is written at the same position, so we don't need to
+          * change anything else.
+          * If ngg is enabled for the draw, the primitive count is written in
+          * gfx10_ngg_gs_emit_epilogue. If ngg is disabled, the number of exported
+          * vertices is stored in gs_emitted_vertices and the number of prim
+          * is computed based on the output prim type in emit_gs_epilogue.
+          */
+         struct pipe_shader_buffer sbuf;
+         sbuf.buffer = &buffer->b.b;
+         sbuf.buffer_offset = query->buffer.results_end;
+         sbuf.buffer_size = buffer->bo_size;
+         si_set_internal_shader_buffer(sctx, SI_GS_QUERY_EMULATED_COUNTERS_BUF, &sbuf);
+         SET_FIELD(sctx->current_gs_state, GS_STATE_PIPELINE_STATS_EMU, 1);
+
+         const uint32_t zero = 0;
+         radeon_begin(cs);
+         /* Clear the emulated counter end value. We don't clear start because it's unused. */
+         va += si_query_pipestat_end_dw_offset(sctx->screen, query->index) * 4;
+         radeon_emit(PKT3(PKT3_WRITE_DATA, 2 + 1, 0));
+         radeon_emit(S_370_DST_SEL(V_370_MEM) | S_370_WR_CONFIRM(1) | S_370_ENGINE_SEL(V_370_PFP));
+         radeon_emit(va);
+         radeon_emit(va >> 32);
+         radeon_emit(zero);
+         radeon_end();
+
+         sctx->num_pipeline_stat_emulated_queries++;
+      } else {
+         radeon_begin(cs);
+         radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
+         radeon_emit(EVENT_TYPE(V_028A90_SAMPLE_PIPELINESTAT) | EVENT_INDEX(2));
+         radeon_emit(va);
+         radeon_emit(va >> 32);
+         radeon_end();
+      }
       break;
    }
    default:
@@ -813,23 +871,57 @@ static void si_query_hw_do_emit_start(struct si_context *sctx, struct si_query_h
                              RADEON_USAGE_WRITE | RADEON_PRIO_QUERY);
 }
 
+static void si_update_hw_pipeline_stats(struct si_context *sctx, unsigned type, int diff)
+{
+   if (type == PIPE_QUERY_PIPELINE_STATISTICS ||
+       /* All streamout queries: */
+       type == PIPE_QUERY_PRIMITIVES_GENERATED ||
+       type == PIPE_QUERY_PRIMITIVES_EMITTED ||
+       type == PIPE_QUERY_SO_STATISTICS ||
+       type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
+       type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE) {
+      if (type == PIPE_QUERY_PIPELINE_STATISTICS)
+         sctx->num_pipeline_stat_queries += diff;
+
+      /* Increment for pipeline statistics and streamout queries. */
+      sctx->num_hw_pipestat_streamout_queries += diff;
+
+      /* Enable/disable pipeline stats if we have any queries. */
+      if (diff == 1 && sctx->num_hw_pipestat_streamout_queries == 1) {
+         sctx->barrier_flags &= ~SI_BARRIER_EVENT_PIPELINESTAT_STOP;
+         sctx->barrier_flags |= SI_BARRIER_EVENT_PIPELINESTAT_START;
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.barrier);
+      } else if (diff == -1 && sctx->num_hw_pipestat_streamout_queries == 0) {
+         sctx->barrier_flags &= ~SI_BARRIER_EVENT_PIPELINESTAT_START;
+         sctx->barrier_flags |= SI_BARRIER_EVENT_PIPELINESTAT_STOP;
+         si_mark_atom_dirty(sctx, &sctx->atoms.s.barrier);
+      }
+   }
+}
+
 static void si_query_hw_emit_start(struct si_context *sctx, struct si_query_hw *query)
 {
    uint64_t va;
 
-   if (!si_query_buffer_alloc(sctx, &query->buffer, query->ops->prepare_buffer, query->result_size))
+   if (!query->buffer.buf && query->flags & SI_QUERY_EMULATE_GS_COUNTERS)
+      si_resource_reference(&query->buffer.buf, sctx->pipeline_stats_query_buf);
+
+   /* Don't realloc pipeline_stats_query_buf */
+   if ((!(query->flags & SI_QUERY_EMULATE_GS_COUNTERS) || !sctx->pipeline_stats_query_buf) &&
+       !si_query_buffer_alloc(sctx, &query->buffer, si_query_hw_prepare_buffer, query->result_size))
       return;
+
+   if (query->flags & SI_QUERY_EMULATE_GS_COUNTERS)
+      si_resource_reference(&sctx->pipeline_stats_query_buf, query->buffer.buf);
 
    si_update_occlusion_query_state(sctx, query->b.type, 1);
    si_update_prims_generated_query_state(sctx, query->b.type, 1);
-
-   if (query->b.type == PIPE_QUERY_PIPELINE_STATISTICS)
-      sctx->num_pipeline_stat_queries++;
+   si_update_hw_pipeline_stats(sctx, query->b.type, 1);
 
    si_need_gfx_cs_space(sctx, 0);
 
    va = query->buffer.buf->gpu_address + query->buffer.results_end;
-   query->ops->emit_start(sctx, query, query->buffer.buf, va);
+   si_query_hw_do_emit_start(sctx, query, query->buffer.buf, va);
 }
 
 static void si_query_hw_do_emit_stop(struct si_context *sctx, struct si_query_hw *query,
@@ -842,15 +934,22 @@ static void si_query_hw_do_emit_stop(struct si_context *sctx, struct si_query_hw
    case PIPE_QUERY_OCCLUSION_COUNTER:
    case PIPE_QUERY_OCCLUSION_PREDICATE:
    case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE: {
+      fence_va = va + sctx->screen->info.max_render_backends * 16;
       va += 8;
       radeon_begin(cs);
-      radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
-      radeon_emit(EVENT_TYPE(V_028A90_ZPASS_DONE) | EVENT_INDEX(1));
+      if (sctx->gfx_level >= GFX11 &&
+          sctx->screen->info.pfp_fw_version >= EVENT_WRITE_ZPASS_PFP_VERSION) {
+         radeon_emit(PKT3(PKT3_EVENT_WRITE_ZPASS, 1, 0));
+      } else {
+         radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
+         if (sctx->gfx_level >= GFX11)
+            radeon_emit(EVENT_TYPE(V_028A90_PIXEL_PIPE_STAT_DUMP) | EVENT_INDEX(1));
+         else
+            radeon_emit(EVENT_TYPE(V_028A90_ZPASS_DONE) | EVENT_INDEX(1));
+      }
       radeon_emit(va);
       radeon_emit(va >> 32);
       radeon_end();
-
-      fence_va = va + sctx->screen->info.max_render_backends * 16 - 8;
       break;
    }
    case PIPE_QUERY_PRIMITIVES_EMITTED:
@@ -877,14 +976,23 @@ static void si_query_hw_do_emit_stop(struct si_context *sctx, struct si_query_hw
       unsigned sample_size = (query->result_size - 8) / 2;
 
       va += sample_size;
-      radeon_begin(cs);
-      radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
-      radeon_emit(EVENT_TYPE(V_028A90_SAMPLE_PIPELINESTAT) | EVENT_INDEX(2));
-      radeon_emit(va);
-      radeon_emit(va >> 32);
-      radeon_end();
-
       fence_va = va + sample_size;
+
+      radeon_begin(cs);
+      if (sctx->screen->use_ngg && query->flags & SI_QUERY_EMULATE_GS_COUNTERS) {
+         radeon_event_write(V_028A90_VS_PARTIAL_FLUSH);
+
+         if (--sctx->num_pipeline_stat_emulated_queries == 0) {
+            si_set_internal_shader_buffer(sctx, SI_GS_QUERY_BUF, NULL);
+            SET_FIELD(sctx->current_gs_state, GS_STATE_PIPELINE_STATS_EMU, 0);
+         }
+      } else {
+         radeon_emit(PKT3(PKT3_EVENT_WRITE, 2, 0));
+         radeon_emit(EVENT_TYPE(V_028A90_SAMPLE_PIPELINESTAT) | EVENT_INDEX(2));
+         radeon_emit(va);
+         radeon_emit(va >> 32);
+      }
+      radeon_end();
       break;
    }
    default:
@@ -907,7 +1015,7 @@ static void si_query_hw_emit_stop(struct si_context *sctx, struct si_query_hw *q
    /* The queries which need begin already called this in begin_query. */
    if (query->flags & SI_QUERY_HW_FLAG_NO_START) {
       si_need_gfx_cs_space(sctx, 0);
-      if (!si_query_buffer_alloc(sctx, &query->buffer, query->ops->prepare_buffer,
+      if (!si_query_buffer_alloc(sctx, &query->buffer, si_query_hw_prepare_buffer,
                                  query->result_size))
          return;
    }
@@ -918,15 +1026,13 @@ static void si_query_hw_emit_stop(struct si_context *sctx, struct si_query_hw *q
    /* emit end query */
    va = query->buffer.buf->gpu_address + query->buffer.results_end;
 
-   query->ops->emit_stop(sctx, query, query->buffer.buf, va);
+   si_query_hw_do_emit_stop(sctx, query, query->buffer.buf, va);
 
    query->buffer.results_end += query->result_size;
 
    si_update_occlusion_query_state(sctx, query->b.type, -1);
    si_update_prims_generated_query_state(sctx, query->b.type, -1);
-
-   if (query->b.type == PIPE_QUERY_PIPELINE_STATISTICS)
-      sctx->num_pipeline_stat_queries--;
+   si_update_hw_pipeline_stats(sctx, query->b.type, -1);
 }
 
 static void emit_set_predicate(struct si_context *ctx, struct si_resource *buf, uint64_t va,
@@ -936,7 +1042,7 @@ static void emit_set_predicate(struct si_context *ctx, struct si_resource *buf, 
 
    radeon_begin(cs);
 
-   if (ctx->chip_class >= GFX9) {
+   if (ctx->gfx_level >= GFX9) {
       radeon_emit(PKT3(PKT3_SET_PREDICATION, 2, 0));
       radeon_emit(op);
       radeon_emit(va);
@@ -951,7 +1057,7 @@ static void emit_set_predicate(struct si_context *ctx, struct si_resource *buf, 
    radeon_add_to_buffer_list(ctx, &ctx->gfx_cs, buf, RADEON_USAGE_READ | RADEON_PRIO_QUERY);
 }
 
-static void si_emit_query_predication(struct si_context *ctx)
+static void si_emit_query_predication(struct si_context *ctx, unsigned index)
 {
    uint32_t op;
    bool flag_wait, invert;
@@ -964,10 +1070,10 @@ static void si_emit_query_predication(struct si_context *ctx)
    flag_wait = ctx->render_cond_mode == PIPE_RENDER_COND_WAIT ||
                ctx->render_cond_mode == PIPE_RENDER_COND_BY_REGION_WAIT;
 
-   if (ctx->screen->use_ngg_streamout && (query->b.type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
-                                          query->b.type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE)) {
-      struct gfx10_sh_query *gfx10_query = (struct gfx10_sh_query *)query;
-      struct gfx10_sh_query_buffer *qbuf, *first, *last;
+   if (ctx->gfx_level >= GFX11 && (query->b.type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
+                                   query->b.type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE)) {
+      struct gfx11_sh_query *gfx10_query = (struct gfx11_sh_query *)query;
+      struct gfx11_sh_query_buffer *qbuf, *first, *last;
 
       op = PRED_OP(PREDICATION_OP_PRIMCOUNT);
 
@@ -985,7 +1091,7 @@ static void si_emit_query_predication(struct si_context *ctx)
       while (first) {
          qbuf = first;
          if (first != last)
-            first = LIST_ENTRY(struct gfx10_sh_query_buffer, qbuf->list.next, list);
+            first = list_entry(qbuf->list.next, struct gfx11_sh_query_buffer, list);
          else
             first = NULL;
 
@@ -996,7 +1102,7 @@ static void si_emit_query_predication(struct si_context *ctx)
          unsigned begin = qbuf == gfx10_query->first ? gfx10_query->first_begin : 0;
          unsigned end = qbuf == gfx10_query->last ? gfx10_query->last_end : qbuf->buf->b.b.width0;
 
-         unsigned count = (end - begin) / sizeof(struct gfx10_sh_query_buffer_mem);
+         unsigned count = (end - begin) / sizeof(struct gfx11_sh_query_buffer_mem);
          do {
             if (gfx10_query->b.type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE) {
                for (unsigned stream = 0; stream < SI_MAX_STREAMS; ++stream) {
@@ -1010,7 +1116,7 @@ static void si_emit_query_predication(struct si_context *ctx)
                op |= PREDICATION_CONTINUE;
             }
 
-            results_base += sizeof(struct gfx10_sh_query_buffer_mem);
+            results_base += sizeof(struct gfx11_sh_query_buffer_mem);
          } while (count--);
       }
    } else {
@@ -1092,12 +1198,12 @@ static struct pipe_query *si_create_query(struct pipe_context *ctx, unsigned que
        (query_type >= PIPE_QUERY_DRIVER_SPECIFIC))
       return si_query_sw_create(query_type);
 
-   if (sscreen->use_ngg_streamout &&
+   if (sscreen->info.gfx_level >= GFX11 &&
        (query_type == PIPE_QUERY_PRIMITIVES_EMITTED ||
         query_type == PIPE_QUERY_PRIMITIVES_GENERATED || query_type == PIPE_QUERY_SO_STATISTICS ||
         query_type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
         query_type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE))
-      return gfx10_sh_query_create(sscreen, query_type, index);
+      return gfx11_sh_query_create(sscreen, query_type, index);
 
    return si_query_hw_create(sscreen, query_type, index);
 }
@@ -1118,7 +1224,7 @@ static bool si_begin_query(struct pipe_context *ctx, struct pipe_query *query)
    return squery->ops->begin(sctx, squery);
 }
 
-bool si_query_hw_begin(struct si_context *sctx, struct si_query *squery)
+static bool si_query_hw_begin(struct si_context *sctx, struct si_query *squery)
 {
    struct si_query_hw *query = (struct si_query_hw *)squery;
 
@@ -1149,7 +1255,7 @@ static bool si_end_query(struct pipe_context *ctx, struct pipe_query *query)
    return squery->ops->end(sctx, squery);
 }
 
-bool si_query_hw_end(struct si_context *sctx, struct si_query *squery)
+static bool si_query_hw_end(struct si_context *sctx, struct si_query *squery)
 {
    struct si_query_hw *query = (struct si_query_hw *)squery;
 
@@ -1169,8 +1275,9 @@ bool si_query_hw_end(struct si_context *sctx, struct si_query *squery)
    return true;
 }
 
-static void si_get_hw_query_params(struct si_context *sctx, struct si_query_hw *squery, int index,
-                                   struct si_hw_query_params *params)
+static void si_get_hw_query_result_shader_params(struct si_context *sctx,
+                                                 struct si_query_hw *squery, int index,
+                                                 struct si_hw_query_params *params)
 {
    unsigned max_rbs = sctx->screen->info.max_render_backends;
 
@@ -1227,10 +1334,9 @@ static void si_get_hw_query_params(struct si_context *sctx, struct si_query_hw *
       params->fence_offset = squery->result_size - 4;
       break;
    case PIPE_QUERY_PIPELINE_STATISTICS: {
-      static const unsigned offsets[] = {56, 48, 24, 32, 40, 16, 8, 0, 64, 72, 80};
-      params->start_offset = offsets[index];
-      params->end_offset = 88 + offsets[index];
-      params->fence_offset = 2 * 88;
+      params->start_offset = si_query_pipestat_dw_offset(index) * 4;
+      params->end_offset = si_query_pipestat_end_dw_offset(sctx->screen, index) * 4;
+      params->fence_offset = si_query_pipestats_num_results(sctx->screen) * 16;
       break;
    }
    default:
@@ -1309,17 +1415,11 @@ static void si_query_hw_add_result(struct si_screen *sscreen, struct si_query_hw
       }
       break;
    case PIPE_QUERY_PIPELINE_STATISTICS:
-      result->pipeline_statistics.ps_invocations += si_query_read_result(buffer, 0, 22, false);
-      result->pipeline_statistics.c_primitives += si_query_read_result(buffer, 2, 24, false);
-      result->pipeline_statistics.c_invocations += si_query_read_result(buffer, 4, 26, false);
-      result->pipeline_statistics.vs_invocations += si_query_read_result(buffer, 6, 28, false);
-      result->pipeline_statistics.gs_invocations += si_query_read_result(buffer, 8, 30, false);
-      result->pipeline_statistics.gs_primitives += si_query_read_result(buffer, 10, 32, false);
-      result->pipeline_statistics.ia_primitives += si_query_read_result(buffer, 12, 34, false);
-      result->pipeline_statistics.ia_vertices += si_query_read_result(buffer, 14, 36, false);
-      result->pipeline_statistics.hs_invocations += si_query_read_result(buffer, 16, 38, false);
-      result->pipeline_statistics.ds_invocations += si_query_read_result(buffer, 18, 40, false);
-      result->pipeline_statistics.cs_invocations += si_query_read_result(buffer, 20, 42, false);
+      for (int i = 0; i < 11; i++) {
+         result->pipeline_statistics.counters[i] +=
+            si_query_read_result(buffer, si_query_pipestat_dw_offset(i),
+                                 si_query_pipestat_end_dw_offset(sscreen, i), false);
+      }
 #if 0 /* for testing */
       printf("Pipeline stats: IA verts=%llu, IA prims=%llu, VS=%llu, HS=%llu, "
              "DS=%llu, GS=%llu, GS prims=%llu, Clipper=%llu, "
@@ -1342,26 +1442,15 @@ static void si_query_hw_add_result(struct si_screen *sscreen, struct si_query_hw
    }
 }
 
-void si_query_hw_suspend(struct si_context *sctx, struct si_query *query)
+static void si_query_hw_suspend(struct si_context *sctx, struct si_query *query)
 {
    si_query_hw_emit_stop(sctx, (struct si_query_hw *)query);
 }
 
-void si_query_hw_resume(struct si_context *sctx, struct si_query *query)
+static void si_query_hw_resume(struct si_context *sctx, struct si_query *query)
 {
    si_query_hw_emit_start(sctx, (struct si_query_hw *)query);
 }
-
-static const struct si_query_ops query_hw_ops = {
-   .destroy = si_query_hw_destroy,
-   .begin = si_query_hw_begin,
-   .end = si_query_hw_end,
-   .get_result = si_query_hw_get_result,
-   .get_result_resource = si_query_hw_get_result_resource,
-
-   .suspend = si_query_hw_suspend,
-   .resume = si_query_hw_resume,
-};
 
 static bool si_get_query_result(struct pipe_context *ctx, struct pipe_query *query, bool wait,
                                 union pipe_query_result *result)
@@ -1387,14 +1476,14 @@ static void si_query_hw_clear_result(struct si_query_hw *query, union pipe_query
    util_query_clear_result(result, query->b.type);
 }
 
-bool si_query_hw_get_result(struct si_context *sctx, struct si_query *squery, bool wait,
-                            union pipe_query_result *result)
+static bool si_query_hw_get_result(struct si_context *sctx, struct si_query *squery, bool wait,
+                                   union pipe_query_result *result)
 {
    struct si_screen *sscreen = sctx->screen;
    struct si_query_hw *query = (struct si_query_hw *)squery;
    struct si_query_buffer *qbuf;
 
-   query->ops->clear_result(query, result);
+   si_query_hw_clear_result(query, result);
 
    for (qbuf = &query->buffer; qbuf; qbuf = qbuf->previous) {
       unsigned usage = PIPE_MAP_READ | (wait ? 0 : PIPE_MAP_DONTBLOCK);
@@ -1410,7 +1499,7 @@ bool si_query_hw_get_result(struct si_context *sctx, struct si_query *squery, bo
          return false;
 
       while (results_base != qbuf->results_end) {
-         query->ops->add_result(sscreen, query, map + results_base, result);
+         si_query_hw_add_result(sscreen, query, map + results_base, result);
          results_base += query->result_size;
       }
    }
@@ -1463,7 +1552,7 @@ static void si_query_hw_get_result_resource(struct si_context *sctx, struct si_q
 
    si_save_qbo_state(sctx, &saved_state);
 
-   si_get_hw_query_params(sctx, query, index >= 0 ? index : 0, &params);
+   si_get_hw_query_result_shader_params(sctx, query, index >= 0 ? index : 0, &params);
    consts.end_offset = params.end_offset - params.start_offset;
    consts.fence_offset = params.fence_offset - params.start_offset;
    consts.result_stride = query->result_size;
@@ -1510,7 +1599,9 @@ static void si_query_hw_get_result_resource(struct si_context *sctx, struct si_q
       break;
    }
 
-   sctx->flags |= sctx->screen->barrier_flags.cp_to_L2;
+   sctx->barrier_flags |= SI_BARRIER_INV_SMEM | SI_BARRIER_INV_VMEM |
+                          (sctx->gfx_level <= GFX8 ? SI_BARRIER_INV_L2 : 0);
+   si_mark_atom_dirty(sctx, &sctx->atoms.s.barrier);
 
    for (qbuf = &query->buffer; qbuf; qbuf = qbuf_prev) {
       if (query->b.type != PIPE_QUERY_TIMESTAMP) {
@@ -1538,9 +1629,7 @@ static void si_query_hw_get_result_resource(struct si_context *sctx, struct si_q
       if (!qbuf->previous) {
          ssbo[2].buffer = resource;
          ssbo[2].buffer_offset = offset;
-         ssbo[2].buffer_size = 8;
-
-         si_resource(resource)->TC_L2_dirty = true;
+         ssbo[2].buffer_size = resource->width0 - offset;
       }
 
       if ((flags & PIPE_QUERY_WAIT) && qbuf == &query->buffer) {
@@ -1555,9 +1644,13 @@ static void si_query_hw_get_result_resource(struct si_context *sctx, struct si_q
 
          si_cp_wait_mem(sctx, &sctx->gfx_cs, va, 0x80000000, 0x80000000, WAIT_REG_MEM_EQUAL);
       }
+
+      unsigned writable_bitmask = 0x4;
+
+      si_barrier_before_internal_op(sctx, 0, 3, ssbo, writable_bitmask, 0, NULL);
       si_launch_grid_internal_ssbos(sctx, &grid, sctx->query_result_shader,
-                                    SI_OP_SYNC_AFTER, SI_COHERENCY_SHADER,
-                                    3, ssbo, 0x4);
+                                    3, ssbo, writable_bitmask, false);
+      si_barrier_after_internal_op(sctx, 0, 3, ssbo, writable_bitmask, 0, NULL);
    }
 
    si_restore_qbo_state(sctx, &saved_state);
@@ -1578,8 +1671,8 @@ static void si_render_condition(struct pipe_context *ctx, struct pipe_query *que
        * SET_PREDICATION packets to give the wrong answer for
        * non-inverted stream overflow predication.
        */
-      if (((sctx->chip_class == GFX8 && sctx->screen->info.pfp_fw_feature < 49) ||
-           (sctx->chip_class == GFX9 && sctx->screen->info.pfp_fw_feature < 38)) &&
+      if (((sctx->gfx_level == GFX8 && sctx->screen->info.pfp_fw_feature < 49) ||
+           (sctx->gfx_level == GFX9 && sctx->screen->info.pfp_fw_feature < 38)) &&
           !condition &&
           (squery->b.type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE ||
            (squery->b.type == PIPE_QUERY_SO_OVERFLOW_PREDICATE &&
@@ -1604,7 +1697,10 @@ static void si_render_condition(struct pipe_context *ctx, struct pipe_query *que
 
          /* Settings this in the render cond atom is too late,
           * so set it here. */
-         sctx->flags |= sctx->screen->barrier_flags.L2_to_cp | SI_CONTEXT_FLUSH_FOR_RENDER_COND;
+         if (sctx->gfx_level <= GFX8) {
+            sctx->barrier_flags |= SI_BARRIER_WB_L2 | SI_BARRIER_PFP_SYNC_ME;
+            si_mark_atom_dirty(sctx, &sctx->atoms.s.barrier);
+         }
 
          sctx->render_cond_enabled = old_render_cond_enabled;
       }
@@ -1654,7 +1750,6 @@ static struct pipe_driver_query_info si_driver_query_list[] = {
    X("num-shaders-created", NUM_SHADERS_CREATED, UINT64, CUMULATIVE),
    X("draw-calls", DRAW_CALLS, UINT64, AVERAGE),
    X("decompress-calls", DECOMPRESS_CALLS, UINT64, AVERAGE),
-   X("prim-restart-calls", PRIM_RESTART_CALLS, UINT64, AVERAGE),
    X("compute-calls", COMPUTE_CALLS, UINT64, AVERAGE),
    X("cp-dma-calls", CP_DMA_CALLS, UINT64, AVERAGE),
    X("num-vs-flushes", NUM_VS_FLUSHES, UINT64, AVERAGE),
@@ -1747,19 +1842,17 @@ static unsigned si_get_num_queries(struct si_screen *sscreen)
 {
    /* amdgpu */
    if (sscreen->info.is_amdgpu) {
-      if (sscreen->info.chip_class >= GFX8)
+      if (sscreen->info.gfx_level >= GFX8)
          return ARRAY_SIZE(si_driver_query_list);
       else
          return ARRAY_SIZE(si_driver_query_list) - 7;
    }
 
    /* radeon */
-   if (sscreen->info.has_read_registers_query) {
-      if (sscreen->info.chip_class == GFX7)
-         return ARRAY_SIZE(si_driver_query_list) - 6;
-      else
-         return ARRAY_SIZE(si_driver_query_list) - 7;
-   }
+   if (sscreen->info.gfx_level == GFX7)
+      return ARRAY_SIZE(si_driver_query_list) - 6;
+   else
+      return ARRAY_SIZE(si_driver_query_list) - 7;
 
    return ARRAY_SIZE(si_driver_query_list) - 21;
 }
@@ -1786,19 +1879,19 @@ static int si_get_driver_query_info(struct pipe_screen *screen, unsigned index,
    case SI_QUERY_VRAM_USAGE:
    case SI_QUERY_MAPPED_VRAM:
    case SI_QUERY_SLAB_WASTED_VRAM:
-      info->max_value.u64 = sscreen->info.vram_size;
+      info->max_value.u64 = (uint64_t)sscreen->info.vram_size_kb * 1024;
       break;
    case SI_QUERY_REQUESTED_GTT:
    case SI_QUERY_GTT_USAGE:
    case SI_QUERY_MAPPED_GTT:
    case SI_QUERY_SLAB_WASTED_GTT:
-      info->max_value.u64 = sscreen->info.gart_size;
+      info->max_value.u64 = (uint64_t)sscreen->info.gart_size_kb * 1024;
       break;
    case SI_QUERY_GPU_TEMPERATURE:
       info->max_value.u64 = 125;
       break;
    case SI_QUERY_VRAM_VIS_USAGE:
-      info->max_value.u64 = sscreen->info.vram_vis_size;
+      info->max_value.u64 = (uint64_t)sscreen->info.vram_vis_size_kb * 1024;
       break;
    }
 
@@ -1836,6 +1929,25 @@ static int si_get_driver_query_group_info(struct pipe_screen *screen, unsigned i
    info->num_queries = 5;
    return 1;
 }
+
+static const struct si_query_ops hw_query_ops = {
+   .destroy = si_query_hw_destroy,
+   .begin = si_query_hw_begin,
+   .end = si_query_hw_end,
+   .get_result = si_query_hw_get_result,
+   .get_result_resource = si_query_hw_get_result_resource,
+
+   .suspend = si_query_hw_suspend,
+   .resume = si_query_hw_resume,
+};
+
+static const struct si_query_ops sw_query_ops = {
+   .destroy = si_query_sw_destroy,
+   .begin = si_query_sw_begin,
+   .end = si_query_sw_end,
+   .get_result = si_query_sw_get_result,
+   .get_result_resource = NULL
+};
 
 void si_init_query_functions(struct si_context *sctx)
 {

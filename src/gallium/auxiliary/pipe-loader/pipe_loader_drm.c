@@ -42,11 +42,16 @@
 #include "frontend/drm_driver.h"
 #include "pipe_loader_priv.h"
 
+#include "util/log.h"
 #include "util/os_file.h"
 #include "util/u_memory.h"
 #include "util/u_dl.h"
 #include "util/u_debug.h"
 #include "util/xmlconfig.h"
+
+#include "virtio/virtio-gpu/drm_hw.h"
+#include "virtio/virtio-gpu/virglrenderer_hw.h"
+#include "drm-uapi/virtgpu_drm.h"
 
 #define DRM_RENDER_NODE_DEV_NAME_FORMAT "%s/renderD%d"
 #define DRM_RENDER_NODE_MAX_NODES 63
@@ -82,6 +87,7 @@ static const struct drm_driver_descriptor *driver_descriptors[] = {
    &v3d_driver_descriptor,
    &vc4_driver_descriptor,
    &panfrost_driver_descriptor,
+   &panthor_driver_descriptor,
    &etnaviv_driver_descriptor,
    &tegra_driver_descriptor,
    &lima_driver_descriptor,
@@ -99,7 +105,7 @@ get_driver_descriptor(const char *driver_name, struct util_dl_library **plib)
    }
    return &kmsro_driver_descriptor;
 #else
-   const char *search_dir = getenv("GALLIUM_PIPE_SEARCH_DIR");
+   const char *search_dir = os_get_option("GALLIUM_PIPE_SEARCH_DIR");
    if (search_dir == NULL)
       search_dir = PIPE_SEARCH_DIR;
 
@@ -119,8 +125,21 @@ get_driver_descriptor(const char *driver_name, struct util_dl_library **plib)
    return NULL;
 }
 
+static int
+get_nctx_caps(int fd, struct virgl_renderer_capset_drm *caps)
+{
+   struct drm_virtgpu_get_caps args = {
+         .cap_set_id = VIRGL_RENDERER_CAPSET_DRM,
+         .cap_set_ver = 0,
+         .addr = (uintptr_t)caps,
+         .size = sizeof(*caps),
+   };
+
+   return drmIoctl(fd, DRM_IOCTL_VIRTGPU_GET_CAPS, &args);
+}
+
 static bool
-pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd)
+pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd, bool zink)
 {
    struct pipe_loader_drm_device *ddev = CALLOC_STRUCT(pipe_loader_drm_device);
    int vendor_id, chip_id;
@@ -138,7 +157,10 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd)
    ddev->base.ops = &pipe_loader_drm_ops;
    ddev->fd = fd;
 
-   ddev->base.driver_name = loader_get_driver_for_fd(fd);
+   if (zink)
+      ddev->base.driver_name = strdup("zink");
+   else
+      ddev->base.driver_name = loader_get_driver_for_fd(fd);
    if (!ddev->base.driver_name)
       goto fail;
 
@@ -149,6 +171,26 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd)
    if (strcmp(ddev->base.driver_name, "amdgpu") == 0) {
       FREE(ddev->base.driver_name);
       ddev->base.driver_name = strdup("radeonsi");
+   }
+
+   if (strcmp(ddev->base.driver_name, "virtio_gpu") == 0) {
+      struct virgl_renderer_capset_drm caps;
+      if (get_nctx_caps(fd, &caps) == 0) {
+#ifdef GALLIUM_STATIC_TARGETS
+         for (int i = 0; i < ARRAY_SIZE(driver_descriptors); i++) {
+            if (!driver_descriptors[i]->probe_nctx)
+               continue;
+            if (!driver_descriptors[i]->probe_nctx(fd, &caps))
+               continue;
+
+            FREE(ddev->base.driver_name);
+            ddev->base.driver_name = strdup(driver_descriptors[i]->driver_name);
+            break;
+         }
+#else
+	 mesa_logw("Dynamic pipe loader does not support virtgpu native context");
+#endif
+      }
    }
 
    struct util_dl_library **plib = NULL;
@@ -162,7 +204,7 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd)
       goto fail;
 
    /* kmsro supports lots of drivers, try as a fallback */
-   if (!ddev->dd)
+   if (!ddev->dd && !zink)
       ddev->dd = get_driver_descriptor("kmsro", plib);
 
    if (!ddev->dd)
@@ -182,7 +224,7 @@ pipe_loader_drm_probe_fd_nodup(struct pipe_loader_device **dev, int fd)
 }
 
 bool
-pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd)
+pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd, bool zink)
 {
    bool ret;
    int new_fd;
@@ -190,7 +232,7 @@ pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd)
    if (fd < 0 || (new_fd = os_dupfd_cloexec(fd)) < 0)
      return false;
 
-   ret = pipe_loader_drm_probe_fd_nodup(dev, new_fd);
+   ret = pipe_loader_drm_probe_fd_nodup(dev, new_fd, zink);
    if (!ret)
       close(new_fd);
 
@@ -206,8 +248,8 @@ open_drm_render_node_minor(int minor)
    return loader_open_device(path);
 }
 
-int
-pipe_loader_drm_probe(struct pipe_loader_device **devs, int ndev)
+static int
+pipe_loader_drm_probe_internal(struct pipe_loader_device **devs, int ndev, bool zink)
 {
    int i, j, fd;
 
@@ -219,7 +261,7 @@ pipe_loader_drm_probe(struct pipe_loader_device **devs, int ndev)
       if (fd < 0)
          continue;
 
-      if (!pipe_loader_drm_probe_fd_nodup(&dev, fd)) {
+      if (!pipe_loader_drm_probe_fd_nodup(&dev, fd, zink)) {
          close(fd);
          continue;
       }
@@ -236,6 +278,20 @@ pipe_loader_drm_probe(struct pipe_loader_device **devs, int ndev)
    return j;
 }
 
+int
+pipe_loader_drm_probe(struct pipe_loader_device **devs, int ndev)
+{
+   return pipe_loader_drm_probe_internal(devs, ndev, false);
+}
+
+#ifdef HAVE_ZINK
+int
+pipe_loader_drm_zink_probe(struct pipe_loader_device **devs, int ndev)
+{
+   return pipe_loader_drm_probe_internal(devs, ndev, true);
+}
+#endif
+
 static void
 pipe_loader_drm_release(struct pipe_loader_device **dev)
 {
@@ -249,6 +305,52 @@ pipe_loader_drm_release(struct pipe_loader_device **dev)
    close(ddev->fd);
    FREE(ddev->base.driver_name);
    pipe_loader_base_release(dev);
+}
+
+int
+pipe_loader_get_compatible_render_capable_device_fd(int kms_only_fd)
+{
+   bool is_platform_device;
+   struct pipe_loader_device *dev;
+   const char * const drivers[] = {
+#if defined GALLIUM_ETNAVIV
+      "etnaviv",
+#endif
+#if defined GALLIUM_FREEDRENO
+      "msm",
+#endif
+#if defined GALLIUM_LIMA
+      "lima",
+#endif
+#if defined GALLIUM_PANFROST
+      "panfrost",
+      "panthor",
+#endif
+#if defined GALLIUM_V3D
+      "v3d",
+#endif
+#if defined GALLIUM_VC4
+      "vc4",
+#endif
+   };
+
+   if (!pipe_loader_drm_probe_fd(&dev, kms_only_fd, false))
+      return -1;
+   is_platform_device = (dev->type == PIPE_LOADER_DEVICE_PLATFORM);
+   pipe_loader_release(&dev, 1);
+
+   /* For display-only devices that are not on the platform bus, we can't assume
+    * that any of the rendering devices are compatible. */
+   if (!is_platform_device)
+      return -1;
+
+   /* For platform display-only devices, we try to find a render-capable device
+    * on the platform bus and that should be compatible with the display-only
+    * device. */
+   if (ARRAY_SIZE(drivers) == 0)
+      return -1;
+
+   return loader_open_render_node_platform_device(drivers, ARRAY_SIZE(drivers));
 }
 
 static const struct driOptionDescription *
@@ -282,8 +384,42 @@ pipe_loader_drm_get_driconf_by_name(const char *driver_name, unsigned *count)
    } else {
       *count = dd->driconf_count;
       size_t size = sizeof(*driconf) * *count;
+      size_t base_size = size;
+      /* factor in all the statically allocated string lengths */
+      for (unsigned i = 0; i < dd->driconf_count; i++) {
+         if (dd->driconf[i].desc)
+            size += strlen(dd->driconf[i].desc) + 1;
+         if (dd->driconf[i].info.name)
+            size += strlen(dd->driconf[i].info.name) + 1;
+         if (dd->driconf[i].info.type == DRI_STRING)
+            size += strlen(dd->driconf[i].value._string) + 1;
+      }
       driconf = malloc(size);
       memcpy(driconf, dd->driconf, size);
+
+      uint8_t *ptr = (void*)driconf;
+      ptr += base_size;
+      /* manually set up pointers and copy in all the statically allocated strings */
+      for (unsigned i = 0; i < dd->driconf_count; i++) {
+         if (dd->driconf[i].desc) {
+            driconf[i].desc = (void*)ptr;
+            size_t str_size = strlen(dd->driconf[i].desc) + 1;
+            memcpy((void*)driconf[i].desc, dd->driconf[i].desc, str_size);
+            ptr += str_size;
+         }
+         if (dd->driconf[i].info.name) {
+            driconf[i].info.name = (void*)ptr;
+            size_t str_size = strlen(dd->driconf[i].info.name) + 1;
+            memcpy((void*)driconf[i].info.name, dd->driconf[i].info.name, str_size);
+            ptr += str_size;
+         }
+         if (dd->driconf[i].info.type == DRI_STRING) {
+            driconf[i].value._string = (void*)ptr;
+            size_t str_size = strlen(dd->driconf[i].value._string) + 1;
+            memcpy((void*)driconf[i].value._string, dd->driconf[i].value._string, str_size);
+            ptr += str_size;
+         }
+      }
    }
    if (lib)
       util_dl_close(lib);

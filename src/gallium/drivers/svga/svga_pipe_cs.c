@@ -1,33 +1,18 @@
-/**********************************************************
- * Copyright 2022 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2022-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
+
+#include "compiler/nir/nir.h"
+#include "compiler/glsl/gl_nir.h"
+#include "nir/nir_to_tgsi.h"
 
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_bitmask.h"
 #include "tgsi/tgsi_parse.h"
-#include "tgsi/tgsi_text.h"
 
 #include "svga_context.h"
 #include "svga_cmd.h"
@@ -35,7 +20,7 @@
 #include "svga_shader.h"
 #include "svga_streamout.h"
 #include "svga_resource_buffer.h"
-
+#include "svga_tgsi.h"
 
 /**
  * Create the compute program.
@@ -47,21 +32,28 @@ svga_create_compute_state(struct pipe_context *pipe,
    struct svga_context *svga = svga_context(pipe);
 
    struct svga_compute_shader *cs = CALLOC_STRUCT(svga_compute_shader);
+   nir_shader *nir = (nir_shader *)templ->prog;
 
    if (!cs)
       return NULL;
 
    SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_CREATECS);
 
-   assert(templ->ir_type == PIPE_SHADER_IR_TGSI);
-   cs->base.tokens = tgsi_dup_tokens(templ->prog);
+   assert(templ->ir_type == PIPE_SHADER_IR_NIR);
+   /* nir_to_tgsi requires lowered images */
+   NIR_PASS_V(nir, gl_nir_lower_images, false);
+
+   cs->base.tokens = nir_to_tgsi((void *)nir, pipe->screen);
+
+   struct svga_shader *shader = &cs->base;
+   shader->id = svga->debug.shader_id++;
+   shader->type = PIPE_SHADER_IR_TGSI;
+   shader->stage = PIPE_SHADER_COMPUTE;
 
    /* Collect shader basic info */
-   tgsi_scan_shader(cs->base.tokens, &cs->base.info);
+   svga_tgsi_scan_shader(&cs->base);
 
-   cs->base.id = svga->debug.shader_id++;
-
-   cs->shared_mem_size = templ->req_local_mem;
+   cs->shared_mem_size = templ->static_shared_mem;
 
    SVGA_STATS_TIME_POP(svga_sws(svga));
    return cs;
@@ -79,6 +71,10 @@ svga_bind_compute_state(struct pipe_context *pipe, void *shader)
 
    svga->curr.cs = cs;
    svga->dirty |= SVGA_NEW_CS;
+
+   /* Check if the shader uses samplers */
+   svga_set_curr_shader_use_samplers_flag(svga, PIPE_SHADER_COMPUTE,
+                                          svga_shader_use_samplers(&cs->base));
 }
 
 

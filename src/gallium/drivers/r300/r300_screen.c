@@ -1,32 +1,17 @@
 /*
  * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
  * Copyright 2010 Marek Olšák <maraeo@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "compiler/nir/nir.h"
 #include "util/format/u_format.h"
 #include "util/format/u_format_s3tc.h"
 #include "util/u_screen.h"
 #include "util/u_memory.h"
+#include "util/hex.h"
 #include "util/os_time.h"
+#include "util/xmlconfig.h"
 #include "vl/vl_decoder.h"
 #include "vl/vl_video_buffer.h"
 
@@ -35,6 +20,7 @@
 #include "r300_screen_buffer.h"
 #include "r300_state_inlines.h"
 #include "r300_public.h"
+#include "compiler/r300_nir.h"
 
 #include "draw/draw_context.h"
 
@@ -46,7 +32,7 @@
  * (Or egotistical. Yet.) */
 static const char* r300_get_vendor(struct pipe_screen* pscreen)
 {
-    return "X.Org R300 Project";
+    return "Mesa";
 }
 
 static const char* r300_get_device_vendor(struct pipe_screen* pscreen)
@@ -105,7 +91,7 @@ static void r300_disk_cache_create(struct r300_screen* r300screen)
         return;
 
     _mesa_sha1_final(&ctx, sha1);
-    disk_cache_format_hex_id(cache_id, sha1, 20 * 2);
+    mesa_bytes_to_hex(cache_id, sha1, 20);
 
     r300screen->disk_shader_cache =
                     disk_cache_create(r300_get_family_name(r300screen),
@@ -122,7 +108,7 @@ static struct disk_cache* r300_get_disk_shader_cache(struct pipe_screen* pscreen
 static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 {
     struct r300_screen* r300screen = r300_screen(pscreen);
-    boolean is_r500 = r300screen->caps.is_r500;
+    bool is_r500 = r300screen->caps.is_r500;
 
     switch (param) {
         /* Supported features (boolean caps). */
@@ -130,7 +116,6 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
         case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
         case PIPE_CAP_ANISOTROPIC_FILTER:
-        case PIPE_CAP_POINT_SPRITE:
         case PIPE_CAP_OCCLUSION_QUERY:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
         case PIPE_CAP_TEXTURE_MIRROR_CLAMP_TO_EDGE:
@@ -141,9 +126,10 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_CONDITIONAL_RENDER:
         case PIPE_CAP_TEXTURE_BARRIER:
         case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
-        case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
         case PIPE_CAP_CLIP_HALFZ:
         case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
+        case PIPE_CAP_LEGACY_MATH_RULES:
+        case PIPE_CAP_TGSI_TEXCOORD:
             return 1;
 
         case PIPE_CAP_TEXTURE_TRANSFER_MODES:
@@ -173,17 +159,14 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
         case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
         case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-        case PIPE_CAP_VERTEX_SHADER_SATURATE:
             return is_r500 ? 1 : 0;
 
-        case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
-            return 0;
         case PIPE_CAP_SHAREABLE_SHADERS:
             return 0;
 
         case PIPE_CAP_MAX_GS_INVOCATIONS:
             return 32;
-       case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
+       case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT:
             return 1 << 27;
 
         /* SWTCL-only features. */
@@ -194,10 +177,8 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
             return !r300screen->caps.has_tcl;
 
         /* HWTCL-only features / limitations. */
-        case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
-        case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
-        case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
-            return r300screen->caps.has_tcl;
+        case PIPE_CAP_VERTEX_INPUT_ALIGNMENT:
+            return r300screen->caps.has_tcl ? PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE : PIPE_VERTEX_INPUT_ALIGNMENT_NONE;
 
         /* Texturing. */
         case PIPE_CAP_MAX_TEXTURE_2D_SIZE:
@@ -222,6 +203,9 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_MAX_VARYINGS:
             return 10;
 
+	case PIPE_CAP_PREFER_IMM_ARRAYS_AS_CONSTBUF:
+	    return 0;
+
         case PIPE_CAP_VENDOR_ID:
                 return 0x1002;
         case PIPE_CAP_DEVICE_ID:
@@ -229,17 +213,17 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_ACCELERATED:
                 return 1;
         case PIPE_CAP_VIDEO_MEMORY:
-                return r300screen->info.vram_size >> 20;
+                return r300screen->info.vram_size_kb >> 10;
         case PIPE_CAP_UMA:
                 return 0;
         case PIPE_CAP_PCI_GROUP:
-            return r300screen->info.pci_domain;
+            return r300screen->info.pci.domain;
         case PIPE_CAP_PCI_BUS:
-            return r300screen->info.pci_bus;
+            return r300screen->info.pci.bus;
         case PIPE_CAP_PCI_DEVICE:
-            return r300screen->info.pci_dev;
+            return r300screen->info.pci.dev;
         case PIPE_CAP_PCI_FUNCTION:
-            return r300screen->info.pci_func;
+            return r300screen->info.pci.func;
         default:
             return u_pipe_screen_get_param_defaults(pscreen, param);
     }
@@ -250,12 +234,10 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
                                  enum pipe_shader_cap param)
 {
    struct r300_screen* r300screen = r300_screen(pscreen);
-   boolean is_r400 = r300screen->caps.is_r400;
-   boolean is_r500 = r300screen->caps.is_r500;
+   bool is_r400 = r300screen->caps.is_r400;
+   bool is_r500 = r300screen->caps.is_r500;
 
    switch (param) {
-    case PIPE_SHADER_CAP_PREFERRED_IR:
-        return (r300screen->debug & DBG_USE_TGSI) ? PIPE_SHADER_IR_TGSI : PIPE_SHADER_IR_NIR;
     case PIPE_SHADER_CAP_SUPPORTED_IRS:
         return (1 << PIPE_SHADER_IR_NIR) | (1 << PIPE_SHADER_IR_TGSI);
     default:
@@ -287,7 +269,7 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
             return 10;
         case PIPE_SHADER_CAP_MAX_OUTPUTS:
             return 4;
-        case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+        case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
             return (is_r500 ? 256 : 32) * sizeof(float[4]);
         case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
         case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
@@ -297,7 +279,7 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
         case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
            return r300screen->caps.num_tex_units;
-        case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+        case PIPE_SHADER_CAP_CONT_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
@@ -311,19 +293,11 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
         case PIPE_SHADER_CAP_INT16:
         case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
-        case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-        case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-        case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
-        case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-        case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-        case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
             return 0;
-        case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-            return 32;
         default:
             break;
         }
@@ -381,7 +355,7 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
             return 16;
         case PIPE_SHADER_CAP_MAX_OUTPUTS:
             return 10;
-        case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+        case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
             return 256 * sizeof(float[4]);
         case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
             return 1;
@@ -392,7 +366,7 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
             return 1;
         case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
         case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
-        case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+        case PIPE_SHADER_CAP_CONT_SUPPORTED:
         case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
         case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
         case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
@@ -407,19 +381,11 @@ static int r300_get_shader_param(struct pipe_screen *pscreen,
         case PIPE_SHADER_CAP_INT64_ATOMICS:
         case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
         case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
-        case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-        case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-        case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
-        case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-        case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-        case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
         case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
             return 0;
-        case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-            return 32;
         default:
             break;
         }
@@ -500,113 +466,76 @@ static int r300_get_video_param(struct pipe_screen *screen,
    }
 }
 
+#define COMMON_NIR_OPTIONS                    \
+   .fdot_replicates = true,                   \
+   .fuse_ffma32 = true,                       \
+   .fuse_ffma64 = true,                       \
+   .lower_bitops = true,                      \
+   .lower_extract_byte = true,                \
+   .lower_extract_word = true,                \
+   .lower_fceil = true,                       \
+   .lower_fdiv = true,                        \
+   .lower_fdph = true,                        \
+   .lower_ffloor = true,                      \
+   .lower_flrp32 = true,                      \
+   .lower_flrp64 = true,                      \
+   .lower_fmod = true,                        \
+   .lower_fsign = true,                       \
+   .lower_fsqrt = true,                       \
+   .lower_ftrunc = true,                      \
+   .lower_insert_byte = true,                 \
+   .lower_insert_word = true,                 \
+   .lower_uniforms_to_ubo = true,             \
+   .lower_vector_cmp = true,                  \
+   .no_integers = true,                       \
+   .use_interpolated_input_intrinsics = true
+
 static const nir_shader_compiler_options r500_vs_compiler_options = {
-   .fdot_replicates = true,
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
-   .lower_bitops = true,
-   .lower_extract_byte = true,
-   .lower_extract_word = true,
-   .lower_fdiv = true,
-   .lower_insert_byte = true,
-   .lower_insert_word = true,
-   .lower_fdph = true,
-   .lower_flrp32 = true,
-   .lower_flrp64 = true,
-   .lower_fmod = true,
-   .lower_fround_even = true,
-   .lower_rotate = true,
-   .lower_uniforms_to_ubo = true,
-   .lower_vector_cmp = true,
+   COMMON_NIR_OPTIONS,
+   .has_fused_comp_and_csel = true,
 
    /* Have HW loops support and 1024 max instr count, but don't unroll *too*
     * hard.
     */
-   .max_unroll_iterations = 32,
-
-   .use_interpolated_input_intrinsics = true,
+   .max_unroll_iterations = 29,
 };
 
 static const nir_shader_compiler_options r500_fs_compiler_options = {
-   .fdot_replicates = true,
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
-   .lower_bitops = true,
-   .lower_extract_byte = true,
-   .lower_extract_word = true,
-   .lower_fdiv = true,
-   .lower_insert_byte = true,
-   .lower_insert_word = true,
-   .lower_fdph = true,
+   COMMON_NIR_OPTIONS,
    .lower_fpow = true, /* POW is only in the VS */
-   .lower_flrp32 = true,
-   .lower_flrp64 = true,
-   .lower_fmod = true,
-   .lower_fround_even = true,
-   .lower_rotate = true,
-   .lower_uniforms_to_ubo = true,
-   .lower_vector_cmp = true,
+   .has_fused_comp_and_csel = true,
 
    /* Have HW loops support and 512 max instr count, but don't unroll *too*
     * hard.
     */
    .max_unroll_iterations = 32,
-
-   .use_interpolated_input_intrinsics = true,
 };
 
 static const nir_shader_compiler_options r300_vs_compiler_options = {
-   .fdot_replicates = true,
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
-   .lower_bitops = true,
-   .lower_extract_byte = true,
-   .lower_extract_word = true,
-   .lower_fdiv = true,
-   .lower_insert_byte = true,
-   .lower_insert_word = true,
-   .lower_fdph = true,
+   COMMON_NIR_OPTIONS,
    .lower_fsat = true, /* No fsat in pre-r500 VS */
-   .lower_flrp32 = true,
-   .lower_flrp64 = true,
-   .lower_fmod = true,
-   .lower_fround_even = true,
-   .lower_rotate = true,
-   .lower_uniforms_to_ubo = true,
-   .lower_vector_cmp = true,
    .lower_sincos = true,
 
    /* Note: has HW loops support, but only 256 ALU instructions. */
    .max_unroll_iterations = 32,
+};
 
-   .use_interpolated_input_intrinsics = true,
+static const nir_shader_compiler_options r400_vs_compiler_options = {
+   COMMON_NIR_OPTIONS,
+   .lower_fsat = true, /* No fsat in pre-r500 VS */
+
+   /* Note: has HW loops support, but only 256 ALU instructions. */
+   .max_unroll_iterations = 32,
 };
 
 static const nir_shader_compiler_options r300_fs_compiler_options = {
-   .fdot_replicates = true,
-   .fuse_ffma32 = true,
-   .fuse_ffma64 = true,
-   .lower_bitops = true,
-   .lower_extract_byte = true,
-   .lower_extract_word = true,
-   .lower_fdiv = true,
+   COMMON_NIR_OPTIONS,
    .lower_fpow = true, /* POW is only in the VS */
-   .lower_insert_byte = true,
-   .lower_insert_word = true,
-   .lower_fdph = true,
-   .lower_flrp32 = true,
-   .lower_flrp64 = true,
-   .lower_fmod = true,
-   .lower_fround_even = true,
-   .lower_rotate = true,
-   .lower_uniforms_to_ubo = true,
-   .lower_vector_cmp = true,
    .lower_sincos = true,
+   .has_fused_comp_and_csel = true,
 
     /* No HW loops support, so set it equal to ALU instr max */
    .max_unroll_iterations = 64,
-
-   .use_interpolated_input_intrinsics = true,
 };
 
 static const void *
@@ -624,10 +553,14 @@ r300_get_compiler_options(struct pipe_screen *pscreen,
        else
          return &r500_fs_compiler_options;
    } else {
-      if (shader == PIPE_SHADER_VERTEX)
+      if (shader == PIPE_SHADER_VERTEX) {
+         if (r300screen->caps.is_r400)
+            return &r400_vs_compiler_options;
+
          return &r300_vs_compiler_options;
-       else
+      } else {
          return &r300_fs_compiler_options;
+      }
    }
 }
 
@@ -635,7 +568,7 @@ r300_get_compiler_options(struct pipe_screen *pscreen,
  * Whether the format matches:
  *   PIPE_FORMAT_?10?10?10?2_UNORM
  */
-static inline boolean
+static inline bool
 util_format_is_rgba1010102_variant(const struct util_format_description *desc)
 {
    static const unsigned size[4] = {10, 10, 10, 2};
@@ -644,17 +577,17 @@ util_format_is_rgba1010102_variant(const struct util_format_description *desc)
    if (desc->block.width != 1 ||
        desc->block.height != 1 ||
        desc->block.bits != 32)
-      return FALSE;
+      return false;
 
    for (chan = 0; chan < 4; ++chan) {
       if(desc->channel[chan].type != UTIL_FORMAT_TYPE_UNSIGNED &&
          desc->channel[chan].type != UTIL_FORMAT_TYPE_VOID)
-         return FALSE;
+         return false;
       if (desc->channel[chan].size != size[chan])
-         return FALSE;
+         return false;
    }
 
-   return TRUE;
+   return true;
 }
 
 static bool r300_is_blending_supported(struct r300_screen *rscreen,
@@ -703,26 +636,26 @@ static bool r300_is_format_supported(struct pipe_screen* screen,
                                      unsigned usage)
 {
     uint32_t retval = 0;
-    boolean is_r500 = r300_screen(screen)->caps.is_r500;
-    boolean is_r400 = r300_screen(screen)->caps.is_r400;
-    boolean is_color2101010 = format == PIPE_FORMAT_R10G10B10A2_UNORM ||
-                              format == PIPE_FORMAT_R10G10B10X2_SNORM ||
-                              format == PIPE_FORMAT_B10G10R10A2_UNORM ||
-                              format == PIPE_FORMAT_B10G10R10X2_UNORM ||
-                              format == PIPE_FORMAT_R10SG10SB10SA2U_NORM;
-    boolean is_ati1n = format == PIPE_FORMAT_RGTC1_UNORM ||
-                       format == PIPE_FORMAT_RGTC1_SNORM ||
-                       format == PIPE_FORMAT_LATC1_UNORM ||
-                       format == PIPE_FORMAT_LATC1_SNORM;
-    boolean is_ati2n = format == PIPE_FORMAT_RGTC2_UNORM ||
-                       format == PIPE_FORMAT_RGTC2_SNORM ||
-                       format == PIPE_FORMAT_LATC2_UNORM ||
-                       format == PIPE_FORMAT_LATC2_SNORM;
-    boolean is_half_float = format == PIPE_FORMAT_R16_FLOAT ||
-                            format == PIPE_FORMAT_R16G16_FLOAT ||
-                            format == PIPE_FORMAT_R16G16B16_FLOAT ||
-                            format == PIPE_FORMAT_R16G16B16A16_FLOAT ||
-                            format == PIPE_FORMAT_R16G16B16X16_FLOAT;
+    bool is_r500 = r300_screen(screen)->caps.is_r500;
+    bool is_r400 = r300_screen(screen)->caps.is_r400;
+    bool is_color2101010 = format == PIPE_FORMAT_R10G10B10A2_UNORM ||
+                           format == PIPE_FORMAT_R10G10B10X2_SNORM ||
+                           format == PIPE_FORMAT_B10G10R10A2_UNORM ||
+                           format == PIPE_FORMAT_B10G10R10X2_UNORM ||
+                           format == PIPE_FORMAT_R10SG10SB10SA2U_NORM;
+    bool is_ati1n = format == PIPE_FORMAT_RGTC1_UNORM ||
+                    format == PIPE_FORMAT_RGTC1_SNORM ||
+                    format == PIPE_FORMAT_LATC1_UNORM ||
+                    format == PIPE_FORMAT_LATC1_SNORM;
+    bool is_ati2n = format == PIPE_FORMAT_RGTC2_UNORM ||
+                    format == PIPE_FORMAT_RGTC2_SNORM ||
+                    format == PIPE_FORMAT_LATC2_UNORM ||
+                    format == PIPE_FORMAT_LATC2_SNORM;
+    bool is_half_float = format == PIPE_FORMAT_R16_FLOAT ||
+                         format == PIPE_FORMAT_R16G16_FLOAT ||
+                         format == PIPE_FORMAT_R16G16B16_FLOAT ||
+                         format == PIPE_FORMAT_R16G16B16A16_FLOAT ||
+                         format == PIPE_FORMAT_R16G16B16X16_FLOAT;
     const struct util_format_description *desc;
 
     if (MAX2(1, sample_count) != MAX2(1, storage_sample_count))
@@ -856,7 +789,7 @@ static void r300_fence_reference(struct pipe_screen *screen,
 {
     struct radeon_winsys *rws = r300_screen(screen)->rws;
 
-    rws->fence_reference(ptr, fence);
+    rws->fence_reference(rws, ptr, fence);
 }
 
 static bool r300_fence_finish(struct pipe_screen *screen,
@@ -869,6 +802,13 @@ static bool r300_fence_finish(struct pipe_screen *screen,
     return rws->fence_wait(rws, fence, timeout);
 }
 
+static int r300_screen_get_fd(struct pipe_screen *screen)
+{
+    struct radeon_winsys *rws = r300_screen(screen)->rws;
+
+    return rws->get_fd(rws);
+}
+
 struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
                                        const struct pipe_screen_config *config)
 {
@@ -879,25 +819,41 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws,
         return NULL;
     }
 
-    rws->query_info(rws, &r300screen->info, false, false);
+    rws->query_info(rws, &r300screen->info);
 
     r300_init_debug(r300screen);
     r300_parse_chipset(r300screen->info.pci_id, &r300screen->caps);
 
-    if (SCREEN_DBG_ON(r300screen, DBG_NO_ZMASK))
+    driParseConfigFiles(config->options, config->options_info, 0, "r300", NULL,
+                        NULL, NULL, 0, NULL, 0);
+
+#define OPT_BOOL(name, dflt, description)                                                          \
+    r300screen->options.name = driQueryOptionb(config->options, "r300_" #name);
+#include "r300_debug_options.h"
+
+    if (SCREEN_DBG_ON(r300screen, DBG_NO_ZMASK) ||
+        r300screen->options.nozmask)
         r300screen->caps.zmask_ram = 0;
-    if (SCREEN_DBG_ON(r300screen, DBG_NO_HIZ))
+    if (SCREEN_DBG_ON(r300screen, DBG_NO_HIZ) ||
+        r300screen->options.nohiz)
         r300screen->caps.hiz_ram = 0;
     if (SCREEN_DBG_ON(r300screen, DBG_NO_TCL))
-        r300screen->caps.has_tcl = FALSE;
+        r300screen->caps.has_tcl = false;
+
+    if (SCREEN_DBG_ON(r300screen, DBG_IEEEMATH))
+        r300screen->options.ieeemath = true;
+    if (SCREEN_DBG_ON(r300screen, DBG_FFMATH))
+        r300screen->options.ffmath = true;
 
     r300screen->rws = rws;
     r300screen->screen.destroy = r300_destroy_screen;
     r300screen->screen.get_name = r300_get_name;
     r300screen->screen.get_vendor = r300_get_vendor;
     r300screen->screen.get_compiler_options = r300_get_compiler_options;
+    r300screen->screen.finalize_nir = r300_finalize_nir;
     r300screen->screen.get_device_vendor = r300_get_device_vendor;
     r300screen->screen.get_disk_shader_cache = r300_get_disk_shader_cache;
+    r300screen->screen.get_screen_fd = r300_screen_get_fd;
     r300screen->screen.get_param = r300_get_param;
     r300screen->screen.get_shader_param = r300_get_shader_param;
     r300screen->screen.get_paramf = r300_get_paramf;

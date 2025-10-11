@@ -216,6 +216,9 @@ EGL_FUNCTIONS = (
     # EGL_CHROMIUM_get_sync_values
     _eglFunc("eglGetSyncValuesCHROMIUM",             "display"),
 
+    # EGL_ANGLE_sync_control_rate
+    _eglFunc("eglGetMscRateANGLE",                   "display"),
+
     # EGL_ANDROID_native_fence_sync
     _eglFunc("eglDupNativeFenceFDANDROID",           "display"),
 
@@ -239,5 +242,12 @@ EGL_FUNCTIONS = (
     # EGL_KHR_partial_update
     _eglFunc("eglSetDamageRegionKHR",                "display"),
 
+    # EGL_MESA_gl_interop
+    _eglFunc("eglGLInteropQueryDeviceInfoMESA",      "display"),
+    _eglFunc("eglGLInteropExportObjectMESA",         "display"),
+    _eglFunc("eglGLInteropFlushObjectsMESA",         "display"),
+
+    # EGL_EXT_surface_compression
+    _eglFunc("eglQuerySupportedCompressionRatesEXT", "display"),
 )
 

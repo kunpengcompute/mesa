@@ -30,20 +30,31 @@ VkResult
 vk_physical_device_init(struct vk_physical_device *pdevice,
                         struct vk_instance *instance,
                         const struct vk_device_extension_table *supported_extensions,
+                        const struct vk_features *supported_features,
+                        const struct vk_properties *properties,
                         const struct vk_physical_device_dispatch_table *dispatch_table)
 {
    memset(pdevice, 0, sizeof(*pdevice));
-   vk_object_base_init(NULL, &pdevice->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
+   vk_object_base_instance_init(instance, &pdevice->base, VK_OBJECT_TYPE_PHYSICAL_DEVICE);
    pdevice->instance = instance;
 
    if (supported_extensions != NULL)
       pdevice->supported_extensions = *supported_extensions;
+
+   if (supported_features != NULL)
+      pdevice->supported_features = *supported_features;
+
+   if (properties != NULL)
+      pdevice->properties = *properties;
 
    pdevice->dispatch_table = *dispatch_table;
 
    /* Add common entrypoints without overwriting driver-provided ones. */
    vk_physical_device_dispatch_table_from_entrypoints(
       &pdevice->dispatch_table, &vk_common_physical_device_entrypoints, false);
+
+   /* TODO */
+   pdevice->disk_cache = NULL;
 
    return VK_SUCCESS;
 }
@@ -81,7 +92,7 @@ vk_common_EnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice,
       if (!pdevice->supported_extensions.extensions[i])
          continue;
 
-#ifdef ANDROID
+#ifdef ANDROID_STRICT
       if (!vk_android_allowed_device_extensions.extensions[i])
          continue;
 #endif
@@ -170,21 +181,7 @@ vk_common_GetPhysicalDeviceMemoryProperties(VkPhysicalDevice physicalDevice,
 
    pdevice->dispatch_table.GetPhysicalDeviceMemoryProperties2(physicalDevice,
                                                               &props2);
-   /* dEQP-VK.api.info.get_physical_device_properties2.memory_properties memsets
-    * the struct to 0xcd and expects that the unused array elements are
-    * untouched.
-    */
-   pMemoryProperties->memoryHeapCount = props2.memoryProperties.memoryHeapCount;
-   for (int i = 0; i < pMemoryProperties->memoryHeapCount; i++) {
-      pMemoryProperties->memoryHeaps[i].flags = props2.memoryProperties.memoryHeaps[i].flags;
-      pMemoryProperties->memoryHeaps[i].size = props2.memoryProperties.memoryHeaps[i].size;
-   }
-
-   pMemoryProperties->memoryTypeCount = props2.memoryProperties.memoryTypeCount;
-   for (int i = 0; i < pMemoryProperties->memoryTypeCount; i++) {
-      pMemoryProperties->memoryTypes[i].heapIndex = props2.memoryProperties.memoryTypes[i].heapIndex;
-      pMemoryProperties->memoryTypes[i].propertyFlags = props2.memoryProperties.memoryTypes[i].propertyFlags;
-   }
+   *pMemoryProperties = props2.memoryProperties;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -241,7 +238,7 @@ VKAPI_ATTR void VKAPI_CALL
 vk_common_GetPhysicalDeviceSparseImageFormatProperties(VkPhysicalDevice physicalDevice,
                                                        VkFormat format,
                                                        VkImageType type,
-                                                       uint32_t samples,
+                                                       VkSampleCountFlagBits samples,
                                                        VkImageUsageFlags usage,
                                                        VkImageTiling tiling,
                                                        uint32_t *pNumProperties,

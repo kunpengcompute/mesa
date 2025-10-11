@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2017-2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2017-2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -58,7 +40,7 @@ byte_offset_to_address(struct ir3_context *ctx,
       byte_offset = ir3_ADD_U(b, create_uniform(b, cb), 0, byte_offset, 0);
    }
 
-   if (fd_dev_64b(ctx->compiler->dev_id)) {
+   if (ctx->compiler->is_64bit) {
       return ir3_collect(b, byte_offset, create_immed(b, 0));
    } else {
       return byte_offset;
@@ -126,6 +108,40 @@ emit_intrinsic_store_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    array_insert(b, b->keeps, stgb);
 }
 
+static struct ir3_instruction *
+emit_atomic(struct ir3_block *b,
+            nir_atomic_op op,
+            struct ir3_instruction *bo,
+            struct ir3_instruction *data,
+            struct ir3_instruction *offset,
+            struct ir3_instruction *byte_offset)
+{
+   switch (op) {
+   case nir_atomic_op_iadd:
+      return ir3_ATOMIC_S_ADD(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_imin:
+      return ir3_ATOMIC_S_MIN(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_umin:
+      return ir3_ATOMIC_S_MIN(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_imax:
+      return ir3_ATOMIC_S_MAX(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_umax:
+      return ir3_ATOMIC_S_MAX(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_iand:
+      return ir3_ATOMIC_S_AND(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_ior:
+      return ir3_ATOMIC_S_OR(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_ixor:
+      return ir3_ATOMIC_S_XOR(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_xchg:
+      return ir3_ATOMIC_S_XCHG(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   case nir_atomic_op_cmpxchg:
+      return ir3_ATOMIC_S_CMPXCHG(b, bo, 0, data, 0, offset, 0, byte_offset, 0);
+   default:
+      unreachable("boo");
+   }
+}
+
 /*
  * SSBO atomic intrinsics
  *
@@ -140,7 +156,7 @@ emit_intrinsic_store_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr)
  * 1: The byte offset into the SSBO buffer of the variable that the atomic
  *    operation will operate on.
  * 2: The data parameter to the atomic function (i.e. the value to add
- *    in ssbo_atomic_add, etc).
+ *    in, etc).
  * 3: CompSwap: the second data parameter.
  *    Non-CompSwap: The dword offset into the SSBO buffer variable.
  * 4: CompSwap: The dword offset into the SSBO buffer variable.
@@ -152,8 +168,8 @@ static struct ir3_instruction *
 emit_intrinsic_atomic_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr)
 {
    struct ir3_block *b = ctx->block;
-   struct ir3_instruction *atomic;
-   type_t type = TYPE_U32;
+   nir_atomic_op op = nir_intrinsic_atomic_op(intr);
+   type_t type = nir_atomic_op_type(op) == nir_type_int ? TYPE_S32 : TYPE_U32;
 
    struct ir3_instruction *ssbo = ir3_ssbo_to_ibo(ctx, intr->src[0]);
 
@@ -161,49 +177,17 @@ emit_intrinsic_atomic_ssbo(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    /* 64b byte offset */
    struct ir3_instruction *byte_offset =
       byte_offset_to_address(ctx, &intr->src[0], ir3_get_src(ctx, &intr->src[1])[0]);
-   /* dword offset for everything but comp_swap */
+   /* dword offset for everything but cmpxchg */
    struct ir3_instruction *src3 = ir3_get_src(ctx, &intr->src[3])[0];
 
-   switch (intr->intrinsic) {
-   case nir_intrinsic_ssbo_atomic_add_ir3:
-      atomic = ir3_ATOMIC_S_ADD(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      break;
-   case nir_intrinsic_ssbo_atomic_imin_ir3:
-      atomic = ir3_ATOMIC_S_MIN(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      type = TYPE_S32;
-      break;
-   case nir_intrinsic_ssbo_atomic_umin_ir3:
-      atomic = ir3_ATOMIC_S_MIN(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      break;
-   case nir_intrinsic_ssbo_atomic_imax_ir3:
-      atomic = ir3_ATOMIC_S_MAX(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      type = TYPE_S32;
-      break;
-   case nir_intrinsic_ssbo_atomic_umax_ir3:
-      atomic = ir3_ATOMIC_S_MAX(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      break;
-   case nir_intrinsic_ssbo_atomic_and_ir3:
-      atomic = ir3_ATOMIC_S_AND(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      break;
-   case nir_intrinsic_ssbo_atomic_or_ir3:
-      atomic = ir3_ATOMIC_S_OR(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      break;
-   case nir_intrinsic_ssbo_atomic_xor_ir3:
-      atomic = ir3_ATOMIC_S_XOR(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      break;
-   case nir_intrinsic_ssbo_atomic_exchange_ir3:
-      atomic = ir3_ATOMIC_S_XCHG(b, ssbo, 0, data, 0, src3, 0, byte_offset, 0);
-      break;
-   case nir_intrinsic_ssbo_atomic_comp_swap_ir3:
+   if (op == nir_atomic_op_cmpxchg) {
       /* for cmpxchg, src0 is [ui]vec2(data, compare): */
       data = ir3_collect(b, src3, data);
-      struct ir3_instruction *dword_offset = ir3_get_src(ctx, &intr->src[4])[0];
-      atomic = ir3_ATOMIC_S_CMPXCHG(b, ssbo, 0, data, 0, dword_offset, 0,
-                                    byte_offset, 0);
-      break;
-   default:
-      unreachable("boo");
+      src3 = ir3_get_src(ctx, &intr->src[4])[0];
    }
+
+   struct ir3_instruction *atomic =
+      emit_atomic(b, op, ssbo, data, src3, byte_offset);
 
    atomic->cat6.iim_val = 1;
    atomic->cat6.d = 4;
@@ -232,7 +216,7 @@ get_image_offset(struct ir3_context *ctx, const nir_intrinsic_instr *instr,
    unsigned cb;
    if (ctx->compiler->gen > 4) {
       const struct ir3_const_state *const_state = ir3_const_state(ctx->so);
-      debug_assert(const_state->image_dims.mask & (1 << index));
+      assert(const_state->image_dims.mask & (1 << index));
 
       cb = regid(const_state->offsets.image_dims, 0) +
          const_state->image_dims.off[index];
@@ -269,7 +253,7 @@ get_image_offset(struct ir3_context *ctx, const nir_intrinsic_instr *instr,
       offset = ir3_SHR_B(b, offset, 0, create_immed(b, 2), 0);
    }
 
-   if (fd_dev_64b(ctx->compiler->dev_id))
+   if (ctx->compiler->is_64bit)
       return ir3_collect(b, offset, create_immed(b, 0));
    else
       return offset;
@@ -308,7 +292,7 @@ emit_intrinsic_load_image(struct ir3_context *ctx, nir_intrinsic_instr *intr,
          break;
       default:
          /* For some reason even more 32-bit components don't work. */
-         debug_assert(0);
+         assert(0);
          break;
       }
    }
@@ -369,6 +353,7 @@ emit_intrinsic_atomic_image(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    struct ir3_instruction *const *coords = ir3_get_src(ctx, &intr->src[1]);
    struct ir3_instruction *image = ir3_image_to_ibo(ctx, intr->src[0]);
    unsigned ncoords = ir3_get_image_coords(intr, NULL);
+   nir_atomic_op op = nir_intrinsic_atomic_op(intr);
 
    /* src0 is value (or uvec2(value, compare))
     * src1 is coords
@@ -378,39 +363,10 @@ emit_intrinsic_atomic_image(struct ir3_context *ctx, nir_intrinsic_instr *intr)
    src1 = ir3_create_collect(b, coords, ncoords);
    src2 = get_image_offset(ctx, intr, coords, ctx->compiler->gen == 4);
 
-   switch (intr->intrinsic) {
-   case nir_intrinsic_image_atomic_add:
-      atomic = ir3_ATOMIC_S_ADD(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   case nir_intrinsic_image_atomic_imin:
-   case nir_intrinsic_image_atomic_umin:
-      atomic = ir3_ATOMIC_S_MIN(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   case nir_intrinsic_image_atomic_imax:
-   case nir_intrinsic_image_atomic_umax:
-      atomic = ir3_ATOMIC_S_MAX(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   case nir_intrinsic_image_atomic_and:
-      atomic = ir3_ATOMIC_S_AND(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   case nir_intrinsic_image_atomic_or:
-      atomic = ir3_ATOMIC_S_OR(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   case nir_intrinsic_image_atomic_xor:
-      atomic = ir3_ATOMIC_S_XOR(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   case nir_intrinsic_image_atomic_exchange:
-      atomic = ir3_ATOMIC_S_XCHG(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   case nir_intrinsic_image_atomic_comp_swap:
-      /* for cmpxchg, src0 is [ui]vec2(data, compare): */
+   if (op == nir_atomic_op_cmpxchg)
       src0 = ir3_collect(b, ir3_get_src(ctx, &intr->src[4])[0], src0);
-      atomic = ir3_ATOMIC_S_CMPXCHG(b, image, 0, src0, 0, src1, 0, src2, 0);
-      break;
-   default:
-      unreachable("boo");
-   }
 
+   atomic = emit_atomic(b, op, image, src0, src1, src2);
    atomic->cat6.iim_val = 1;
    atomic->cat6.d = ncoords;
    atomic->cat6.type = ir3_get_type_for_image_intrinsic(intr);

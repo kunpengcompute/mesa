@@ -88,7 +88,7 @@ struct virgl_context {
 
    struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
    unsigned num_vertex_buffers;
-   boolean vertex_array_dirty;
+   bool vertex_array_dirty;
 
    struct virgl_rasterizer_state rs_state;
    struct virgl_so_target so_targets[PIPE_MAX_SO_BUFFERS];
@@ -101,6 +101,13 @@ struct virgl_context {
 
    /* The total size of staging resources used in queued copy transfers. */
    uint64_t queued_staging_res_size;
+};
+
+struct virgl_vertex_elements_state {
+   uint32_t handle;
+   uint8_t binding_map[PIPE_MAX_ATTRIBS];
+   uint8_t num_bindings;
+   uint16_t strides[PIPE_MAX_ATTRIBS];
 };
 
 static inline struct virgl_sampler_view *
@@ -127,7 +134,8 @@ void virgl_init_blit_functions(struct virgl_context *vctx);
 void virgl_init_query_functions(struct virgl_context *vctx);
 void virgl_init_so_functions(struct virgl_context *vctx);
 
-struct tgsi_token *virgl_tgsi_transform(struct virgl_screen *vscreen, const struct tgsi_token *tokens_in);
+struct tgsi_token *virgl_tgsi_transform(struct virgl_screen *vscreen, const struct tgsi_token *tokens_in,
+                                        bool is_separable);
 
 bool
 virgl_can_rebind_resource(struct virgl_context *vctx,

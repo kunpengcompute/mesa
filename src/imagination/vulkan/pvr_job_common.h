@@ -29,8 +29,9 @@
 #include <vulkan/vulkan.h>
 
 #include "hwdef/rogue_hw_defs.h"
+#include "pvr_csb_enum_helpers.h"
 #include "pvr_private.h"
-#include "pvr_winsys.h"
+#include "pvr_types.h"
 
 enum pvr_pbe_gamma {
    PVR_PBE_GAMMA_NONE,
@@ -41,20 +42,6 @@ enum pvr_pbe_gamma {
    PVR_PBE_GAMMA_ENABLED,
 };
 
-enum pvr_pbe_source_start_pos {
-   PVR_PBE_STARTPOS_BIT0,
-   PVR_PBE_STARTPOS_BIT32,
-   PVR_PBE_STARTPOS_BIT64,
-   PVR_PBE_STARTPOS_BIT96,
-   /* The below ones are available if has_eight_output_registers feature is
-    * enabled.
-    */
-   PVR_PBE_STARTPOS_BIT128,
-   PVR_PBE_STARTPOS_BIT160,
-   PVR_PBE_STARTPOS_BIT192,
-   PVR_PBE_STARTPOS_BIT224,
-};
-
 /**
  * These are parameters specific to the surface being set up and hence can be
  * typically set up at surface creation time.
@@ -62,7 +49,8 @@ enum pvr_pbe_source_start_pos {
 struct pvr_pbe_surf_params {
    /* Swizzle for a format can be retrieved using pvr_get_format_swizzle(). */
    uint8_t swizzle[4];
-   /* is_normalized can be retrieved using vk_format_is_normalized(). */
+   /* is_normalized can be retrieved using pvr_vk_format_is_fully_normalized().
+    */
    bool is_normalized;
    /* pbe_packmode can be retrieved using pvr_get_pbe_packmode(). */
    uint32_t pbe_packmode;
@@ -99,7 +87,6 @@ struct pvr_pbe_surf_params {
 
    bool z_only_render;
    bool down_scale;
-   uint32_t msaa_mode;
 };
 
 /**
@@ -125,7 +112,7 @@ struct pvr_pbe_render_params {
 };
 
 void pvr_pbe_pack_state(
-   struct pvr_device *device,
+   const struct pvr_device_info *dev_info,
    const struct pvr_pbe_surf_params *surface_params,
    const struct pvr_pbe_render_params *render_params,
    uint32_t pbe_cs_words[static const ROGUE_NUM_PBESTATE_STATE_WORDS],
@@ -140,12 +127,14 @@ void pvr_pbe_get_src_format_and_gamma(VkFormat vk_format,
                                       uint32_t *const src_format_out,
                                       enum pvr_pbe_gamma *const gamma_out);
 
-void pvr_setup_tiles_in_flight(const struct pvr_device_info *dev_info,
-                               uint32_t msaa_mode,
-                               uint32_t pixel_width,
-                               bool paired_tiles,
-                               uint32_t max_tiles_in_flight,
-                               uint32_t *const isp_ctl_out,
-                               uint32_t *const pixel_ctl_out);
+void pvr_setup_tiles_in_flight(
+   const struct pvr_device_info *dev_info,
+   const struct pvr_device_runtime_info *dev_runtime_info,
+   uint32_t msaa_mode,
+   uint32_t pixel_width,
+   bool paired_tiles,
+   uint32_t max_tiles_in_flight,
+   uint32_t *const isp_ctl_out,
+   uint32_t *const pixel_ctl_out);
 
 #endif /* PVR_JOB_COMMON_H */

@@ -22,6 +22,7 @@
  */
 
 #include <stdint.h>
+#include <inttypes.h>
 
 #define __gen_address_type uint64_t
 #define __gen_user_data void
@@ -36,6 +37,7 @@ __gen_combine_address(__attribute__((unused)) void *data,
 
 #include "genxml/gen_macros.h"
 #include "genxml/genX_pack.h"
+#include "util/log.h"
 
 #include "isl_priv.h"
 #include "isl_genX_helpers.h"
@@ -47,14 +49,27 @@ static const uint8_t isl_encode_tiling[] = {
 #if GFX_VERx10 >= 125
    [ISL_TILING_4]       = TILE4,
    [ISL_TILING_64]      = TILE64,
+   [ISL_TILING_64_XE2]  = TILE64,
 #else
    [ISL_TILING_Y0]      = YMAJOR,
-   [ISL_TILING_Yf]      = YMAJOR,
-   [ISL_TILING_Ys]      = YMAJOR,
-#endif
+   [ISL_TILING_ICL_Yf]  = YMAJOR,
+   [ISL_TILING_ICL_Ys]  = YMAJOR,
+   [ISL_TILING_SKL_Yf]  = YMAJOR,
+   [ISL_TILING_SKL_Ys]  = YMAJOR,
+#endif /* GFX_VERx10 < 125 */
 #if GFX_VER <= 11
    [ISL_TILING_W]       = WMAJOR,
 #endif
+};
+#endif
+
+#if GFX_VER >= 9 && GFX_VERx10 <= 120
+static const uint8_t isl_tiling_encode_trmode[] = {
+   [ISL_TILING_Y0]         = NONE,
+   [ISL_TILING_SKL_Yf]     = TILEYF,
+   [ISL_TILING_SKL_Ys]     = TILEYS,
+   [ISL_TILING_ICL_Yf]     = TILEYF,
+   [ISL_TILING_ICL_Ys]     = TILEYS,
 };
 #endif
 
@@ -66,12 +81,21 @@ static const uint32_t isl_encode_multisample_layout[] = {
 };
 #endif
 
-#if GFX_VER >= 12
+#if GFX_VER >= 20
+static const uint32_t isl_encode_aux_mode[] = {
+   [ISL_AUX_USAGE_NONE] = AUX_NONE,
+   [ISL_AUX_USAGE_MC] = AUX_NONE,
+   [ISL_AUX_USAGE_MCS] = AUX_MCS,
+   [ISL_AUX_USAGE_MCS_CCS] = AUX_MCS,
+   [ISL_AUX_USAGE_STC_CCS] = AUX_NONE,
+   [ISL_AUX_USAGE_HIZ_CCS_WT] = AUX_NONE,
+};
+#elif GFX_VER >= 12
 static const uint32_t isl_encode_aux_mode[] = {
    [ISL_AUX_USAGE_NONE] = AUX_NONE,
    [ISL_AUX_USAGE_MC] = AUX_NONE,
    [ISL_AUX_USAGE_MCS] = AUX_CCS_E,
-   [ISL_AUX_USAGE_GFX12_CCS_E] = AUX_CCS_E,
+   [ISL_AUX_USAGE_FCV_CCS_E] = AUX_CCS_E,
    [ISL_AUX_USAGE_CCS_E] = AUX_CCS_E,
    [ISL_AUX_USAGE_HIZ_CCS_WT] = AUX_CCS_E,
    [ISL_AUX_USAGE_MCS_CCS] = AUX_MCS_LCE,
@@ -154,10 +178,85 @@ get_media_compression_format(enum isl_format format,
 }
 #endif
 
+static struct isl_swizzle
+format_swizzle(enum isl_format format)
+{
+   struct isl_swizzle fmt_swz = {};
+
+   fmt_swz.r = isl_format_has_color_component(format, 0) ?
+               ISL_CHANNEL_SELECT_RED :
+               ISL_CHANNEL_SELECT_ZERO;
+
+   fmt_swz.g = isl_format_has_color_component(format, 1) ?
+               ISL_CHANNEL_SELECT_GREEN :
+               ISL_CHANNEL_SELECT_ZERO;
+
+   fmt_swz.b = isl_format_has_color_component(format, 2) ?
+               ISL_CHANNEL_SELECT_BLUE :
+               ISL_CHANNEL_SELECT_ZERO;
+
+   fmt_swz.a = isl_format_has_color_component(format, 3) ?
+               ISL_CHANNEL_SELECT_ALPHA :
+               ISL_CHANNEL_SELECT_ONE;
+
+   return fmt_swz;
+}
+
+static struct isl_swizzle
+isl_get_shader_channel_select(enum isl_format format,
+                              struct isl_swizzle view_swizzle)
+{
+   /* Currently we map both FXT1_RGB/FXT1_RGBA to single FXT1 format
+    * (supporting both 3/4 component) as a result we can use RGBA swizzle as it
+    * is.
+    */
+   if (format == ISL_FORMAT_FXT1)
+      return view_swizzle;
+
+   /* Bspec 12486: RENDER_SURFACE_STATE::Shader Channel Select Red
+    *
+    *    "The output channel is undefined if the source is to a channel is not
+    *    present for the current surface format. For example, If the surface
+    *    format is R16_float and the shader channel select green specifies
+    *    green as the source the output is undefined. It should instead select
+    *    0 which is the default for a missing color channel."
+    *
+    * Bspec 57023: RENDER_SURFACE_STATE::Shader Channel Select Red
+    *
+    *    "For channels not present in the surface format, the corresponding
+    *    Surface Channel Select is either SCS_ZERO or SCS_ONE."
+    *
+    * This restriction applies to alpha channel as well if associated resource
+    * is not used as render target.
+    */
+   return isl_swizzle_compose(view_swizzle, format_swizzle(format));
+}
+
 void
 isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
                             const struct isl_surf_fill_state_info *restrict info)
 {
+#ifndef NDEBUG
+   isl_surf_usage_flags_t _base_usage =
+      info->view->usage & (ISL_SURF_USAGE_RENDER_TARGET_BIT |
+                           ISL_SURF_USAGE_TEXTURE_BIT |
+                           ISL_SURF_USAGE_STORAGE_BIT);
+   /* They may only specify one of the above bits at a time */
+   assert(__builtin_popcount(_base_usage) == 1);
+   /* The only other allowed bit is ISL_SURF_USAGE_CUBE_BIT */
+   assert((info->view->usage & ~(ISL_SURF_USAGE_CUBE_BIT |
+                                 ISL_SURF_USAGE_PROTECTED_BIT)) ==
+          _base_usage);
+#endif
+
+   if (info->surf->dim == ISL_SURF_DIM_3D) {
+      assert(info->view->base_array_layer + info->view->array_len <=
+             info->surf->logical_level0_px.depth);
+   } else {
+      assert(info->view->base_array_layer + info->view->array_len <=
+             info->surf->logical_level0_px.array_len);
+   }
+
    struct GENX(RENDER_SURFACE_STATE) s = { 0 };
 
    s.SurfaceType = get_surftype(info->surf->dim, info->view->usage);
@@ -187,10 +286,17 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
       ASSERTED const struct isl_format_layout *surf_fmtl =
          isl_format_get_layout(info->surf->format);
       ASSERTED const struct isl_format_layout *view_fmtl =
-         isl_format_get_layout(info->surf->format);
+         isl_format_get_layout(info->view->format);
+
       assert(surf_fmtl->bpb == view_fmtl->bpb);
-      assert(surf_fmtl->bw == view_fmtl->bw);
-      assert(surf_fmtl->bh == view_fmtl->bh);
+
+      /* We could be attempting to upload blocks of compressed data via an
+       * uncompressed view, blocksize will not match there.
+       */
+      if (isl_format_is_compressed(info->view->format)) {
+         assert(surf_fmtl->bw == view_fmtl->bw);
+         assert(surf_fmtl->bh == view_fmtl->bh);
+      }
    }
 
    s.SurfaceFormat = info->view->format;
@@ -342,12 +448,21 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
       unreachable("bad SurfaceType");
    }
 
-#if GFX_VER >= 12
-   /* Wa_1806565034: Only set SurfaceArray if arrayed surface is > 1. */
-   s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D &&
-      info->view->array_len > 1;
-#elif GFX_VER >= 7
-   s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D;
+#if GFX_VER >= 7
+   if (INTEL_NEEDS_WA_1806565034) {
+      /* Wa_1806565034:
+       *
+       *    "Only set SurfaceArray if arrayed surface is > 1."
+       *
+       * Since this is a performance workaround, we only enable it when robust
+       * image access is disabled. Otherwise layered robust access is not
+       * specification compliant.
+       */
+      s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D &&
+         (info->robust_image_access || info->view->array_len > 1);
+   } else {
+      s.SurfaceArray = info->surf->dim != ISL_SURF_DIM_3D;
+   }
 #endif
 
    if (info->view->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
@@ -369,11 +484,12 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    }
 
 #if GFX_VER >= 9
-   /* We don't use miptails yet.  The PRM recommends that you set "Mip Tail
-    * Start LOD" to 15 to prevent the hardware from trying to use them.
-    */
-   s.TiledResourceMode = NONE;
-   s.MipTailStartLOD = 15;
+   s.MipTailStartLOD = info->surf->miptail_start_level;
+#endif
+
+#if GFX_VERx10 >= 125
+   /* Setting L1 caching policy to Write-back mode. */
+   s.L1CacheControl = L1CC_WB;
 #endif
 
 #if GFX_VER >= 6
@@ -399,7 +515,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
                            ISL_ARRAY_PITCH_SPAN_COMPACT;
 #endif
 
-#if GFX_VER >= 8
+#if GFX_VER >= 9 && GFX_VERx10 <= 120
    assert(GFX_VER < 12 || info->surf->tiling != ISL_TILING_W);
 
    /* From the SKL+ PRMs, RENDER_SURFACE_STATE:TileMode,
@@ -407,8 +523,14 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
     *    If Surface Format is ASTC*, this field must be TILEMODE_YMAJOR.
     */
    if (isl_format_get_layout(info->view->format)->txc == ISL_TXC_ASTC)
-      assert(info->surf->tiling == ISL_TILING_Y0);
+      assert(isl_tiling_is_any_y(info->surf->tiling));
 
+   s.TileMode = isl_encode_tiling[info->surf->tiling];
+   if (isl_tiling_is_std_y(info->surf->tiling))
+      s.TiledResourceMode = isl_tiling_encode_trmode[info->surf->tiling];
+#elif GFX_VER >= 8
+   assert(isl_format_get_layout(info->view->format)->txc != ISL_TXC_ASTC);
+   assert(!isl_tiling_is_std_y(info->surf->tiling));
    s.TileMode = isl_encode_tiling[info->surf->tiling];
 #else
    s.TiledSurface = info->surf->tiling != ISL_TILING_LINEAR,
@@ -422,13 +544,12 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    s.RenderCacheReadWriteMode = 0;
 #endif
 
-#if GFX_VER >= 11
-   /* We've seen dEQP failures when enabling this bit with UINT formats,
-    * which particularly affects blorp_copy() operations.  It shouldn't
-    * have any effect on UINT textures anyway, so disable it for them.
+#if GFX_VER >= 11 && GFX_VERx10 < 125
+   /* From the TGL PRM,
+    *
+    *    This bit should never be programmed to 0
     */
-   s.EnableUnormPathInColorPipe =
-      !isl_format_has_int_channel(info->view->format);
+   s.EnableUnormPathInColorPipe = true;
 #endif
 
    s.CubeFaceEnablePositiveZ = 1;
@@ -439,6 +560,19 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    s.CubeFaceEnableNegativeX = 1;
 
 #if GFX_VER >= 6
+   /* From the Broadwell PRM for "Number of Multisamples":
+    *
+    *    "If this field is any value other than MULTISAMPLECOUNT_1, Surface
+    *    Min LOD, Mip Count / LOD, and Resource Min LOD must be set to zero."
+    *
+    * This is fine because no 3D API allows multisampling and mipmapping at
+    * the same time.
+    */
+   if (info->surf->samples > 1) {
+      assert(info->view->min_lod_clamp == 0);
+      assert(info->view->base_level == 0);
+      assert(info->view->levels == 1);
+   }
    s.NumberofMultisamples = ffs(info->surf->samples) - 1;
 #if GFX_VER >= 7
    s.MultisampledSurfaceStorageFormat =
@@ -446,18 +580,48 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 #endif
 
-#if (GFX_VERx10 >= 75)
-   if (info->view->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT)
-      assert(isl_swizzle_supports_rendering(dev->info, info->view->swizzle));
+#if GFX_VER >= 7
+   s.ResourceMinLOD = info->view->min_lod_clamp;
 
-   s.ShaderChannelSelectRed = (enum GENX(ShaderChannelSelect)) info->view->swizzle.r;
-   s.ShaderChannelSelectGreen = (enum GENX(ShaderChannelSelect)) info->view->swizzle.g;
-   s.ShaderChannelSelectBlue = (enum GENX(ShaderChannelSelect)) info->view->swizzle.b;
-   s.ShaderChannelSelectAlpha = (enum GENX(ShaderChannelSelect)) info->view->swizzle.a;
+#if GFX_VERx10 >= 200
+   s.EnableSamplerRoutetoLSC =
+      isl_format_support_sampler_route_to_lsc(info->view->format) &&
+      s.SurfaceType == SURFTYPE_2D && info->view->array_len == 1;
+
+/* Wa_14018471104:
+ * For APIs that use ResourceMinLod, do the following: (remains same as before)
+ *    1. If ResourceMinLod == 0.0 then **Enable Sampler Route to LSC**
+ *       in RENDER SURFACE STATE to 1 else to 0
+ */
+#if INTEL_NEEDS_WA_14018471104
+   s.EnableSamplerRoutetoLSC &= info->view->min_lod_clamp == 0;
+#endif
+
+   /* Per application override. */
+   s.EnableSamplerRoutetoLSC &= dev->sampler_route_to_lsc;
+#endif /* if GFX_VERx10 >= 200 */
+
+#else
+   assert(info->view->min_lod_clamp == 0);
+#endif
+
+#if (GFX_VERx10 >= 75)
+   struct isl_swizzle swz = info->view->swizzle;
+   if (info->view->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
+      assert(isl_swizzle_supports_rendering(dev->info, swz));
+   } else {
+      swz = isl_get_shader_channel_select(info->view->format, swz);
+   }
+
+   s.ShaderChannelSelectRed = (enum GENX(ShaderChannelSelect)) swz.r;
+   s.ShaderChannelSelectGreen = (enum GENX(ShaderChannelSelect)) swz.g;
+   s.ShaderChannelSelectBlue = (enum GENX(ShaderChannelSelect)) swz.b;
+   s.ShaderChannelSelectAlpha = (enum GENX(ShaderChannelSelect)) swz.a;
 #else
    assert(isl_swizzle_is_identity(info->view->swizzle));
 #endif
 
+   assert(info->address % info->surf->alignment_B == 0);
    s.SurfaceBaseAddress = info->address;
 
 #if GFX_VER >= 6
@@ -508,7 +672,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
       if (GFX_VER >= 12) {
          assert(info->aux_usage == ISL_AUX_USAGE_MCS ||
                 info->aux_usage == ISL_AUX_USAGE_CCS_E ||
-                info->aux_usage == ISL_AUX_USAGE_GFX12_CCS_E ||
+                info->aux_usage == ISL_AUX_USAGE_FCV_CCS_E ||
                 info->aux_usage == ISL_AUX_USAGE_MC ||
                 info->aux_usage == ISL_AUX_USAGE_HIZ_CCS_WT ||
                 info->aux_usage == ISL_AUX_USAGE_MCS_CCS ||
@@ -543,7 +707,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
          assert(info->aux_usage == ISL_AUX_USAGE_STC_CCS);
 
       if (isl_aux_usage_has_hiz(info->aux_usage)) {
-         /* For Gfx8-10, there are some restrictions around sampling from HiZ.
+         /* For Gfx8-11, there are some restrictions around sampling from HiZ.
           * The Skylake PRM docs for RENDER_SURFACE_STATE::AuxiliarySurfaceMode
           * say:
           *
@@ -556,7 +720,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
           * say:
           *
           *    "If Number of multisamples > 1, programming this value means
-          *    MSAA compression is enabled for that surface. Auxillary surface
+          *    MSAA compression is enabled for that surface. Auxiliary surface
           *    is MSC with tile y."
           *
           * Since this interpretation ignores whether the surface is
@@ -564,11 +728,17 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
           * ISL_MSAA_LAYOUT_INTERLEAVED which is incompatible with MCS
           * compression, this means that we can't even specify MSAA depth CCS
           * in RENDER_SURFACE_STATE::AuxiliarySurfaceMode.
+          *
+          * On Xe2+, the above restriction is not mentioned in the
+          * RENDER_SURFACE_STATE::AuxiliarySurfaceMode.
+          *
+          * Bspec 57023 (r58975)
           */
-         assert(info->surf->samples == 1);
+         assert(GFX_VER >= 20 || info->surf->samples == 1);
 
-         /* The dimension must not be 3D */
-         assert(info->surf->dim != ISL_SURF_DIM_3D);
+         /* Prior to Gfx12, the dimension must not be 3D */
+         if (info->aux_usage == ISL_AUX_USAGE_HIZ)
+            assert(info->surf->dim != ISL_SURF_DIM_3D);
 
          /* The format must be one of the following: */
          switch (info->view->format) {
@@ -591,8 +761,22 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
             isl_get_render_compression_format(info->surf->format);
       }
 #endif
-#if GFX_VER >= 12
+#if GFX_VER == 12
       s.MemoryCompressionEnable = info->aux_usage == ISL_AUX_USAGE_MC;
+
+      /* The Tiger Lake PRM for RENDER_SURFACE_STATE::DecompressInL3 says:
+       *
+       *    When this field is set to 1h, the associated compressible surface,
+       *    when accessed by sampler and data-port, will be uncompressed in
+       *    L3. If the surface is not compressible, this bit field is ignored.
+       *
+       * The sampler's decompressor seems to lack support for some types of
+       * format re-interpretation. Use the more capable decompressor for these
+       * cases.
+       */
+      s.DecompressInL3 =
+         !isl_formats_have_same_bits_per_channel(info->surf->format,
+                                                 info->view->format);
 #endif
 #if GFX_VER >= 9
       /* Some CCS aux usages have format restrictions. The Skylake PRM doc for
@@ -604,8 +788,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
        *
        * If CCS_E is in use, the format must support it.
        */
-      if (info->aux_usage == ISL_AUX_USAGE_CCS_E ||
-          info->aux_usage == ISL_AUX_USAGE_GFX12_CCS_E)
+      if (isl_aux_usage_has_ccs_e(info->aux_usage))
          assert(isl_format_supports_ccs_e(dev->info, info->view->format));
 
       /* It also says:
@@ -637,7 +820,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
    }
 
-   /* The auxiliary buffer info is filled when it's useable by the HW.
+   /* The auxiliary buffer info is filled when it's usable by the HW.
     *
     * Starting with Gfx12, the only form of compression that can be used
     * with RENDER_SURFACE_STATE which requires an aux surface is MCS.
@@ -657,6 +840,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
       uint32_t pitch_in_tiles =
          info->aux_surf->row_pitch_B / tile_info.phys_extent_B.width;
 
+      assert(info->aux_address % info->aux_surf->alignment_B == 0);
       s.AuxiliarySurfaceBaseAddress = info->aux_address;
       s.AuxiliarySurfacePitch = pitch_in_tiles - 1;
 
@@ -691,7 +875,7 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
          /* From the SKL PRM, Programming Note under Sampler Output Channel
           * Mapping:
           *
-          *    If a surface has an associated HiZ Auxilliary surface, the
+          *    If a surface has an associated HiZ Auxiliary surface, the
           *    Sampler L2 Bypass Mode Disable field in the RENDER_SURFACE_STATE
           *    must be set.
           */
@@ -704,35 +888,20 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 
    if (isl_aux_usage_has_fast_clears(info->aux_usage)) {
       if (info->use_clear_address) {
-#if GFX_VER >= 10
+#if GFX_VER > 10 && GFX_VER < 20
          s.ClearValueAddressEnable = true;
          s.ClearValueAddress = info->clear_address;
 #else
-         unreachable("Gfx9 and earlier do not support indirect clear colors");
+         unreachable("Only Gfx11 and Gfx12 support indirect clear colors");
 #endif
       }
 
-#if GFX_VER == 11
-      /*
-       * From BXML > GT > Shared Functions > vol5c Shared Functions >
-       * [Structure] RENDER_SURFACE_STATE [BDW+] > ClearColorConversionEnable:
-       *
-       *   Project: Gfx11
-       *
-       *   "Enables Pixel backend hw to convert clear values into native format
-       *    and write back to clear address, so that display and sampler can use
-       *    the converted value for resolving fast cleared RTs."
-       *
-       * Summary:
-       *   Clear color conversion must be enabled if the clear color is stored
-       *   indirectly and fast color clears are enabled.
+#if GFX_VER >= 20
+      /* According to Bspec 57023 >> RENDER_SURFACE_STATE, the clear value
+       * address and explicit clear value are removed since Xe2.
        */
-      if (info->use_clear_address) {
-         s.ClearColorConversionEnable = true;
-      }
-#endif
-
-#if GFX_VER >= 12
+      assert(!info->use_clear_address);
+#elif GFX_VER >= 12
       assert(info->use_clear_address);
 #elif GFX_VER >= 9
       if (!info->use_clear_address) {
@@ -777,7 +946,7 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    uint64_t buffer_size = info->size_B;
 
    /* Uniform and Storage buffers need to have surface size not less that the
-    * aligned 32-bit size of the buffer. To calculate the array lenght on
+    * aligned 32-bit size of the buffer. To calculate the array length on
     * unsized arrays in StorageBuffer the last 2 bits store the padding size
     * added to the surface, so we can calculate latter the original buffer
     * size to know the number of elements.
@@ -805,8 +974,25 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
        *
        *    For typed buffer and structured buffer surfaces, the number
        *    of entries in the buffer ranges from 1 to 2^27.
+       *
+       * We could assert(num_elements <= (1 << 27)) here, but some DX12 games
+       * misbehave and there's nothing either vkd3d or Anv can do about it.
+       * Therefore we just allow those cases to happen in order to avoid
+       * crashing or further breaking the applications.
+       *
+       * Applications causing this issue generally ignore
+       * PhysicalDevice::maxTexelBufferElements, leading them to disrespect
+       * restrictions such as:
+       *   VUID-VkDescriptorGetInfoEXT-type-09427
+       *   VUID-VkDescriptorGetInfoEXT-type-09428
+       *   VUID-VkBufferViewCreateInfo-range-00930
+       *   VUID-VkBufferViewCreateInfo-range-04059
        */
-      assert(num_elements <= (1ull << 27));
+      if (num_elements > (1 << 27)) {
+         mesa_logw("%s: num_elements is too big: %u (buffer size: %"PRIu64")\n",
+                   __func__, num_elements, buffer_size);
+         num_elements = 1 << 27;
+      }
    }
 
    struct GENX(RENDER_SURFACE_STATE) s = { 0, };
@@ -843,7 +1029,11 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 #endif
 
-#if GFX_VER >= 7
+#if GFX_VER >= 9
+   s.Height = ((num_elements - 1) >> 7) & 0x3fff;
+   s.Width = (num_elements - 1) & 0x7f;
+   s.Depth = ((num_elements - 1) >> 21) & 0x7ff;
+#elif GFX_VER >= 7
    s.Height = ((num_elements - 1) >> 7) & 0x3fff;
    s.Width = (num_elements - 1) & 0x7f;
    s.Depth = ((num_elements - 1) >> 21) & 0x3ff;
@@ -852,25 +1042,6 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    s.Width = (num_elements - 1) & 0x7f;
    s.Depth = ((num_elements - 1) >> 20) & 0x7f;
 #endif
-
-   if (GFX_VER == 12 && dev->info->revision == 0) {
-      /* TGL-LP A0 has a HW bug (fixed in later HW) which causes buffer
-       * textures with very close base addresses (delta < 64B) to corrupt each
-       * other.  We can sort-of work around this by making small buffer
-       * textures 1D textures instead.  This doesn't fix the problem for large
-       * buffer textures but the liklihood of large, overlapping, and very
-       * close buffer textures is fairly low and the point is to hack around
-       * the bug so we can run apps and tests.
-       */
-       if (info->format != ISL_FORMAT_RAW &&
-           info->stride_B == isl_format_get_layout(info->format)->bpb / 8 &&
-           num_elements <= (1 << 14)) {
-         s.SurfaceType = SURFTYPE_1D;
-         s.Width = num_elements - 1;
-         s.Height = 0;
-         s.Depth = 0;
-      }
-   }
 
 #if GFX_VER >= 6
    s.NumberofMultisamples = MULTISAMPLECOUNT_1;
@@ -888,24 +1059,56 @@ isl_genX(buffer_fill_state_s)(const struct isl_device *dev, void *state,
    s.RenderCacheReadWriteMode = 0;
 #endif
 
+#if GFX_VERx10 >= 200
+   s.EnableSamplerRoutetoLSC = isl_format_support_sampler_route_to_lsc(info->format);
+#endif /* if GFX_VERx10 >= 200 */
+
    s.SurfaceBaseAddress = info->address;
 #if GFX_VER >= 6
    s.MOCS = info->mocs;
 #endif
 
+#if GFX_VER >= 9
+   /* Store the buffer size in the upper dword of the AUX surface base
+    * address. Only enabled on Gfx9+ since Gfx8 has an Atom version with only
+    * 32bits of address space.
+    */
+   if (dev->buffer_length_in_aux_addr) {
+      assert(intel_needs_workaround(dev->info, 14019708328) == false);
+      s.AuxiliarySurfaceBaseAddress = info->size_B << 32;
+   } else {
+      /* Wa_14019708328: all SURFTYPE_BUFFERs has
+       * AuxiliarySurfaceMode == AUX_NONE so no need to check for it.
+       * In case workaround is not needed and buffer_length_in_aux_addr is
+       * false, it will set AuxiliarySurfaceBaseAddress to 0.
+       */
+      s.AuxiliarySurfaceBaseAddress = dev->dummy_aux_address;
+   }
+#else
+   assert(!dev->buffer_length_in_aux_addr);
+#endif
+
+#if GFX_VERx10 >= 125
+   /* Setting L1 caching policy to Write-back mode. */
+   s.L1CacheControl = L1CC_WB;
+#endif
+
 #if (GFX_VERx10 >= 75)
-   s.ShaderChannelSelectRed = (enum GENX(ShaderChannelSelect)) info->swizzle.r;
-   s.ShaderChannelSelectGreen = (enum GENX(ShaderChannelSelect)) info->swizzle.g;
-   s.ShaderChannelSelectBlue = (enum GENX(ShaderChannelSelect)) info->swizzle.b;
-   s.ShaderChannelSelectAlpha = (enum GENX(ShaderChannelSelect)) info->swizzle.a;
+   struct isl_swizzle swz = isl_get_shader_channel_select(info->format,
+                                                          info->swizzle);
+
+   s.ShaderChannelSelectRed = (enum GENX(ShaderChannelSelect)) swz.r;
+   s.ShaderChannelSelectGreen = (enum GENX(ShaderChannelSelect)) swz.g;
+   s.ShaderChannelSelectBlue = (enum GENX(ShaderChannelSelect)) swz.b;
+   s.ShaderChannelSelectAlpha = (enum GENX(ShaderChannelSelect)) swz.a;
 #endif
 
    GENX(RENDER_SURFACE_STATE_pack)(NULL, state, &s);
 }
 
 void
-isl_genX(null_fill_state)(const struct isl_device *dev, void *state,
-                          const struct isl_null_fill_state_info *restrict info)
+isl_genX(null_fill_state_s)(const struct isl_device *dev, void *state,
+                            const struct isl_null_fill_state_info *restrict info)
 {
    struct GENX(RENDER_SURFACE_STATE) s = {
       .SurfaceType = SURFTYPE_NULL,

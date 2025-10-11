@@ -42,7 +42,8 @@ void crocus_blitter_begin(struct crocus_context *ice, enum crocus_blitter_op op,
    util_blitter_save_geometry_shader(ice->blitter, ice->shaders.uncompiled[MESA_SHADER_GEOMETRY]);
    util_blitter_save_so_targets(ice->blitter, ice->state.so_targets,
                                 (struct pipe_stream_output_target**)ice->state.so_target);
-   util_blitter_save_vertex_buffer_slot(ice->blitter, ice->state.vertex_buffers);
+   util_blitter_save_vertex_buffers(ice->blitter, ice->state.vertex_buffers,
+                                    util_last_bit(ice->state.bound_vertex_buffers));
    util_blitter_save_vertex_elements(ice->blitter, (void *)ice->state.cso_vertex_elements);
    if (op & CROCUS_SAVE_FRAGMENT_STATE) {
       util_blitter_save_blend(ice->blitter, ice->state.cso_blend);
@@ -278,8 +279,6 @@ crocus_blorp_surf_for_resource(struct crocus_vtable *vtbl,
 {
    struct crocus_resource *res = (void *) p_res;
 
-   assert(!crocus_resource_unfinished_aux_import(res));
-
    if (isl_aux_usage_has_hiz(aux_usage) &&
        !crocus_resource_level_has_hiz(res, level))
       aux_usage = ISL_AUX_USAGE_NONE;
@@ -374,7 +373,7 @@ crocus_u_blitter(struct crocus_context *ice,
    if (!util_format_has_alpha(dinfo.dst.resource->format))
       dinfo.mask &= ~PIPE_MASK_A;
    crocus_blitter_begin(ice, CROCUS_SAVE_FRAMEBUFFER | CROCUS_SAVE_TEXTURES | CROCUS_SAVE_FRAGMENT_STATE, info->render_condition_enable);
-   util_blitter_blit(ice->blitter, &dinfo);
+   util_blitter_blit(ice->blitter, &dinfo, NULL);
 }
 
 /**
@@ -413,7 +412,7 @@ crocus_blit(struct pipe_context *ctx, const struct pipe_blit_info *info)
                struct pipe_blit_info depth_blit = *info;
                depth_blit.mask = PIPE_MASK_Z;
                crocus_blitter_begin(ice, CROCUS_SAVE_FRAMEBUFFER | CROCUS_SAVE_TEXTURES | CROCUS_SAVE_FRAGMENT_STATE, info->render_condition_enable);
-               util_blitter_blit(ice->blitter, &depth_blit);
+               util_blitter_blit(ice->blitter, &depth_blit, NULL);
 
                struct pipe_surface *dst_view, dst_templ;
                util_blitter_default_dst_texture(&dst_templ, info->dst.resource, info->dst.level, info->dst.box.z);
@@ -552,11 +551,6 @@ use_blorp:
          pipe_format_for_aspect(info->src.format, aspect);
       enum pipe_format dst_pfmt =
          pipe_format_for_aspect(info->dst.format, aspect);
-
-      if (crocus_resource_unfinished_aux_import(src_res))
-         crocus_resource_finish_aux_import(ctx->screen, src_res);
-      if (crocus_resource_unfinished_aux_import(dst_res))
-         crocus_resource_finish_aux_import(ctx->screen, dst_res);
 
       struct crocus_format_info src_fmt =
          crocus_format_for_usage(devinfo, src_pfmt, ISL_SURF_USAGE_TEXTURE_BIT);
@@ -776,13 +770,7 @@ crocus_resource_copy_region(struct pipe_context *ctx,
    struct crocus_batch *batch = &ice->batches[CROCUS_BATCH_RENDER];
    struct crocus_screen *screen = (struct crocus_screen *)ctx->screen;
    const struct intel_device_info *devinfo = &screen->devinfo;
-   struct crocus_resource *src = (void *) p_src;
    struct crocus_resource *dst = (void *) p_dst;
-
-   if (crocus_resource_unfinished_aux_import(src))
-      crocus_resource_finish_aux_import(ctx->screen, src);
-   if (crocus_resource_unfinished_aux_import(dst))
-      crocus_resource_finish_aux_import(ctx->screen, dst);
 
    if (devinfo->ver < 6 && util_format_is_depth_or_stencil(p_dst->format)) {
       util_resource_copy_region(ctx, p_dst, dst_level, dstx, dsty, dstz,

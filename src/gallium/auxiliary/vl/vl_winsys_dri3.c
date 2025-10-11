@@ -133,13 +133,21 @@ dri3_handle_stamps(struct vl_dri3_screen *scrn, uint64_t ust, uint64_t msc)
    scrn->last_msc = msc;
 }
 
-static void
+/* XXX this belongs in presentproto */
+#ifndef PresentWindowDestroyed
+#define PresentWindowDestroyed (1 << 0)
+#endif
+static bool
 dri3_handle_present_event(struct vl_dri3_screen *scrn,
                           xcb_present_generic_event_t *ge)
 {
    switch (ge->evtype) {
    case XCB_PRESENT_CONFIGURE_NOTIFY: {
       xcb_present_configure_notify_event_t *ce = (void *) ge;
+      if (ce->pixmap_flags & PresentWindowDestroyed) {
+         free(ge);
+         return false;
+      }
       scrn->width = ce->width;
       scrn->height = ce->height;
       break;
@@ -171,6 +179,7 @@ dri3_handle_present_event(struct vl_dri3_screen *scrn,
    }
    }
    free(ge);
+   return true;
 }
 
 static void
@@ -179,8 +188,10 @@ dri3_flush_present_events(struct vl_dri3_screen *scrn)
    if (scrn->special_event) {
       xcb_generic_event_t *ev;
       while ((ev = xcb_poll_for_special_event(
-                   scrn->conn, scrn->special_event)) != NULL)
-         dri3_handle_present_event(scrn, (xcb_present_generic_event_t *)ev);
+                   scrn->conn, scrn->special_event)) != NULL) {
+         if (!dri3_handle_present_event(scrn, (xcb_present_generic_event_t *)ev))
+            break;
+      }
    }
 }
 
@@ -192,8 +203,7 @@ dri3_wait_present_events(struct vl_dri3_screen *scrn)
       ev = xcb_wait_for_special_event(scrn->conn, scrn->special_event);
       if (!ev)
          return false;
-      dri3_handle_present_event(scrn, (xcb_present_generic_event_t *)ev);
-      return true;
+      return dri3_handle_present_event(scrn, (xcb_present_generic_event_t *)ev);
    }
    return false;
 }
@@ -542,26 +552,12 @@ free_buffer:
    return NULL;
 }
 
-static xcb_screen_t *
-dri3_get_screen_for_root(xcb_connection_t *conn, xcb_window_t root)
-{
-   xcb_screen_iterator_t screen_iter =
-   xcb_setup_roots_iterator(xcb_get_setup(conn));
-
-   for (; screen_iter.rem; xcb_screen_next (&screen_iter)) {
-      if (screen_iter.data->root == root)
-         return screen_iter.data;
-   }
-
-   return NULL;
-}
-
 static void
 vl_dri3_flush_frontbuffer(struct pipe_screen *screen,
                           struct pipe_context *pipe,
                           struct pipe_resource *resource,
                           unsigned level, unsigned layer,
-                          void *context_private, struct pipe_box *sub_box)
+                          void *context_private, unsigned nboxes, struct pipe_box *sub_box)
 {
    struct vl_dri3_screen *scrn = (struct vl_dri3_screen *)context_private;
    uint32_t options = XCB_PRESENT_OPTION_NONE;
@@ -811,14 +807,14 @@ vl_dri3_screen_create(Display *display, int screen)
    fcntl(fd, F_SETFD, FD_CLOEXEC);
    free(open_reply);
 
-   fd = loader_get_user_preferred_fd(fd, &scrn->is_different_gpu);
+   scrn->is_different_gpu = loader_get_user_preferred_fd(&fd, NULL);
 
    geom_cookie = xcb_get_geometry(scrn->conn, RootWindow(display, screen));
    geom_reply = xcb_get_geometry_reply(scrn->conn, geom_cookie, NULL);
    if (!geom_reply)
       goto close_fd;
 
-   scrn->base.xcb_screen = dri3_get_screen_for_root(scrn->conn, geom_reply->root);
+   scrn->base.xcb_screen = vl_dri_get_screen_for_root(scrn->conn, geom_reply->root);
    if (!scrn->base.xcb_screen) {
       free(geom_reply);
       goto close_fd;
@@ -832,8 +828,8 @@ vl_dri3_screen_create(Display *display, int screen)
    scrn->base.color_depth = geom_reply->depth;
    free(geom_reply);
 
-   if (pipe_loader_drm_probe_fd(&scrn->base.dev, fd))
-      scrn->base.pscreen = pipe_loader_create_screen(scrn->base.dev);
+   if (pipe_loader_drm_probe_fd(&scrn->base.dev, fd, false))
+      scrn->base.pscreen = pipe_loader_create_screen(scrn->base.dev, false);
 
    if (!scrn->base.pscreen)
       goto release_pipe;

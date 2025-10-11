@@ -36,19 +36,14 @@
 
 #ifdef HAVE_PERFETTO
 
-#include "util/u_perfetto.h"
+#include "util/perf/u_perfetto.h"
+#include "util/perf/u_perfetto_renderpass.h"
 
 #include "intel_tracepoints_perfetto.h"
 
 /* Just naming stages */
 static const struct {
    const char *name;
-
-   /* Tells us if a given stage is pipelined. This is used to build stacks of
-    * pipelined elements so that the perfetto UI doesn't get confused by elements
-    * ending out of order.
-    */
-   bool pipelined;
 
    /* The perfetto UI requires that there is a parent-child relationship
     * within a row of elements. Which means that all children elements must
@@ -61,34 +56,52 @@ static const struct {
 } intel_queue_stage_desc[INTEL_DS_QUEUE_STAGE_N_STAGES] = {
    /* Order must match the enum! */
    {
+      "queue",
+      INTEL_DS_QUEUE_STAGE_QUEUE,
+   },
+   {
+      "frame",
+      INTEL_DS_QUEUE_STAGE_FRAME,
+   },
+   {
       "cmd-buffer",
-      false,
       INTEL_DS_QUEUE_STAGE_CMD_BUFFER,
    },
    {
+      "internal-ops",
+      INTEL_DS_QUEUE_STAGE_INTERNAL_OPS,
+   },
+   {
       "stall",
-      false,
       INTEL_DS_QUEUE_STAGE_STALL,
    },
    {
       "compute",
-      true,
       INTEL_DS_QUEUE_STAGE_COMPUTE,
    },
    {
+      "as-build",
+      INTEL_DS_QUEUE_STAGE_AS,
+   },
+   {
+      "RT",
+      INTEL_DS_QUEUE_STAGE_RT,
+   },
+   {
       "render-pass",
-      true,
       INTEL_DS_QUEUE_STAGE_RENDER_PASS,
    },
    {
       "blorp",
-      true,
       INTEL_DS_QUEUE_STAGE_BLORP,
    },
    {
       "draw",
-      true,
       INTEL_DS_QUEUE_STAGE_DRAW,
+   },
+   {
+      "draw_mesh",
+      INTEL_DS_QUEUE_STAGE_DRAW_MESH,
    },
 };
 
@@ -100,38 +113,12 @@ struct IntelRenderpassTraits : public perfetto::DefaultDataSourceTraits {
    using IncrementalStateType = IntelRenderpassIncrementalState;
 };
 
-class IntelRenderpassDataSource : public perfetto::DataSource<IntelRenderpassDataSource,
-                                                            IntelRenderpassTraits> {
+class IntelRenderpassDataSource : public MesaRenderpassDataSource<IntelRenderpassDataSource,
+                                                                  IntelRenderpassTraits> {
 public:
-   void OnSetup(const SetupArgs &) override
-   {
-      // Use this callback to apply any custom configuration to your data source
-      // based on the TraceConfig in SetupArgs.
-   }
-
-   void OnStart(const StartArgs &) override
-   {
-      // This notification can be used to initialize the GPU driver, enable
-      // counters, etc. StartArgs will contains the DataSourceDescriptor,
-      // which can be extended.
-      u_trace_perfetto_start();
-      PERFETTO_LOG("Tracing started");
-   }
-
-   void OnStop(const StopArgs &) override
-   {
-      PERFETTO_LOG("Tracing stopped");
-
-      // Undo any initialization done in OnStart.
-      u_trace_perfetto_stop();
-      // TODO we should perhaps block until queued traces are flushed?
-
-      Trace([](IntelRenderpassDataSource::TraceContext ctx) {
-         auto packet = ctx.NewTracePacket();
-         packet->Finalize();
-         ctx.Flush();
-      });
-   }
+   /* Make sure we're not losing traces due to lack of shared memory space */
+   constexpr static perfetto::BufferExhaustedPolicy kBufferExhaustedPolicy =
+      perfetto::BufferExhaustedPolicy::kDrop;
 };
 
 PERFETTO_DECLARE_DATA_SOURCE_STATIC_MEMBERS(IntelRenderpassDataSource);
@@ -139,25 +126,22 @@ PERFETTO_DEFINE_DATA_SOURCE_STATIC_MEMBERS(IntelRenderpassDataSource);
 
 using perfetto::protos::pbzero::InternedGpuRenderStageSpecification_RenderStageCategory;
 
-enum InternedGpuRenderStageSpecification_RenderStageCategory
-i915_engine_class_to_category(enum drm_i915_gem_engine_class engine_class)
-{
-   switch (engine_class) {
-   case I915_ENGINE_CLASS_RENDER:
-      return InternedGpuRenderStageSpecification_RenderStageCategory::
-         InternedGpuRenderStageSpecification_RenderStageCategory_GRAPHICS;
-   default:
-      return InternedGpuRenderStageSpecification_RenderStageCategory::InternedGpuRenderStageSpecification_RenderStageCategory_OTHER;
-   }
-}
-
 static void
 sync_timestamp(IntelRenderpassDataSource::TraceContext &ctx,
                struct intel_ds_device *device)
 {
-   uint64_t cpu_ts = perfetto::base::GetBootTimeNs().count();
-   uint64_t gpu_ts = intel_device_info_timebase_scale(&device->info,
-                                                      intel_read_gpu_timestamp(device->fd));
+   uint64_t cpu_ts, gpu_ts;
+
+   if (!intel_gem_read_correlate_cpu_gpu_timestamp(device->fd,
+                                                   device->info.kmd_type,
+                                                   INTEL_ENGINE_CLASS_RENDER, 0,
+                                                   CLOCK_BOOTTIME,
+                                                   &cpu_ts, &gpu_ts, NULL)) {
+      cpu_ts = perfetto::base::GetBootTimeNs().count();
+      intel_gem_read_render_timestamp(device->fd, device->info.kmd_type,
+                                      &gpu_ts);
+   }
+   gpu_ts = intel_device_info_timebase_scale(&device->info, gpu_ts);
 
    if (cpu_ts < device->next_clock_sync_ns)
       return;
@@ -167,38 +151,20 @@ sync_timestamp(IntelRenderpassDataSource::TraceContext &ctx,
    device->sync_gpu_ts = gpu_ts;
    device->next_clock_sync_ns = cpu_ts + 1000000000ull;
 
-   auto packet = ctx.NewTracePacket();
-
-   packet->set_timestamp_clock_id(perfetto::protos::pbzero::BUILTIN_CLOCK_BOOTTIME);
-   packet->set_timestamp(cpu_ts);
-
-   auto event = packet->set_clock_snapshot();
-   {
-      auto clock = event->add_clocks();
-
-      clock->set_clock_id(perfetto::protos::pbzero::BUILTIN_CLOCK_BOOTTIME);
-      clock->set_timestamp(cpu_ts);
-   }
-   {
-      auto clock = event->add_clocks();
-
-      clock->set_clock_id(device->gpu_clock_id);
-      clock->set_timestamp(gpu_ts);
-   }
+   MesaRenderpassDataSource<IntelRenderpassDataSource, IntelRenderpassTraits>::EmitClockSync(ctx,
+      cpu_ts, gpu_ts, device->gpu_clock_id);
 }
 
 static void
 send_descriptors(IntelRenderpassDataSource::TraceContext &ctx,
                  struct intel_ds_device *device)
 {
-   struct intel_ds_queue *queue;
-
    PERFETTO_LOG("Sending renderstage descriptors");
 
    device->event_id = 0;
-   u_vector_foreach(queue, &device->queues) {
+   list_for_each_entry_safe(struct intel_ds_queue, queue, &device->queues, link) {
       for (uint32_t s = 0; s < ARRAY_SIZE(queue->stages); s++) {
-         queue->stages[s].start_ns = 0;
+         queue->stages[s].start_ns[0] = 0;
       }
    }
 
@@ -217,10 +183,10 @@ send_descriptors(IntelRenderpassDataSource::TraceContext &ctx,
          desc->set_pid(getpid());
          switch (device->api) {
          case INTEL_DS_API_OPENGL:
-            desc->set_api(perfetto::protos::pbzero::InternedGraphicsContext_Api_OPEN_GL);
+            desc->set_api(perfetto::protos::pbzero::InternedGraphicsContext_Api::OPEN_GL);
             break;
          case INTEL_DS_API_VULKAN:
-            desc->set_api(perfetto::protos::pbzero::InternedGraphicsContext_Api_VULKAN);
+            desc->set_api(perfetto::protos::pbzero::InternedGraphicsContext_Api::VULKAN);
             break;
          default:
             break;
@@ -228,7 +194,7 @@ send_descriptors(IntelRenderpassDataSource::TraceContext &ctx,
       }
 
       /* Emit all the IID picked at device/queue creation. */
-      u_vector_foreach(queue, &device->queues) {
+      list_for_each_entry_safe(struct intel_ds_queue, queue, &device->queues, link) {
          for (unsigned s = 0; s < INTEL_DS_QUEUE_STAGE_N_STAGES; s++) {
             {
                /* We put the stage number in there so that all rows are order
@@ -243,12 +209,19 @@ send_descriptors(IntelRenderpassDataSource::TraceContext &ctx,
                desc->set_iid(queue->stages[s].queue_iid);
                desc->set_name(name);
             }
-            {
-               auto desc = interned_data->add_gpu_specifications();
-               desc->set_iid(queue->stages[s].stage_iid);
-               desc->set_name(intel_queue_stage_desc[s].name);
-            }
          }
+      }
+
+      for (unsigned i = 0; i < ARRAY_SIZE(intel_tracepoint_names); i++) {
+         /* Skip the begin tracepoint, the label represent the couple of
+          * begin/end tracepoints.
+          */
+         if (strstr(intel_tracepoint_names[i], "intel_begin_") != NULL)
+            continue;
+
+         auto desc = interned_data->add_gpu_specifications();
+         desc->set_iid(device->tracepoint_iids[i]);
+         desc->set_name(intel_tracepoint_names[i] + strlen("intel_end_"));
       }
    }
 
@@ -256,28 +229,35 @@ send_descriptors(IntelRenderpassDataSource::TraceContext &ctx,
    sync_timestamp(ctx, device);
 }
 
-typedef void (*trace_payload_as_extra_func)(perfetto::protos::pbzero::GpuRenderStageEvent *, const void*);
-
 static void
 begin_event(struct intel_ds_queue *queue, uint64_t ts_ns,
             enum intel_ds_queue_stage stage_id)
 {
+   uint32_t level = queue->stages[stage_id].level;
    /* If we haven't managed to calibrate the alignment between GPU and CPU
     * timestamps yet, then skip this trace, otherwise perfetto won't know
     * what to do with it.
     */
    if (!queue->device->sync_gpu_ts) {
-      queue->stages[stage_id].start_ns = 0;
+      queue->stages[stage_id].start_ns[level] = 0;
       return;
    }
 
-   queue->stages[stage_id].start_ns = ts_ns;
+   if (level >= (ARRAY_SIZE(queue->stages[stage_id].start_ns) - 1))
+      return;
+
+   queue->stages[stage_id].start_ns[level] = ts_ns;
+   queue->stages[stage_id].level++;
 }
 
 static void
 end_event(struct intel_ds_queue *queue, uint64_t ts_ns,
           enum intel_ds_queue_stage stage_id,
-          uint32_t submission_id, const void* payload = nullptr,
+          uint32_t submission_id,
+          uint16_t tracepoint_idx,
+          const char *app_event,
+          const void *payload = nullptr,
+          const void *indirect_data = nullptr,
           trace_payload_as_extra_func payload_as_extra = nullptr)
 {
    struct intel_ds_device *device = queue->device;
@@ -289,13 +269,15 @@ end_event(struct intel_ds_queue *queue, uint64_t ts_ns,
    if (!device->sync_gpu_ts)
       return;
 
+   if (queue->stages[stage_id].level == 0)
+      return;
+
+   uint32_t level = --queue->stages[stage_id].level;
    struct intel_ds_stage *stage = &queue->stages[stage_id];
-   uint64_t start_ns = stage->start_ns;
+   uint64_t start_ns = stage->start_ns[level];
 
    if (!start_ns)
       return;
-
-   uint64_t evt_id = device->event_id++;
 
    IntelRenderpassDataSource::Trace([=](IntelRenderpassDataSource::TraceContext tctx) {
       if (auto state = tctx.GetIncrementalState(); state->was_cleared) {
@@ -304,6 +286,16 @@ end_event(struct intel_ds_queue *queue, uint64_t ts_ns,
       }
 
       sync_timestamp(tctx, queue->device);
+
+      uint64_t evt_id = device->event_id++;
+
+      /* If this is an application event, we might need to generate a new
+       * stage_iid if not already seen. Otherwise, it's a driver event and we
+       * have use the internal stage_iid.
+       */
+      uint64_t stage_iid = app_event ?
+         tctx.GetDataSourceLocked()->debug_marker_stage(tctx, app_event) :
+         device->tracepoint_iids[tracepoint_idx];
 
       auto packet = tctx.NewTracePacket();
 
@@ -316,18 +308,18 @@ end_event(struct intel_ds_queue *queue, uint64_t ts_ns,
       event->set_gpu_id(queue->device->gpu_id);
 
       event->set_hw_queue_iid(stage->queue_iid);
-      event->set_stage_iid(stage->stage_iid);
+      event->set_stage_iid(stage_iid);
       event->set_context(queue->device->iid);
       event->set_event_id(evt_id);
       event->set_duration(ts_ns - start_ns);
       event->set_submission_id(submission_id);
 
-      if (payload && payload_as_extra) {
-         payload_as_extra(event, payload);
+      if ((payload || indirect_data) && payload_as_extra) {
+         payload_as_extra(event, payload, indirect_data);
       }
    });
 
-   stage->start_ns = 0;
+   stage->start_ns[level] = 0;
 }
 
 static void
@@ -340,12 +332,13 @@ custom_trace_payload_as_extra_end_stall(perfetto::protos::pbzero::GpuRenderStage
       auto data = event->add_extra_data();
       data->set_name("stall_reason");
 
-      snprintf(buf, sizeof(buf), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s : %s",
+      snprintf(buf, sizeof(buf), "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s : %s%s%s%s%s%s%s",
               (payload->flags & INTEL_DS_DEPTH_CACHE_FLUSH_BIT) ? "+depth_flush" : "",
               (payload->flags & INTEL_DS_DATA_CACHE_FLUSH_BIT) ? "+dc_flush" : "",
               (payload->flags & INTEL_DS_HDC_PIPELINE_FLUSH_BIT) ? "+hdc_flush" : "",
               (payload->flags & INTEL_DS_RENDER_TARGET_CACHE_FLUSH_BIT) ? "+rt_flush" : "",
               (payload->flags & INTEL_DS_TILE_CACHE_FLUSH_BIT) ? "+tile_flush" : "",
+              (payload->flags & INTEL_DS_L3_FABRIC_FLUSH_BIT) ? "+l3_fabric_flush" : "",
               (payload->flags & INTEL_DS_STATE_CACHE_INVALIDATE_BIT) ? "+state_inv" : "",
               (payload->flags & INTEL_DS_CONST_CACHE_INVALIDATE_BIT) ? "+const_inv" : "",
               (payload->flags & INTEL_DS_VF_CACHE_INVALIDATE_BIT) ? "+vf_inv" : "",
@@ -353,9 +346,17 @@ custom_trace_payload_as_extra_end_stall(perfetto::protos::pbzero::GpuRenderStage
               (payload->flags & INTEL_DS_INST_CACHE_INVALIDATE_BIT) ? "+inst_inv" : "",
               (payload->flags & INTEL_DS_STALL_AT_SCOREBOARD_BIT) ? "+pb_stall" : "",
               (payload->flags & INTEL_DS_DEPTH_STALL_BIT) ? "+depth_stall" : "",
-              (payload->flags & INTEL_DS_HDC_PIPELINE_FLUSH_BIT) ? "+hdc_flush" : "",
               (payload->flags & INTEL_DS_CS_STALL_BIT) ? "+cs_stall" : "",
-              payload->reason ? payload->reason : "unknown");
+              (payload->flags & INTEL_DS_UNTYPED_DATAPORT_CACHE_FLUSH_BIT) ? "+udp_flush" : "",
+              (payload->flags & INTEL_DS_END_OF_PIPE_BIT) ? "+eop" : "",
+              (payload->flags & INTEL_DS_CCS_CACHE_FLUSH_BIT) ? "+ccs_flush" : "",
+              (payload->reason1) ? payload->reason1 : "unknown",
+              (payload->reason2) ? "; " : "",
+              (payload->reason2) ? payload->reason2 : "",
+              (payload->reason3) ? "; " : "",
+              (payload->reason3) ? payload->reason3 : "",
+              (payload->reason4) ? "; " : "",
+              (payload->reason4) ? payload->reason4 : "");
 
       assert(strlen(buf) > 0);
 
@@ -380,8 +381,10 @@ extern "C" {
    void                                                                 \
    intel_ds_begin_##event_name(struct intel_ds_device *device,          \
                                uint64_t ts_ns,                          \
+                               uint16_t tp_idx,                         \
                                const void *flush_data,                  \
-                               const struct trace_intel_begin_##event_name *payload) \
+                               const struct trace_intel_begin_##event_name *payload, \
+                               const void *indirect_data)               \
    {                                                                    \
       const struct intel_ds_flush_data *flush =                         \
          (const struct intel_ds_flush_data *) flush_data;               \
@@ -391,22 +394,23 @@ extern "C" {
    void                                                                 \
    intel_ds_end_##event_name(struct intel_ds_device *device,            \
                              uint64_t ts_ns,                            \
+                             uint16_t tp_idx,                           \
                              const void *flush_data,                    \
-                             const struct trace_intel_end_##event_name *payload) \
+                             const struct trace_intel_end_##event_name *payload, \
+                             const void *indirect_data)                 \
    {                                                                    \
       const struct intel_ds_flush_data *flush =                         \
          (const struct intel_ds_flush_data *) flush_data;               \
       end_event(flush->queue, ts_ns, stage, flush->submission_id,       \
-                payload,                                                \
+                tp_idx, NULL, payload, indirect_data,                   \
                 (trace_payload_as_extra_func)                           \
                 &trace_payload_as_extra_intel_end_##event_name);        \
    }                                                                    \
 
-
+CREATE_DUAL_EVENT_CALLBACK(frame, INTEL_DS_QUEUE_STAGE_FRAME)
 CREATE_DUAL_EVENT_CALLBACK(batch, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
 CREATE_DUAL_EVENT_CALLBACK(cmd_buffer, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
 CREATE_DUAL_EVENT_CALLBACK(render_pass, INTEL_DS_QUEUE_STAGE_RENDER_PASS)
-CREATE_DUAL_EVENT_CALLBACK(dyn_render_pass, INTEL_DS_QUEUE_STAGE_RENDER_PASS)
 CREATE_DUAL_EVENT_CALLBACK(blorp, INTEL_DS_QUEUE_STAGE_BLORP)
 CREATE_DUAL_EVENT_CALLBACK(draw, INTEL_DS_QUEUE_STAGE_DRAW)
 CREATE_DUAL_EVENT_CALLBACK(draw_indexed, INTEL_DS_QUEUE_STAGE_DRAW)
@@ -417,13 +421,85 @@ CREATE_DUAL_EVENT_CALLBACK(draw_indirect, INTEL_DS_QUEUE_STAGE_DRAW)
 CREATE_DUAL_EVENT_CALLBACK(draw_indirect_count, INTEL_DS_QUEUE_STAGE_DRAW)
 CREATE_DUAL_EVENT_CALLBACK(draw_indirect_byte_count, INTEL_DS_QUEUE_STAGE_DRAW)
 CREATE_DUAL_EVENT_CALLBACK(draw_indexed_indirect_count, INTEL_DS_QUEUE_STAGE_DRAW)
+CREATE_DUAL_EVENT_CALLBACK(draw_mesh, INTEL_DS_QUEUE_STAGE_DRAW_MESH)
+CREATE_DUAL_EVENT_CALLBACK(draw_mesh_indirect, INTEL_DS_QUEUE_STAGE_DRAW_MESH)
+CREATE_DUAL_EVENT_CALLBACK(draw_mesh_indirect_count, INTEL_DS_QUEUE_STAGE_DRAW_MESH)
+CREATE_DUAL_EVENT_CALLBACK(xfb, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
 CREATE_DUAL_EVENT_CALLBACK(compute, INTEL_DS_QUEUE_STAGE_COMPUTE)
+CREATE_DUAL_EVENT_CALLBACK(compute_indirect, INTEL_DS_QUEUE_STAGE_COMPUTE)
+CREATE_DUAL_EVENT_CALLBACK(generate_draws, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(generate_commands, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(trace_copy, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(trace_copy_cb, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(query_clear_blorp, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(query_clear_cs, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(query_copy_cs, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(query_copy_shader, INTEL_DS_QUEUE_STAGE_INTERNAL_OPS)
+CREATE_DUAL_EVENT_CALLBACK(write_buffer_marker, INTEL_DS_QUEUE_STAGE_CMD_BUFFER)
+CREATE_DUAL_EVENT_CALLBACK(rays, INTEL_DS_QUEUE_STAGE_RT)
+CREATE_DUAL_EVENT_CALLBACK(as_build, INTEL_DS_QUEUE_STAGE_AS)
+
+void
+intel_ds_begin_cmd_buffer_annotation(struct intel_ds_device *device,
+                                     uint64_t ts_ns,
+                                     uint16_t tp_idx,
+                                     const void *flush_data,
+                                     const struct trace_intel_begin_cmd_buffer_annotation *payload,
+                                     const void *indirect_data)
+{
+   const struct intel_ds_flush_data *flush =
+      (const struct intel_ds_flush_data *) flush_data;
+   begin_event(flush->queue, ts_ns, INTEL_DS_QUEUE_STAGE_CMD_BUFFER);
+}
+
+void
+intel_ds_end_cmd_buffer_annotation(struct intel_ds_device *device,
+                                   uint64_t ts_ns,
+                                   uint16_t tp_idx,
+                                   const void *flush_data,
+                                   const struct trace_intel_end_cmd_buffer_annotation *payload,
+                                   const void *indirect_data)
+{
+   const struct intel_ds_flush_data *flush =
+      (const struct intel_ds_flush_data *) flush_data;
+   end_event(flush->queue, ts_ns, INTEL_DS_QUEUE_STAGE_CMD_BUFFER,
+             flush->submission_id, tp_idx, payload->str, NULL, NULL, NULL);
+}
+
+void
+intel_ds_begin_queue_annotation(struct intel_ds_device *device,
+                                uint64_t ts_ns,
+                                uint16_t tp_idx,
+                                const void *flush_data,
+                                const struct trace_intel_begin_queue_annotation *payload,
+                                const void *indirect_data)
+{
+   const struct intel_ds_flush_data *flush =
+      (const struct intel_ds_flush_data *) flush_data;
+   begin_event(flush->queue, ts_ns, INTEL_DS_QUEUE_STAGE_QUEUE);
+}
+
+void
+intel_ds_end_queue_annotation(struct intel_ds_device *device,
+                              uint64_t ts_ns,
+                              uint16_t tp_idx,
+                              const void *flush_data,
+                              const struct trace_intel_end_queue_annotation *payload,
+                              const void *indirect_data)
+{
+   const struct intel_ds_flush_data *flush =
+      (const struct intel_ds_flush_data *) flush_data;
+   end_event(flush->queue, ts_ns, INTEL_DS_QUEUE_STAGE_QUEUE,
+             flush->submission_id, tp_idx, payload->str, NULL, NULL, NULL);
+}
 
 void
 intel_ds_begin_stall(struct intel_ds_device *device,
                      uint64_t ts_ns,
+                     uint16_t tp_idx,
                      const void *flush_data,
-                     const struct trace_intel_begin_stall *payload)
+                     const struct trace_intel_begin_stall *payload,
+                     const void *indirect_data)
 {
    const struct intel_ds_flush_data *flush =
       (const struct intel_ds_flush_data *) flush_data;
@@ -433,13 +509,15 @@ intel_ds_begin_stall(struct intel_ds_device *device,
 void
 intel_ds_end_stall(struct intel_ds_device *device,
                    uint64_t ts_ns,
+                   uint16_t tp_idx,
                    const void *flush_data,
-                   const struct trace_intel_end_stall *payload)
+                   const struct trace_intel_end_stall *payload,
+                   const void *indirect_data)
 {
    const struct intel_ds_flush_data *flush =
       (const struct intel_ds_flush_data *) flush_data;
-   end_event(flush->queue, ts_ns, INTEL_DS_QUEUE_STAGE_STALL, flush->submission_id,
-             payload,
+   end_event(flush->queue, ts_ns, INTEL_DS_QUEUE_STAGE_STALL,
+             flush->submission_id, tp_idx, NULL, payload, indirect_data,
              (trace_payload_as_extra_func)custom_trace_payload_as_extra_end_stall);
 }
 
@@ -453,7 +531,7 @@ void
 intel_ds_end_submit(struct intel_ds_queue *queue,
                     uint64_t start_ts)
 {
-   if (!u_trace_context_actively_tracing(&queue->device->trace_context)) {
+   if (!u_trace_should_process(&queue->device->trace_context)) {
       queue->device->sync_gpu_ts = 0;
       queue->device->next_clock_sync_ns = 0;
       return;
@@ -499,10 +577,10 @@ intel_driver_ds_init_once(void)
 }
 
 static once_flag intel_driver_ds_once_flag = ONCE_FLAG_INIT;
+static uint64_t iid = 1;
 
 static uint64_t get_iid()
 {
-   static uint64_t iid = 1;
    return iid++;
 }
 
@@ -511,47 +589,53 @@ intel_driver_ds_init(void)
 {
    call_once(&intel_driver_ds_once_flag,
              intel_driver_ds_init_once);
+   intel_gpu_tracepoint_config_variable();
 }
 
 void
 intel_ds_device_init(struct intel_ds_device *device,
-                     struct intel_device_info *devinfo,
+                     const struct intel_device_info *devinfo,
                      int drm_fd,
                      uint32_t gpu_id,
                      enum intel_ds_api api)
 {
    memset(device, 0, sizeof(*device));
 
-   assert(gpu_id < 128);
    device->gpu_id = gpu_id;
    device->gpu_clock_id = intel_pps_clock_id(gpu_id);
    device->fd = drm_fd;
    device->info = *devinfo;
    device->iid = get_iid();
    device->api = api;
-   u_vector_init(&device->queues, 4, sizeof(struct intel_ds_queue));
+
+#ifdef HAVE_PERFETTO
+   assert(ARRAY_SIZE(intel_tracepoint_names) < ARRAY_SIZE(device->tracepoint_iids));
+   for (unsigned i = 0; i < ARRAY_SIZE(intel_tracepoint_names); i++)
+      device->tracepoint_iids[i] = get_iid();
+#endif
+
+   list_inithead(&device->queues);
+   simple_mtx_init(&device->trace_context_mutex, mtx_plain);
 }
 
 void
 intel_ds_device_fini(struct intel_ds_device *device)
 {
    u_trace_context_fini(&device->trace_context);
-   u_vector_finish(&device->queues);
+   simple_mtx_destroy(&device->trace_context_mutex);
 }
 
 struct intel_ds_queue *
-intel_ds_device_add_queue(struct intel_ds_device *device,
-                          const char *fmt_name,
-                          ...)
+intel_ds_device_init_queue(struct intel_ds_device *device,
+                           struct intel_ds_queue *queue,
+                           const char *fmt_name,
+                           ...)
 {
-   struct intel_ds_queue *queue =
-      (struct intel_ds_queue *) u_vector_add(&device->queues);
    va_list ap;
 
    memset(queue, 0, sizeof(*queue));
 
    queue->device = device;
-   queue->queue_id = u_vector_length(&device->queues) - 1;
 
    va_start(ap, fmt_name);
    vsnprintf(queue->name, sizeof(queue->name), fmt_name, ap);
@@ -559,8 +643,9 @@ intel_ds_device_add_queue(struct intel_ds_device *device,
 
    for (unsigned s = 0; s < INTEL_DS_QUEUE_STAGE_N_STAGES; s++) {
       queue->stages[s].queue_iid = get_iid();
-      queue->stages[s].stage_iid = get_iid();
    }
+
+   list_add(&queue->link, &device->queues);
 
    return queue;
 }
@@ -580,6 +665,25 @@ void intel_ds_flush_data_init(struct intel_ds_flush_data *data,
 void intel_ds_flush_data_fini(struct intel_ds_flush_data *data)
 {
    u_trace_fini(&data->trace);
+}
+
+void intel_ds_queue_flush_data(struct intel_ds_queue *queue,
+                               struct u_trace *ut,
+                               struct intel_ds_flush_data *data,
+                               uint32_t frame_nr,
+                               bool free_data)
+{
+   simple_mtx_lock(&queue->device->trace_context_mutex);
+   u_trace_flush(ut, data, frame_nr, free_data);
+   simple_mtx_unlock(&queue->device->trace_context_mutex);
+}
+
+void intel_ds_device_process(struct intel_ds_device *device,
+                             bool eof)
+{
+   simple_mtx_lock(&device->trace_context_mutex);
+   u_trace_context_process(&device->trace_context, eof);
+   simple_mtx_unlock(&device->trace_context_mutex);
 }
 
 #ifdef __cplusplus

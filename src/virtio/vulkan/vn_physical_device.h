@@ -17,51 +17,38 @@
 
 #include "vn_wsi.h"
 
-struct vn_physical_device_features {
-   VkPhysicalDeviceFeatures vulkan_1_0;
-   VkPhysicalDeviceVulkan11Features vulkan_1_1;
-   VkPhysicalDeviceVulkan12Features vulkan_1_2;
-
-   /* Vulkan 1.3 */
-   VkPhysicalDevice4444FormatsFeaturesEXT argb_4444_formats;
-   VkPhysicalDeviceExtendedDynamicStateFeaturesEXT extended_dynamic_state;
-   VkPhysicalDeviceExtendedDynamicState2FeaturesEXT extended_dynamic_state_2;
-   VkPhysicalDeviceImageRobustnessFeaturesEXT image_robustness;
-   VkPhysicalDeviceShaderDemoteToHelperInvocationFeatures
-      shader_demote_to_helper_invocation;
-
-   /* EXT */
-   VkPhysicalDeviceConditionalRenderingFeaturesEXT conditional_rendering;
-   VkPhysicalDeviceCustomBorderColorFeaturesEXT custom_border_color;
-   VkPhysicalDeviceDepthClipEnableFeaturesEXT depth_clip_enable;
-   VkPhysicalDeviceIndexTypeUint8FeaturesEXT index_type_uint8;
-   VkPhysicalDeviceLineRasterizationFeaturesEXT line_rasterization;
-   VkPhysicalDeviceProvokingVertexFeaturesEXT provoking_vertex;
-   VkPhysicalDeviceRobustness2FeaturesEXT robustness_2;
-   VkPhysicalDeviceTransformFeedbackFeaturesEXT transform_feedback;
-   VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT vertex_attribute_divisor;
-};
-
-struct vn_physical_device_properties {
-   VkPhysicalDeviceProperties vulkan_1_0;
-   VkPhysicalDeviceVulkan11Properties vulkan_1_1;
-   VkPhysicalDeviceVulkan12Properties vulkan_1_2;
-
-   /* EXT */
-   VkPhysicalDeviceConservativeRasterizationPropertiesEXT
-      conservative_rasterization;
-   VkPhysicalDeviceCustomBorderColorPropertiesEXT custom_border_color;
-   VkPhysicalDeviceLineRasterizationPropertiesEXT line_rasterization;
-   VkPhysicalDeviceProvokingVertexPropertiesEXT provoking_vertex;
-   VkPhysicalDeviceRobustness2PropertiesEXT robustness_2;
-   VkPhysicalDeviceTransformFeedbackPropertiesEXT transform_feedback;
-   VkPhysicalDeviceVertexAttributeDivisorPropertiesEXT
-      vertex_attribute_divisor;
-};
-
 struct vn_format_properties_entry {
    atomic_bool valid;
    VkFormatProperties properties;
+   atomic_bool props3_valid;
+   VkFormatProperties3 properties3;
+};
+
+struct vn_image_format_properties {
+   struct VkImageFormatProperties2 format;
+   VkResult cached_result;
+
+   VkExternalImageFormatProperties ext_image;
+   VkImageCompressionPropertiesEXT compression;
+   VkSamplerYcbcrConversionImageFormatProperties ycbcr_conversion;
+};
+
+struct vn_image_format_cache_entry {
+   struct vn_image_format_properties properties;
+   uint8_t key[SHA1_DIGEST_LENGTH];
+   struct list_head head;
+};
+
+struct vn_image_format_properties_cache {
+   struct hash_table *ht;
+   struct list_head lru;
+   simple_mtx_t mutex;
+
+   struct {
+      uint32_t cache_hit_count;
+      uint32_t cache_miss_count;
+      uint32_t cache_skip_count;
+   } debug;
 };
 
 struct vn_physical_device {
@@ -86,18 +73,29 @@ struct vn_physical_device {
    struct vk_device_extension_table renderer_extensions;
    uint32_t *extension_spec_versions;
 
-   struct vn_physical_device_features features;
-   struct vn_physical_device_properties properties;
+   /* Venus feedback encounters cacheline overflush issue on Intel JSL, and
+    * has to workaround by further aligning up the feedback buffer alignment.
+    */
+   uint32_t wa_min_fb_align;
+
+   enum VkDriverId renderer_driver_id;
 
    VkQueueFamilyProperties2 *queue_family_properties;
    uint32_t queue_family_count;
+   bool sparse_binding_disabled;
 
-   VkPhysicalDeviceMemoryProperties2 memory_properties;
+   VkPhysicalDeviceMemoryProperties memory_properties;
 
    struct {
       VkExternalMemoryHandleTypeFlagBits renderer_handle_type;
       VkExternalMemoryHandleTypeFlags supported_handle_types;
    } external_memory;
+
+   struct {
+      bool fence_exportable;
+      bool semaphore_exportable;
+      bool semaphore_importable;
+   } renderer_sync_fd;
 
    VkExternalFenceHandleTypeFlags external_fence_handles;
    VkExternalSemaphoreHandleTypeFlags external_binary_semaphore_handles;
@@ -107,6 +105,8 @@ struct vn_physical_device {
 
    simple_mtx_t format_update_mutex;
    struct util_sparse_array format_properties;
+
+   struct vn_image_format_properties_cache image_format_cache;
 };
 VK_DEFINE_HANDLE_CASTS(vn_physical_device,
                        base.base.base,

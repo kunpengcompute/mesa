@@ -1,112 +1,161 @@
 /*
- * Copyright (C) 2018-2021 Alyssa Rosenzweig <alyssa@rosenzweig.io>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright 2018-2021 Alyssa Rosenzweig
+ * SPDX-License-Identifier: MIT
  */
 
-#ifndef __AGX_PUBLIC_H_
-#define __AGX_PUBLIC_H_
+#pragma once
 
 #include "compiler/nir/nir.h"
 #include "util/u_dynarray.h"
-#include "asahi/lib/agx_pack.h"
+#include "shader_enums.h"
 
-enum agx_push_type {
-   /* Array of 64-bit pointers to the base addresses (BASES) and array of
-    * 16-bit sizes for optional bounds checking (SIZES) */
-   AGX_PUSH_UBO_BASES = 0,
-   AGX_PUSH_UBO_SIZES = 1,
-   AGX_PUSH_VBO_BASES = 2,
-   AGX_PUSH_VBO_SIZES = 3,
-   AGX_PUSH_SSBO_BASES = 4,
-   AGX_PUSH_SSBO_SIZES = 5,
+struct agx_cf_binding {
+   /* Base coefficient register */
+   uint8_t cf_base;
 
-   /* Push the attached constant memory */
-   AGX_PUSH_CONSTANTS = 6,
+   /* Slot being bound */
+   gl_varying_slot slot : 8;
 
-   /* Push the content of a UBO */
-   AGX_PUSH_UBO_DATA = 7,
-
-   /* RGBA blend constant (FP32) */
-   AGX_PUSH_BLEND_CONST = 8,
-
-   /* Array of 16-bit (array_size - 1) for indexed array textures, used to
-    * lower access to indexed array textures
+   /* First component bound.
+    *
+    * Must be 2 (Z) or 3 (W) if slot == VARYING_SLOT_POS.
     */
-   AGX_PUSH_ARRAY_SIZE_MINUS_1 = 9,
+   unsigned offset : 2;
 
-   /* Keep last */
-   AGX_PUSH_NUM_TYPES
+   /* Number of components bound */
+   unsigned count : 3;
+
+   /* Is smooth shading enabled? If false, flat shading is used */
+   bool smooth : 1;
+
+   /* Perspective correct interpolation */
+   bool perspective : 1;
+
+   uint8_t pad;
 };
 
-struct agx_push {
-   /* Contents to push */
-   enum agx_push_type type : 8;
+/* Conservative bound, * 4 due to offsets (TODO: maybe worth eliminating
+ * coefficient register aliasing?)
+ */
+#define AGX_MAX_CF_BINDINGS (VARYING_SLOT_MAX * 4)
 
-   /* Base of where to push, indexed in 16-bit units. The uniform file contains
-    * 512 = 2^9 such units. */
-   unsigned base : 9;
+struct agx_varyings_fs {
+   /* Number of coefficient registers used */
+   unsigned nr_cf;
 
-   /* Number of 16-bit units to push */
-   unsigned length : 9;
+   /* Number of coefficient register bindings */
+   unsigned nr_bindings;
 
-   /* If set, rather than pushing the specified data, push a pointer to the
-    * specified data. This is slower to access but enables indirect access, as
-    * the uniform file does not support indirection. */
-   bool indirect : 1;
+   /* Whether gl_FragCoord.z is read */
+   bool reads_z;
 
-   union {
-      struct {
-         uint16_t ubo;
-         uint16_t offset;
-      } ubo_data;
-   };
+   /* Coefficient register bindings */
+   struct agx_cf_binding bindings[AGX_MAX_CF_BINDINGS];
 };
 
-/* Arbitrary */
-#define AGX_MAX_PUSH_RANGES (16)
-#define AGX_MAX_VARYINGS (32)
-
-struct agx_varyings {
-   unsigned nr_descs, nr_slots;
-   struct agx_varying_packed packed[AGX_MAX_VARYINGS];
+union agx_varyings {
+   struct agx_varyings_fs fs;
 };
+
+struct agx_interp_info {
+   /* Bit masks indexed by I/O location of flat and linear varyings */
+   uint64_t flat;
+   uint64_t linear;
+};
+static_assert(sizeof(struct agx_interp_info) == 16, "packed");
 
 struct agx_shader_info {
-   unsigned push_ranges;
-   struct agx_push push[AGX_MAX_PUSH_RANGES];
-   struct agx_varyings varyings;
+   enum pipe_shader_type stage;
+   uint32_t binary_size;
+
+   union agx_varyings varyings;
+
+   /* Number of uniforms */
+   unsigned push_count;
+
+   /* Local memory allocation in bytes */
+   unsigned local_size;
+
+   /* Local imageblock allocation in bytes per thread */
+   unsigned imageblock_stride;
+
+   /* Scratch memory allocation in bytes for main/preamble respectively */
+   unsigned scratch_size, preamble_scratch_size;
+
+   /* Size in bytes of the main sahder */
+   unsigned main_size;
+
+   /* Does the shader have a preamble? If so, it is at offset preamble_offset.
+    * The main shader is at offset main_offset. The preamble is executed first.
+    */
+   bool has_preamble;
+   unsigned preamble_offset, main_offset;
 
    /* Does the shader read the tilebuffer? */
    bool reads_tib;
 
-   /* Does the shader write point size? */
-   bool writes_psiz;
+   /* Does the shader require early fragment tests? */
+   bool early_fragment_tests;
+
+   /* Does the shader potentially draw to a nonzero viewport? */
+   bool nonzero_viewport;
+
+   /* Does the shader write layer and/or viewport index? Written together */
+   bool writes_layer_viewport;
 
    /* Does the shader control the sample mask? */
    bool writes_sample_mask;
+
+   /* Depth layout, never equal to NONE */
+   enum gl_frag_depth_layout depth_layout;
+
+   /* Based only the compiled shader, should tag writes be disabled? This is set
+    * based on what is outputted. Note if rasterizer discard is used, that needs
+    * to disable tag writes regardless of this flag.
+    */
+   bool tag_write_disable;
+
+   /* Shader is incompatible with triangle merging */
+   bool disable_tri_merging;
+
+   /* Reads draw ID system value */
+   bool uses_draw_id;
+
+   /* Reads base vertex/instance */
+   bool uses_base_param;
+
+   /* Uses txf and hence needs a txf sampler mapped */
+   bool uses_txf;
+
+   /* Number of 16-bit registers used by the main shader and preamble
+    * respectively.
+    */
+   unsigned nr_gprs, nr_preamble_gprs;
+
+   /* Output mask set during driver lowering */
+   uint64_t outputs;
+
+   /* There may be constants in the binary. The driver must map these to uniform
+    * registers as specified hre.
+    */
+   struct {
+      /* Offset in the binary */
+      uint32_t offset;
+
+      /* Base uniform to map constants */
+      uint16_t base_uniform;
+
+      /* Number of 16-bit constants to map contiguously there */
+      uint16_t size_16;
+   } rodata;
+};
+
+struct agx_shader_part {
+   struct agx_shader_info info;
+   void *binary;
 };
 
 #define AGX_MAX_RTS (8)
-#define AGX_MAX_ATTRIBS (16)
-#define AGX_MAX_VBUFS (16)
 
 enum agx_format {
    AGX_FORMAT_I8 = 0,
@@ -126,111 +175,157 @@ enum agx_format {
    AGX_NUM_FORMATS,
 };
 
-/* Returns the number of bits at the bottom of the address required to be zero.
- * That is, returns the base-2 logarithm of the minimum alignment for an
- * agx_format, where the minimum alignment is 2^n where n is the result of this
- * function. The offset argument to device_load is left-shifted by this amount
- * in the hardware */
-
-static inline unsigned
-agx_format_shift(enum agx_format format)
-{
-   switch (format) {
-   case AGX_FORMAT_I8:
-   case AGX_FORMAT_U8NORM:
-   case AGX_FORMAT_S8NORM:
-   case AGX_FORMAT_SRGBA8:
-      return 0;
-
-   case AGX_FORMAT_I16:
-   case AGX_FORMAT_F16:
-   case AGX_FORMAT_U16NORM:
-   case AGX_FORMAT_S16NORM:
-      return 1;
-
-   case AGX_FORMAT_I32:
-   case AGX_FORMAT_RGB10A2:
-   case AGX_FORMAT_RG11B10F:
-   case AGX_FORMAT_RGB9E5:
-      return 2;
-
-   default:
-      unreachable("invalid format");
-   }
-}
-
-struct agx_attribute {
-   uint32_t divisor;
-
-   unsigned buf : 5;
-   unsigned src_offset : 16;
-   unsigned nr_comps_minus_1 : 2;
-   enum agx_format format : 4;
-   unsigned padding : 5;
-};
-
-struct agx_vs_shader_key {
-   unsigned num_vbufs;
-   unsigned vbuf_strides[AGX_MAX_VBUFS];
-
-   struct agx_attribute attributes[AGX_MAX_ATTRIBS];
-
-   /* Set to true for clip coordinates to range [0, 1] instead of [-1, 1] */
-   bool clip_halfz : 1;
-};
-
 struct agx_fs_shader_key {
-   enum agx_format tib_formats[AGX_MAX_RTS];
+   /* Normally, access to the tilebuffer must be guarded by appropriate fencing
+    * instructions to ensure correct results in the presence of out-of-order
+    * hardware optimizations. However, specially dispatched clear shaders are
+    * not subject to these conditions and can omit the wait instructions.
+    *
+    * Must (only) be set for special clear shaders.
+    *
+    * Must not be used with sample mask writes (including discards) or
+    * tilebuffer loads (including blending).
+    */
+   bool ignore_tib_dependencies;
+
+   /* When dynamic sample shading is used, the fragment shader is wrapped in a
+    * loop external to the API shader. This bit indicates that we are compiling
+    * inside the sample loop, meaning the execution nesting counter is already
+    * zero and must be preserved.
+    */
+   bool inside_sample_loop;
+
+   /* Base coefficient register. 0 for API shaders but nonzero for FS prolog */
+   uint8_t cf_base;
+};
+
+struct agx_device_key {
+   /* Does the target GPU need explicit cluster coherency for atomics?
+    * Only used on G13X.
+    */
+   bool needs_g13x_coherency;
+
+   /* Is soft fault enabled? This is technically system-wide policy set by the
+    * kernel, but that's functionally a hardware feature.
+    */
+   bool soft_fault;
 };
 
 struct agx_shader_key {
+   /* Device info */
+   struct agx_device_key dev;
+
+   /* Number of reserved preamble slots at the start */
+   unsigned reserved_preamble;
+
+   /* Library routines to link against */
+   const nir_shader *libagx;
+
+   /* Whether scratch memory is available in the given shader stage */
+   bool has_scratch;
+
+   /* Whether we're compiling the helper program used for scratch allocation.
+    * This has special register allocation requirements.
+    */
+   bool is_helper;
+
+   /* Whether the driver supports uploading constants for this shader. If
+    * false, constants will not be promoted to uniforms.
+    */
+   bool promote_constants;
+
+   /* Set if this is a non-monolithic shader that must be linked with additional
+    * shader parts before the program can be used. This suppresses omission of
+    * `stop` instructions, which the linker must insert instead.
+    */
+   bool no_stop;
+
+   /* Set if this is a secondary shader part (prolog or epilog). This prevents
+    * the compiler from allocating uniform registers. For example, this turns
+    * off preambles.
+    */
+   bool secondary;
+
    union {
-      struct agx_vs_shader_key vs;
       struct agx_fs_shader_key fs;
    };
 };
 
-void
-agx_compile_shader_nir(nir_shader *nir,
-      struct agx_shader_key *key,
-      struct util_dynarray *binary,
-      struct agx_shader_info *out);
+struct agx_interp_info agx_gather_interp_info(nir_shader *nir);
+uint64_t agx_gather_texcoords(nir_shader *nir);
 
-static const nir_shader_compiler_options agx_nir_options = {
-   .lower_scmp = true,
-   .lower_flrp16 = true,
-   .lower_flrp32 = true,
-   .lower_ffract = true,
-   .lower_fmod = true,
-   .lower_fdiv = true,
-   .lower_isign = true,
-   .lower_iabs = true,
-   .lower_fpow = true,
-   .lower_find_lsb = true,
-   .lower_ifind_msb = true,
-   .lower_fdph = true,
-   .lower_wpos_pntc = true,
-   .lower_fsign = true,
-   .lower_rotate = true,
-   .lower_pack_split = true,
-   .lower_insert_byte = true,
-   .lower_insert_word = true,
-   .lower_uniforms_to_ubo = true,
-   .lower_cs_local_index_to_id = true,
+void agx_link_libagx(nir_shader *nir, const nir_shader *libagx);
+void agx_preprocess_nir(nir_shader *nir, const nir_shader *libagx);
+bool agx_nir_lower_discard_zs_emit(nir_shader *s);
+bool agx_nir_lower_sample_mask(nir_shader *s);
+bool agx_nir_lower_interpolation(nir_shader *s);
 
-   .lower_doubles_options = nir_lower_dmod,
-   .lower_int64_options = ~(nir_lower_iadd64 | nir_lower_imul_2x32_64),
+bool agx_nir_lower_cull_distance_vs(struct nir_shader *s);
+bool agx_nir_lower_cull_distance_fs(struct nir_shader *s,
+                                    unsigned nr_distances);
 
-   .force_indirect_unrolling = (nir_var_shader_in | nir_var_shader_out | nir_var_function_temp),
+void agx_compile_shader_nir(nir_shader *nir, struct agx_shader_key *key,
+                            struct util_debug_callback *debug,
+                            struct agx_shader_part *out);
 
-   .has_fsub = true,
-   .has_isub = true,
-   .has_cs_global_id = true,
-
-   .vectorize_io = true,
-   .fuse_ffma16 = true,
-   .fuse_ffma32 = true,
-   .use_interpolated_input_intrinsics = true,
+struct agx_occupancy {
+   unsigned max_registers;
+   unsigned max_threads;
 };
 
-#endif
+struct agx_occupancy agx_occupancy_for_register_count(unsigned halfregs);
+unsigned agx_max_registers_for_occupancy(unsigned occupancy);
+
+static const nir_shader_compiler_options agx_nir_options = {
+   .lower_fdiv = true,
+   .fuse_ffma16 = true,
+   .fuse_ffma32 = true,
+   .lower_flrp16 = true,
+   .lower_flrp32 = true,
+   .lower_fpow = true,
+   .lower_fmod = true,
+   .lower_bitfield_insert = true,
+   .lower_ifind_msb = true,
+   .lower_find_lsb = true,
+   .lower_uadd_carry = true,
+   .lower_usub_borrow = true,
+   .lower_fisnormal = true,
+   .lower_scmp = true,
+   .lower_isign = true,
+   .lower_fsign = true,
+   .lower_iabs = true,
+   .lower_fminmax_signed_zero = true,
+   .lower_fdph = true,
+   .lower_ffract = true,
+   .lower_ldexp = true,
+   .lower_pack_half_2x16 = true,
+   .lower_pack_unorm_2x16 = true,
+   .lower_pack_snorm_2x16 = true,
+   .lower_pack_unorm_4x8 = true,
+   .lower_pack_snorm_4x8 = true,
+   .lower_pack_64_2x32 = true,
+   .lower_unpack_half_2x16 = true,
+   .lower_unpack_unorm_2x16 = true,
+   .lower_unpack_snorm_2x16 = true,
+   .lower_unpack_unorm_4x8 = true,
+   .lower_unpack_snorm_4x8 = true,
+   .lower_extract_byte = true,
+   .lower_insert_byte = true,
+   .lower_insert_word = true,
+   .has_cs_global_id = true,
+   .lower_device_index_to_zero = true,
+   .lower_hadd = true,
+   .vectorize_io = true,
+   .use_interpolated_input_intrinsics = true,
+   .has_isub = true,
+   .support_16bit_alu = true,
+   .max_unroll_iterations = 32,
+   .lower_uniforms_to_ubo = true,
+   .lower_int64_options =
+      (nir_lower_int64_options) ~(nir_lower_iadd64 | nir_lower_imul_2x32_64),
+   .lower_doubles_options = (nir_lower_doubles_options)(~0),
+   .lower_fquantize2f16 = true,
+   .compact_arrays = true,
+   .discard_is_demote = true,
+   .scalarize_ddx = true,
+};

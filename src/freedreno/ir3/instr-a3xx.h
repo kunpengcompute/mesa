@@ -1,24 +1,6 @@
 /*
- * Copyright (c) 2013 Rob Clark <robdclark@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2013 Rob Clark <robdclark@gmail.com>
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef INSTR_A3XX_H_
@@ -59,7 +41,6 @@ void ir3_assert_handler(const char *expr, const char *file, int line,
 typedef enum {
    /* category 0: */
    OPC_NOP             = _OPC(0, 0),
-   OPC_B               = _OPC(0, 1),
    OPC_JUMP            = _OPC(0, 2),
    OPC_CALL            = _OPC(0, 3),
    OPC_RET             = _OPC(0, 4),
@@ -125,11 +106,11 @@ typedef enum {
    OPC_ELECT_MACRO     = _OPC(1, 53),
    OPC_READ_COND_MACRO = _OPC(1, 54),
    OPC_READ_FIRST_MACRO = _OPC(1, 55),
-   OPC_SWZ_SHARED_MACRO = _OPC(1, 56),
-   OPC_SHPS_MACRO       = _OPC(1, 57),
+   OPC_SHPS_MACRO       = _OPC(1, 56),
 
    /* Macros that expand to a loop */
    OPC_SCAN_MACRO      = _OPC(1, 58),
+   OPC_SCAN_CLUSTERS_MACRO = _OPC(1, 60),
 
    /* category 2: */
    OPC_ADD_F           = _OPC(2, 0),
@@ -263,6 +244,7 @@ typedef enum {
    OPC_QUAD_SHUFFLE_HORIZ  = _OPC(5, 30),
    OPC_QUAD_SHUFFLE_VERT   = _OPC(5, 31),
    OPC_QUAD_SHUFFLE_DIAG   = _OPC(5, 32),
+   OPC_TCINV               = _OPC(5, 33),
    /* cat5 meta instructions, placed above the cat5 opc field's size */
    OPC_DSXPP_MACRO     = _OPC(5, 35),
    OPC_DSYPP_MACRO     = _OPC(5, 36),
@@ -305,6 +287,7 @@ typedef enum {
    OPC_GETSPID         = _OPC(6, 36), /* SP ID */
    OPC_GETWID          = _OPC(6, 37), /* wavefront ID */
    OPC_GETFIBERID      = _OPC(6, 38), /* fiber ID */
+   OPC_SHFL            = _OPC(6, 39),
 
    /* Logical opcodes for things that differ in a6xx+ */
    OPC_STC             = _OPC(6, 40),
@@ -356,14 +339,34 @@ typedef enum {
    OPC_RELOAD_MACRO    = _OPC(6, 80),
 
    OPC_LDC_K           = _OPC(6, 81),
+   OPC_STSC            = _OPC(6, 82),
+   OPC_LDG_K           = _OPC(6, 83),
+
+   /* Macros that expand to an stsc at the start of the preamble.
+    * It loads into const file and should not be optimized in any way.
+    */
+   OPC_PUSH_CONSTS_LOAD_MACRO = _OPC(6, 84),
 
    /* category 7: */
    OPC_BAR             = _OPC(7, 0),
    OPC_FENCE           = _OPC(7, 1),
+   OPC_SLEEP           = _OPC(7, 2),
+   OPC_ICINV           = _OPC(7, 3),
+   OPC_DCCLN           = _OPC(7, 4),
+   OPC_DCINV           = _OPC(7, 5),
+   OPC_DCFLU           = _OPC(7, 6),
 
-   /* meta instructions (category -1): */
+   OPC_LOCK            = _OPC(7, 7),
+   OPC_UNLOCK          = _OPC(7, 8),
+
+   OPC_ALIAS           = _OPC(7, 9),
+
+   OPC_CCINV           = _OPC(7, 10),
+
+   /* meta instructions (category 8): */
+#define OPC_META 8
    /* placeholder instr to mark shader inputs: */
-   OPC_META_INPUT      = _OPC(-1, 0),
+   OPC_META_INPUT      = _OPC(OPC_META, 0),
    /* The "collect" and "split" instructions are used for keeping
     * track of instructions that write to multiple dst registers
     * (split) like texture sample instructions, or read multiple
@@ -372,13 +375,13 @@ typedef enum {
     * A "split" extracts a scalar component from a vecN, and a
     * "collect" gathers multiple scalar components into a vecN
     */
-   OPC_META_SPLIT      = _OPC(-1, 2),
-   OPC_META_COLLECT    = _OPC(-1, 3),
+   OPC_META_SPLIT      = _OPC(OPC_META, 2),
+   OPC_META_COLLECT    = _OPC(OPC_META, 3),
 
    /* placeholder for texture fetches that run before FS invocation
     * starts:
     */
-   OPC_META_TEX_PREFETCH = _OPC(-1, 4),
+   OPC_META_TEX_PREFETCH = _OPC(OPC_META, 4),
 
    /* Parallel copies have multiple destinations, and copy each destination
     * to its corresponding source. This happens "in parallel," meaning that
@@ -386,8 +389,12 @@ typedef enum {
     * is stored. These are produced in RA when register shuffling is
     * required, and then lowered away immediately afterwards.
     */
-   OPC_META_PARALLEL_COPY = _OPC(-1, 5),
-   OPC_META_PHI = _OPC(-1, 6),
+   OPC_META_PARALLEL_COPY = _OPC(OPC_META, 5),
+   OPC_META_PHI = _OPC(OPC_META, 6),
+   /*
+    * A manually encoded opcode
+    */
+   OPC_META_RAW = _OPC(OPC_META, 7),
 } opc_t;
 /* clang-format on */
 
@@ -403,8 +410,9 @@ typedef enum {
    TYPE_U32 = 3,
    TYPE_S16 = 4,
    TYPE_S32 = 5,
+   TYPE_ATOMIC_U64 = 6, /* Only valid for a7xx atomics */
    TYPE_U8 = 6,
-   TYPE_S8 = 7, // XXX I assume?
+   TYPE_U8_32 = 7,
 } type_t;
 
 static inline uint32_t
@@ -413,6 +421,7 @@ type_size(type_t type)
    switch (type) {
    case TYPE_F32:
    case TYPE_U32:
+   case TYPE_U8_32:
    case TYPE_S32:
       return 32;
    case TYPE_F16:
@@ -420,7 +429,6 @@ type_size(type_t type)
    case TYPE_S16:
       return 16;
    case TYPE_U8:
-   case TYPE_S8:
       return 8;
    default:
       ir3_assert(0); /* invalid type */
@@ -436,9 +444,11 @@ type_uint_size(unsigned bit_size)
    case 1:  /* 1b bools are treated as normal half-regs */
    case 16: return TYPE_U16;
    case 32: return TYPE_U32;
+   case 64:
+      return TYPE_U32;
    default:
       ir3_assert(0); /* invalid size */
-      return 0;
+      return (type_t)0;
    }
 }
 
@@ -450,7 +460,7 @@ type_float_size(unsigned bit_size)
    case 32: return TYPE_F32;
    default:
       ir3_assert(0); /* invalid size */
-      return 0;
+      return (type_t)0;
    }
 }
 
@@ -463,13 +473,13 @@ type_float(type_t type)
 static inline int
 type_uint(type_t type)
 {
-   return (type == TYPE_U32) || (type == TYPE_U16) || (type == TYPE_U8);
+   return (type == TYPE_U32) || (type == TYPE_U16) || (type == TYPE_U8) || (type == TYPE_U8_32);
 }
 
 static inline int
 type_sint(type_t type)
 {
-   return (type == TYPE_S32) || (type == TYPE_S16) || (type == TYPE_S8);
+   return (type == TYPE_S32) || (type == TYPE_S16);
 }
 
 typedef enum {
@@ -498,16 +508,9 @@ regid(int num, int comp)
 /* special registers: */
 #define REG_A0 61 /* address register */
 #define REG_P0 62 /* predicate register */
+#define REG_P0_X regid(REG_P0, 0) /* p0.x */
 
-typedef enum {
-   BRANCH_PLAIN = 0, /* br */
-   BRANCH_OR = 1,    /* brao */
-   BRANCH_AND = 2,   /* braa */
-   BRANCH_CONST = 3, /* brac */
-   BRANCH_ANY = 4,   /* bany */
-   BRANCH_ALL = 5,   /* ball */
-   BRANCH_X = 6,     /* brax ??? */
-} brtype_t;
+#define INVALID_CONST_REG UINT16_MAX
 
 /* With is_bindless_s2en = 1, this determines whether bindless is enabled and
  * if so, how to get the (base, index) pair for both sampler and texture.
@@ -593,8 +596,9 @@ is_sat_compatible(opc_t opc)
       return false;
 
    switch (opc) {
-   /* On a3xx and a6xx saturation doesn't work on bary.f */
+   /* On a3xx and a6xx saturation doesn't work on bary.f/flat.b */
    case OPC_BARY_F:
+   case OPC_FLAT_B:
    /* On a6xx saturation doesn't work on sel.* */
    case OPC_SEL_B16:
    case OPC_SEL_B32:

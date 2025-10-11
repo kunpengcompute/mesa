@@ -31,28 +31,67 @@
 extern "C" {
 #endif
 
-unsigned brw_required_dispatch_width(const struct shader_info *info,
-                                     enum brw_subgroup_size_type subgroup_size_type);
+/* brw_fs_reg_allocate.cpp */
+void brw_fs_alloc_reg_sets(struct brw_compiler *compiler);
 
-bool brw_simd_should_compile(void *mem_ctx,
-                             unsigned simd,
-                             const struct intel_device_info *devinfo,
-                             struct brw_cs_prog_data *prog_data,
-                             unsigned required_dispatch_width,
-                             const char **error);
+/* brw_disasm.c */
+extern const char *const conditional_modifier[16];
+extern const char *const pred_ctrl_align16[16];
 
-void brw_simd_mark_compiled(unsigned simd,
-                            struct brw_cs_prog_data *prog_data,
-                            bool spilled);
+#ifdef __cplusplus
+}
+#endif
 
-int brw_simd_select(const struct brw_cs_prog_data *prog_data);
+#ifdef __cplusplus
+
+#include <variant>
+
+unsigned brw_required_dispatch_width(const struct shader_info *info);
+
+static constexpr int SIMD_COUNT = 3;
+
+struct brw_simd_selection_state {
+   const struct intel_device_info *devinfo;
+
+   std::variant<struct brw_cs_prog_data *,
+                struct brw_bs_prog_data *> prog_data;
+
+   unsigned required_width;
+
+   const char *error[SIMD_COUNT];
+
+   bool compiled[SIMD_COUNT];
+   bool spilled[SIMD_COUNT];
+};
+
+inline int brw_simd_first_compiled(const brw_simd_selection_state &state)
+{
+   for (int i = 0; i < SIMD_COUNT; i++) {
+      if (state.compiled[i])
+         return i;
+   }
+   return -1;
+}
+
+inline bool brw_simd_any_compiled(const brw_simd_selection_state &state)
+{
+   return brw_simd_first_compiled(state) >= 0;
+}
+
+unsigned brw_geometry_stage_dispatch_width(const struct intel_device_info *devinfo);
+
+bool brw_simd_should_compile(brw_simd_selection_state &state, unsigned simd);
+
+void brw_simd_mark_compiled(brw_simd_selection_state &state, unsigned simd, bool spilled);
+
+int brw_simd_select(const brw_simd_selection_state &state);
 
 int brw_simd_select_for_workgroup_size(const struct intel_device_info *devinfo,
                                        const struct brw_cs_prog_data *prog_data,
                                        const unsigned *sizes);
 
-#ifdef __cplusplus
-} /* extern "C" */
-#endif
+bool brw_should_print_shader(const nir_shader *shader, uint64_t debug_flag);
+
+#endif // __cplusplus
 
 #endif // BRW_PRIVATE_H

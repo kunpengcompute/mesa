@@ -1,25 +1,8 @@
 /*
  * Copyright 2010 Jerome Glisse <glisse@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
+
 #include "r600_pipe.h"
 #include "compute_memory_pool.h"
 #include "evergreen_compute.h"
@@ -33,8 +16,9 @@ enum r600_blitter_op /* bitmask */
 	R600_SAVE_TEXTURES       = 2,
 	R600_SAVE_FRAMEBUFFER    = 4,
 	R600_DISABLE_RENDER_COND = 8,
+	R600_SAVE_CONST_BUF0     = 16,
 
-	R600_CLEAR         = R600_SAVE_FRAGMENT_STATE,
+	R600_CLEAR         = R600_SAVE_FRAGMENT_STATE | R600_SAVE_CONST_BUF0,
 
 	R600_CLEAR_SURFACE = R600_SAVE_FRAGMENT_STATE | R600_SAVE_FRAMEBUFFER,
 
@@ -59,7 +43,8 @@ static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op
 		rctx->cmd_buf_is_compute = false;
 	}
 
-	util_blitter_save_vertex_buffer_slot(rctx->blitter, rctx->vertex_buffer_state.vb);
+	util_blitter_save_vertex_buffers(rctx->blitter, rctx->vertex_buffer_state.vb,
+                                         util_last_bit(rctx->vertex_buffer_state.enabled_mask));
 	util_blitter_save_vertex_elements(rctx->blitter, rctx->vertex_fetch_shader.cso);
 	util_blitter_save_vertex_shader(rctx->blitter, rctx->vs_shader);
 	util_blitter_save_geometry_shader(rctx->blitter, rctx->gs_shader);
@@ -77,6 +62,11 @@ static void r600_blitter_begin(struct pipe_context *ctx, enum r600_blitter_op op
 		util_blitter_save_depth_stencil_alpha(rctx->blitter, rctx->dsa_state.cso);
 		util_blitter_save_stencil_ref(rctx->blitter, &rctx->stencil_ref.pipe_state);
                 util_blitter_save_sample_mask(rctx->blitter, rctx->sample_mask.sample_mask, rctx->ps_iter_samples);
+	}
+
+	if (op & R600_SAVE_CONST_BUF0) {
+		util_blitter_save_fragment_constant_buffer_slot(rctx->blitter,
+								&rctx->constbuf_state[PIPE_SHADER_FRAGMENT].cb[0]);
 	}
 
 	if (op & R600_SAVE_FRAMEBUFFER)
@@ -131,7 +121,7 @@ static void r600_blit_decompress_depth(struct pipe_context *ctx,
 	/* XXX Decompressing MSAA depth textures is broken on R6xx.
 	 * There is also a hardlock if CMASK and FMASK are not present.
 	 * Just skip this until we find out how to fix it. */
-	if (rctx->b.chip_class == R600 && max_sample > 0) {
+	if (rctx->b.gfx_level == R600 && max_sample > 0) {
 		texture->dirty_level_mask = 0;
 		return;
 	}
@@ -197,7 +187,7 @@ static void r600_blit_decompress_depth(struct pipe_context *ctx,
 		}
 	}
 
-	/* reenable compression in DB_RENDER_CONTROL */
+	/* re-enable compression in DB_RENDER_CONTROL */
 	rctx->db_misc_state.flush_depthstencil_through_cb = false;
 	r600_mark_atom_dirty(rctx, &rctx->db_misc_state.atom);
 }
@@ -470,7 +460,7 @@ static void r600_clear(struct pipe_context *ctx, unsigned buffers,
 	struct r600_context *rctx = (struct r600_context *)ctx;
 	struct pipe_framebuffer_state *fb = &rctx->framebuffer.state;
 
-	if (buffers & PIPE_CLEAR_COLOR && rctx->b.chip_class >= EVERGREEN) {
+	if (buffers & PIPE_CLEAR_COLOR && rctx->b.gfx_level >= EVERGREEN) {
 		evergreen_do_fast_color_clear(&rctx->b, fb, &rctx->framebuffer.atom,
 					      &buffers, NULL, color);
 		if (!buffers)
@@ -573,19 +563,10 @@ static void r600_copy_buffer(struct pipe_context *ctx, struct pipe_resource *dst
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
 
-	if (rctx->screen->b.has_cp_dma) {
+	if (rctx->screen->b.has_cp_dma)
 		r600_cp_dma_copy_buffer(rctx, dst, dstx, src, src_box->x, src_box->width);
-	}
-	else if (rctx->screen->b.has_streamout &&
-		 /* Require 4-byte alignment. */
-		 dstx % 4 == 0 && src_box->x % 4 == 0 && src_box->width % 4 == 0) {
-
-		r600_blitter_begin(ctx, R600_COPY_BUFFER);
-		util_blitter_copy_buffer(rctx->blitter, dst, dstx, src, src_box->x, src_box->width);
-		r600_blitter_end(ctx);
-	} else {
+	else
 		util_resource_copy_region(ctx, dst, 0, dstx, 0, 0, src, 0, src_box);
-	}
 }
 
 /**
@@ -648,7 +629,7 @@ static void r600_clear_buffer(struct pipe_context *ctx, struct pipe_resource *ds
 	struct r600_context *rctx = (struct r600_context*)ctx;
 
 	if (rctx->screen->b.has_cp_dma &&
-	    rctx->b.chip_class >= EVERGREEN &&
+	    rctx->b.gfx_level >= EVERGREEN &&
 	    offset % 4 == 0 && size % 4 == 0) {
 		evergreen_cp_dma_clear_buffer(rctx, dst, offset, size, value, coher);
 	} else if (rctx->screen->b.has_streamout && offset % 4 == 0 && size % 4 == 0) {
@@ -796,7 +777,7 @@ void r600_resource_copy_region(struct pipe_context *ctx,
 					      dst->width0, dst->height0,
 					      dst_width, dst_height);
 
-	if (rctx->b.chip_class >= EVERGREEN) {
+	if (rctx->b.gfx_level >= EVERGREEN) {
 		src_view = evergreen_create_sampler_view_custom(ctx, src, &src_templ,
 								src_width0, src_height0,
 								src_force_level);
@@ -813,7 +794,7 @@ void r600_resource_copy_region(struct pipe_context *ctx,
 	util_blitter_blit_generic(rctx->blitter, dst_view, &dstbox,
 				  src_view, src_box, src_width0, src_height0,
 				  PIPE_MASK_RGBAZS, PIPE_TEX_FILTER_NEAREST, NULL,
-				  FALSE, FALSE);
+				  false, false, 0, NULL);
 	r600_blitter_end(ctx);
 
 	pipe_surface_reference(&dst_view, NULL);
@@ -829,7 +810,7 @@ static bool do_hardware_msaa_resolve(struct pipe_context *ctx,
 	unsigned dst_height = u_minify(info->dst.resource->height0, info->dst.level);
 	enum pipe_format format = info->src.format;
 	unsigned sample_mask =
-		rctx->b.chip_class == CAYMAN ? ~0 :
+		rctx->b.gfx_level == CAYMAN ? ~0 :
 		((1ull << MAX2(1, info->src.resource->nr_samples)) - 1);
 	struct pipe_resource *tmp, templ;
 	struct pipe_blit_info blit;
@@ -907,11 +888,69 @@ static bool do_hardware_msaa_resolve(struct pipe_context *ctx,
 
 	r600_blitter_begin(ctx, R600_BLIT |
 			   (info->render_condition_enable ? 0 : R600_DISABLE_RENDER_COND));
-	util_blitter_blit(rctx->blitter, &blit);
+	util_blitter_blit(rctx->blitter, &blit, NULL);
 	r600_blitter_end(ctx);
 
 	pipe_resource_reference(&tmp, NULL);
 	return true;
+}
+
+static void r600_stencil_z24unorms8_to_z24unorms8uint(struct pipe_context *ctx,
+						      struct pipe_resource *dst, struct pipe_resource *src,
+						      const struct pipe_box *box_dst, const struct pipe_box *box_src,
+						      const unsigned dst_level, const unsigned src_level)
+{
+	struct pipe_transfer *tsrc;
+	uint8_t *slice_src = pipe_texture_map_3d(ctx, src, src_level, PIPE_MAP_READ,
+						 box_src->x, box_src->y, box_src->z,
+						 box_src->width, box_src->height, box_src->depth, &tsrc);
+	if (slice_src) {
+		struct pipe_transfer *tdst;
+		uint8_t *slice_dst = pipe_texture_map_3d(ctx, dst, dst_level, PIPE_MAP_READ_WRITE,
+							 box_dst->x, box_dst->y, box_dst->z,
+							 box_src->width, box_src->height, box_src->depth, &tdst);
+		if (slice_dst) {
+			for (unsigned slice = 0; slice < box_src->depth; slice++)
+				for (unsigned row = 0; row < box_src->height; row++) {
+                                        for (unsigned k = 0; k < box_src->width; k++) {
+						slice_dst[k * 4 + 3] = slice_src[k * 4 + 3];
+					}
+					slice_src += tsrc->stride / sizeof(*slice_src);
+					slice_dst += tdst->stride / sizeof(*slice_dst);
+				}
+			pipe_texture_unmap(ctx, tdst);
+		}
+		pipe_texture_unmap(ctx, tsrc);
+	}
+}
+
+static void r600_stencil_z32floats8x24_to_z24unorms8(struct pipe_context *ctx,
+						     struct pipe_resource *dst, struct pipe_resource *src,
+						     const struct pipe_box *box_dst, const struct pipe_box *box_src,
+						     const unsigned dst_level, const unsigned src_level)
+{
+	struct pipe_transfer *tsrc;
+	uint8_t *slice_src = pipe_texture_map_3d(ctx, src, src_level, PIPE_MAP_READ,
+						 box_src->x, box_src->y, box_src->z,
+						 box_src->width, box_src->height, box_src->depth, &tsrc);
+	if (slice_src) {
+		struct pipe_transfer *tdst;
+		uint8_t *slice_dst = pipe_texture_map_3d(ctx, dst, dst_level, PIPE_MAP_READ_WRITE,
+							 box_dst->x, box_dst->y, box_dst->z,
+							 box_src->width, box_src->height, box_src->depth, &tdst);
+		if (slice_dst) {
+			for (unsigned slice = 0; slice < box_src->depth; slice++)
+				for (unsigned row = 0; row < box_src->height; row++) {
+					for (unsigned k = 0; k < box_src->width; k++) {
+						slice_dst[k * 4 + 3] = slice_src[k * 8 + 4];
+					}
+					slice_src += tsrc->stride / sizeof(*slice_src);
+					slice_dst += tdst->stride / sizeof(*slice_dst);
+				}
+			pipe_texture_unmap(ctx, tdst);
+		}
+		pipe_texture_unmap(ctx, tsrc);
+	}
 }
 
 static void r600_blit(struct pipe_context *ctx,
@@ -956,9 +995,51 @@ static void r600_blit(struct pipe_context *ctx,
 	    util_try_blit_via_copy_region(ctx, info, rctx->b.render_cond != NULL))
 		return;
 
+	{
+		const bool blit_box_same_size = info->src.box.width == info->dst.box.width &&
+			info->src.box.height == info->dst.box.height &&
+			info->src.box.depth == info->dst.box.depth;
+		const bool blit_stencil = (info->mask & PIPE_MASK_S) != 0;
+		const bool src_is_ZS = info->src.format == PIPE_FORMAT_Z24_UNORM_S8_UINT ||
+			info->src.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT;
+
+		if (unlikely(rctx->b.gfx_level >= EVERGREEN &&
+			     blit_stencil && blit_box_same_size && src_is_ZS &&
+			     info->dst.format == PIPE_FORMAT_Z24_UNORM_S8_UINT &&
+			     info->src.resource->last_level &&
+			     !info->dst.resource->last_level &&
+			     info->src.box.width >= 16 && info->src.box.width < 32)) {
+			if (info->mask & ~PIPE_MASK_S) {
+				struct pipe_blit_info blit;
+				memcpy(&blit, info, sizeof(blit));
+				blit.mask = info->mask & ~PIPE_MASK_S;
+				r600_blitter_begin(ctx, R600_BLIT |
+						   (info->render_condition_enable ? 0 : R600_DISABLE_RENDER_COND));
+				util_blitter_blit(rctx->blitter, &blit, NULL);
+				r600_blitter_end(ctx);
+			}
+
+			assert(util_format_get_blocksize(PIPE_FORMAT_Z24_UNORM_S8_UINT) == 4);
+			assert(util_format_get_blocksize(PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) == 8);
+
+			if (info->src.format == info->dst.format)
+				r600_stencil_z24unorms8_to_z24unorms8uint(ctx,
+									  info->dst.resource, info->src.resource,
+									  &info->dst.box, &info->src.box,
+									  info->dst.level, info->src.level);
+			else
+				r600_stencil_z32floats8x24_to_z24unorms8(ctx,
+									 info->dst.resource, info->src.resource,
+									 &info->dst.box, &info->src.box,
+									 info->dst.level, info->src.level);
+
+			return;
+		}
+	}
+
 	r600_blitter_begin(ctx, R600_BLIT |
 			   (info->render_condition_enable ? 0 : R600_DISABLE_RENDER_COND));
-	util_blitter_blit(rctx->blitter, info);
+	util_blitter_blit(rctx->blitter, info, NULL);
 	r600_blitter_end(ctx);
 }
 

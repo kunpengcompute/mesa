@@ -32,6 +32,8 @@
 
 #include <stdlib.h>
 #include "glsl_symbol_table.h"
+#include "mesa/main/config.h"
+#include "mesa/main/menums.h" /* for gl_api */
 
 /* THIS is a macro defined somewhere deep in the Windows MSVC header files.
  * Undefine it here to avoid collision with the lexer's THIS token.
@@ -75,7 +77,7 @@ typedef struct YYLTYPE {
 # define YYLTYPE_IS_TRIVIAL 1
 
 extern void _mesa_glsl_error(YYLTYPE *locp, _mesa_glsl_parse_state *state,
-                             const char *fmt, ...);
+                             const char *fmt, ...) PRINTFLIKE(3, 4);
 
 
 struct _mesa_glsl_parse_state {
@@ -329,6 +331,11 @@ struct _mesa_glsl_parse_state {
              EXT_shader_framebuffer_fetch_non_coherent_enable;
    }
 
+   bool has_framebuffer_fetch_zs() const
+   {
+      return ARM_shader_framebuffer_fetch_depth_stencil_enable;
+   }
+
    bool has_texture_cube_map_array() const
    {
       return ARB_texture_cube_map_array_enable ||
@@ -381,7 +388,7 @@ struct _mesa_glsl_parse_state {
    exec_list translation_unit;
    glsl_symbol_table *symbols;
 
-   void *linalloc;
+   linear_ctx *linalloc;
 
    unsigned num_supported_versions;
    struct {
@@ -769,6 +776,22 @@ struct _mesa_glsl_parse_state {
     */
    bool KHR_blend_equation_advanced_enable;
    bool KHR_blend_equation_advanced_warn;
+   bool KHR_shader_subgroup_arithmetic_enable;
+   bool KHR_shader_subgroup_arithmetic_warn;
+   bool KHR_shader_subgroup_ballot_enable;
+   bool KHR_shader_subgroup_ballot_warn;
+   bool KHR_shader_subgroup_basic_enable;
+   bool KHR_shader_subgroup_basic_warn;
+   bool KHR_shader_subgroup_clustered_enable;
+   bool KHR_shader_subgroup_clustered_warn;
+   bool KHR_shader_subgroup_quad_enable;
+   bool KHR_shader_subgroup_quad_warn;
+   bool KHR_shader_subgroup_shuffle_enable;
+   bool KHR_shader_subgroup_shuffle_warn;
+   bool KHR_shader_subgroup_shuffle_relative_enable;
+   bool KHR_shader_subgroup_shuffle_relative_warn;
+   bool KHR_shader_subgroup_vote_enable;
+   bool KHR_shader_subgroup_vote_warn;
 
    /* OES extensions go here, sorted alphabetically.
     */
@@ -813,6 +836,8 @@ struct _mesa_glsl_parse_state {
     */
    bool AMD_conservative_depth_enable;
    bool AMD_conservative_depth_warn;
+   bool AMD_gpu_shader_half_float_enable;
+   bool AMD_gpu_shader_half_float_warn;
    bool AMD_gpu_shader_int64_enable;
    bool AMD_gpu_shader_int64_warn;
    bool AMD_shader_stencil_export_enable;
@@ -827,6 +852,8 @@ struct _mesa_glsl_parse_state {
    bool AMD_vertex_shader_viewport_index_warn;
    bool ANDROID_extension_pack_es31a_enable;
    bool ANDROID_extension_pack_es31a_warn;
+   bool ARM_shader_framebuffer_fetch_depth_stencil_enable;
+   bool ARM_shader_framebuffer_fetch_depth_stencil_warn;
    bool EXT_blend_func_extended_enable;
    bool EXT_blend_func_extended_warn;
    bool EXT_clip_cull_distance_enable;
@@ -869,6 +896,8 @@ struct _mesa_glsl_parse_state {
    bool EXT_shader_io_blocks_warn;
    bool EXT_shader_samples_identical_enable;
    bool EXT_shader_samples_identical_warn;
+   bool EXT_shadow_samplers_enable;
+   bool EXT_shadow_samplers_warn;
    bool EXT_tessellation_point_size_enable;
    bool EXT_tessellation_point_size_warn;
    bool EXT_tessellation_shader_enable;
@@ -901,8 +930,14 @@ struct _mesa_glsl_parse_state {
    bool NV_shader_atomic_float_warn;
    bool NV_shader_atomic_int64_enable;
    bool NV_shader_atomic_int64_warn;
+   bool NV_shader_noperspective_interpolation_enable;
+   bool NV_shader_noperspective_interpolation_warn;
    bool NV_viewport_array2_enable;
    bool NV_viewport_array2_warn;
+   bool OVR_multiview_enable;
+   bool OVR_multiview_warn;
+   bool OVR_multiview2_enable;
+   bool OVR_multiview2_warn;
    /*@}*/
 
    /** Extensions supported by the OpenGL implementation. */
@@ -950,6 +985,8 @@ struct _mesa_glsl_parse_state {
    bool layer_viewport_relative;
 
    bool allow_extension_directive_midshader;
+   char *alias_shader_extension;
+   bool allow_vertex_texture_bias;
    bool allow_glsl_120_subset_in_110;
    bool allow_builtin_variable_redeclaration;
    bool ignore_write_to_readonly_var;
@@ -989,6 +1026,7 @@ do {                                                            \
       (Current).last_line    = YYRHSLOC(Rhs, N).last_line;      \
       (Current).last_column  = YYRHSLOC(Rhs, N).last_column;    \
       (Current).path         = YYRHSLOC(Rhs, N).path;           \
+      (Current).source       = YYRHSLOC(Rhs, N).source;         \
    }                                                            \
    else                                                         \
    {                                                            \
@@ -996,9 +1034,9 @@ do {                                                            \
          YYRHSLOC(Rhs, 0).last_line;                            \
       (Current).first_column = (Current).last_column =          \
          YYRHSLOC(Rhs, 0).last_column;                          \
-      (Current).path = YYRHSLOC(Rhs, 0).path;                   \
+      (Current).path         = YYRHSLOC(Rhs, 0).path;           \
+      (Current).source       = YYRHSLOC(Rhs, 0).source;         \
    }                                                            \
-   (Current).source = 0;                                        \
 } while (0)
 
 /**

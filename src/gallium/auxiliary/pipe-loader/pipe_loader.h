@@ -33,7 +33,7 @@
 #ifndef PIPE_LOADER_H
 #define PIPE_LOADER_H
 
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 #include "frontend/drm_driver.h"
 #include "util/xmlconfig.h"
 
@@ -74,30 +74,33 @@ struct pipe_loader_device {
 /**
  * Get a list of known devices.
  *
- * \param devs Array that will be filled with pointers to the devices
- *             available in the system.
- * \param ndev Maximum number of devices to return.
+ * \param devs      Array that will be filled with pointers to the devices
+ *                  available in the system.
+ * \param ndev      Maximum number of devices to return.
+ * \param with_zink If devices should also be loaded with zink.
  * \return Number of devices available in the system.
  */
 int
-pipe_loader_probe(struct pipe_loader_device **devs, int ndev);
+pipe_loader_probe(struct pipe_loader_device **devs, int ndev, bool with_zink);
 
 /**
  * Create a pipe_screen for the specified device.
  *
  * \param dev Device the screen will be created for.
  * \param sw_vk Device is for software vulkan
+ * \param driver_name_is_inferred Whether the driver name has been directly selected.
  */
 struct pipe_screen *
-pipe_loader_create_screen_vk(struct pipe_loader_device *dev, bool sw_vk);
+pipe_loader_create_screen_vk(struct pipe_loader_device *dev, bool sw_vk, bool driver_name_is_inferred);
 
 /**
  * Create a pipe_screen for the specified device.
  *
  * \param dev Device the screen will be created for.
+ * \param driver_name_is_inferred Whether the driver name has been directly selected.
  */
 struct pipe_screen *
-pipe_loader_create_screen(struct pipe_loader_device *dev);
+pipe_loader_create_screen(struct pipe_loader_device *dev, bool driver_name_is_inferred);
 
 /**
  * Ensures that the driconf option cache has been parsed for the driver.
@@ -154,9 +157,9 @@ pipe_loader_sw_probe_dri(struct pipe_loader_device **devs,
  * \sa pipe_loader_probe
  */
 bool
-pipe_loader_vk_probe_dri(struct pipe_loader_device **devs,
-                         const struct drisw_loader_funcs *drisw_lf);
+pipe_loader_vk_probe_dri(struct pipe_loader_device **devs);
 
+#ifdef HAVE_DRISW_KMS
 /**
  * Initialize a kms backed sw device given an fd.
  *
@@ -169,6 +172,7 @@ pipe_loader_vk_probe_dri(struct pipe_loader_device **devs,
  */
 bool
 pipe_loader_sw_probe_kms(struct pipe_loader_device **devs, int fd);
+#endif
 
 /**
  * Initialize a null sw device.
@@ -197,7 +201,7 @@ pipe_loader_sw_probe(struct pipe_loader_device **devs, int ndev);
  *
  * \sa pipe_loader_probe
  */
-boolean
+bool
 pipe_loader_sw_probe_wrapped(struct pipe_loader_device **dev,
                              struct pipe_screen *screen);
 
@@ -211,6 +215,25 @@ pipe_loader_sw_probe_wrapped(struct pipe_loader_device **dev,
 int
 pipe_loader_drm_probe(struct pipe_loader_device **devs, int ndev);
 
+#ifdef HAVE_ZINK
+/**
+ * Get a list of known DRM devices compatible with zink.
+ *
+ * This function is platform-specific.
+ *
+ * \sa pipe_loader_probe
+ */
+int
+pipe_loader_drm_zink_probe(struct pipe_loader_device **devs, int ndev);
+#endif
+
+/**
+ * Get the fd of a render-capable device compatible with a given display-only
+ * device fd.
+ */
+int
+pipe_loader_get_compatible_render_capable_device_fd(int kms_only_fd);
+
 /**
  * Initialize a DRM device in an already opened fd.
  *
@@ -219,7 +242,7 @@ pipe_loader_drm_probe(struct pipe_loader_device **devs, int ndev);
  * \sa pipe_loader_probe
  */
 bool
-pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd);
+pipe_loader_drm_probe_fd(struct pipe_loader_device **dev, int fd, bool zink);
 
 /**
  * Get the dri options used for the DRM driver of the given name, if any.

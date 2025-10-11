@@ -37,6 +37,7 @@
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_upload_mgr.h"
+#include "util/u_debug_cb.h"
 #include "tgsi/tgsi_exec.h"
 #include "sp_buffer.h"
 #include "sp_clear.h"
@@ -52,6 +53,8 @@
 #include "sp_screen.h"
 #include "sp_tex_sample.h"
 #include "sp_image.h"
+
+#include "nir.h"
 
 static void
 softpipe_destroy( struct pipe_context *pipe )
@@ -80,11 +83,10 @@ softpipe_destroy( struct pipe_context *pipe )
 
    for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
       sp_destroy_tile_cache(softpipe->cbuf_cache[i]);
-      pipe_surface_reference(&softpipe->framebuffer.cbufs[i], NULL);
    }
 
    sp_destroy_tile_cache(softpipe->zsbuf_cache);
-   pipe_surface_reference(&softpipe->framebuffer.zsbuf, NULL);
+   util_unreference_framebuffer_state(&softpipe->framebuffer);
 
    for (sh = 0; sh < ARRAY_SIZE(softpipe->tex_cache); sh++) {
       for (i = 0; i < ARRAY_SIZE(softpipe->tex_cache[0]); i++) {
@@ -179,19 +181,6 @@ softpipe_render_condition(struct pipe_context *pipe,
 }
 
 
-static void
-softpipe_set_debug_callback(struct pipe_context *pipe,
-                            const struct util_debug_callback *cb)
-{
-   struct softpipe_context *softpipe = softpipe_context(pipe);
-
-   if (cb)
-      softpipe->debug = *cb;
-   else
-      memset(&softpipe->debug, 0, sizeof(softpipe->debug));
-}
-
-
 struct pipe_context *
 softpipe_create_context(struct pipe_screen *screen,
 			void *priv, unsigned flags)
@@ -231,7 +220,7 @@ softpipe_create_context(struct pipe_screen *screen,
    softpipe_init_image_funcs(&softpipe->pipe);
 
    softpipe->pipe.set_framebuffer_state = softpipe_set_framebuffer_state;
-   softpipe->pipe.set_debug_callback = softpipe_set_debug_callback;
+   softpipe->pipe.set_debug_callback = u_default_set_debug_callback;
 
    softpipe->pipe.draw_vbo = softpipe_draw_vbo;
 
@@ -333,12 +322,12 @@ softpipe_create_context(struct pipe_screen *screen,
 
    /* plug in AA line/point stages */
    draw_install_aaline_stage(softpipe->draw, &softpipe->pipe);
-   draw_install_aapoint_stage(softpipe->draw, &softpipe->pipe);
+   draw_install_aapoint_stage(softpipe->draw, &softpipe->pipe, nir_type_bool32);
 
    /* Do polygon stipple w/ texture map + frag prog. */
    draw_install_pstipple_stage(softpipe->draw, &softpipe->pipe);
 
-   draw_wide_point_sprites(softpipe->draw, TRUE);
+   draw_wide_point_sprites(softpipe->draw, true);
 
    sp_init_surface_functions(softpipe);
 

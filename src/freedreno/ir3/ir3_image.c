@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2017-2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2017-2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -116,7 +98,7 @@ type_t
 ir3_get_type_for_image_intrinsic(const nir_intrinsic_instr *instr)
 {
    const nir_intrinsic_info *info = &nir_intrinsic_infos[instr->intrinsic];
-   int bit_size = info->has_dest ? nir_dest_bit_size(instr->dest) : 32;
+   int bit_size = info->has_dest ? instr->def.bit_size : nir_src_bit_size(instr->src[3]);
 
    nir_alu_type type = nir_type_uint;
    switch (instr->intrinsic) {
@@ -136,32 +118,11 @@ ir3_get_type_for_image_intrinsic(const nir_intrinsic_instr *instr)
          type = nir_type_uint;
       break;
 
-   case nir_intrinsic_image_atomic_add:
-   case nir_intrinsic_bindless_image_atomic_add:
-   case nir_intrinsic_image_atomic_umin:
-   case nir_intrinsic_bindless_image_atomic_umin:
-   case nir_intrinsic_image_atomic_umax:
-   case nir_intrinsic_bindless_image_atomic_umax:
-   case nir_intrinsic_image_atomic_and:
-   case nir_intrinsic_bindless_image_atomic_and:
-   case nir_intrinsic_image_atomic_or:
-   case nir_intrinsic_bindless_image_atomic_or:
-   case nir_intrinsic_image_atomic_xor:
-   case nir_intrinsic_bindless_image_atomic_xor:
-   case nir_intrinsic_image_atomic_exchange:
-   case nir_intrinsic_bindless_image_atomic_exchange:
-   case nir_intrinsic_image_atomic_comp_swap:
-   case nir_intrinsic_bindless_image_atomic_comp_swap:
-   case nir_intrinsic_image_atomic_inc_wrap:
-   case nir_intrinsic_bindless_image_atomic_inc_wrap:
-      type = nir_type_uint;
-      break;
-
-   case nir_intrinsic_image_atomic_imin:
-   case nir_intrinsic_bindless_image_atomic_imin:
-   case nir_intrinsic_image_atomic_imax:
-   case nir_intrinsic_bindless_image_atomic_imax:
-      type = nir_type_int;
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_bindless_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+   case nir_intrinsic_bindless_image_atomic_swap:
+      type = nir_atomic_op_type(nir_intrinsic_atomic_op(instr));
       break;
 
    default:

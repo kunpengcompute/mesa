@@ -29,21 +29,86 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "vk_struct_type_cast.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* common inlines and macros for vulkan drivers */
 
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
 
-#define vk_foreach_struct(__iter, __start) \
-   for (struct VkBaseOutStructure *__iter = (struct VkBaseOutStructure *)(__start); \
-        __iter; __iter = __iter->pNext)
+struct vk_pnext_iterator {
+   VkBaseOutStructure *pos;
+#ifndef NDEBUG
+   VkBaseOutStructure *half_pos;
+   unsigned idx;
+#endif
+   bool done;
+};
 
-#define vk_foreach_struct_const(__iter, __start) \
-   for (const struct VkBaseInStructure *__iter = (const struct VkBaseInStructure *)(__start); \
-        __iter; __iter = __iter->pNext)
+static inline struct vk_pnext_iterator
+vk_pnext_iterator_init(void *start)
+{
+   struct vk_pnext_iterator iter;
+
+   iter.pos = (VkBaseOutStructure *)start;
+#ifndef NDEBUG
+   iter.half_pos = (VkBaseOutStructure *)start;
+   iter.idx = 0;
+#endif
+   iter.done = false;
+
+   return iter;
+}
+
+static inline struct vk_pnext_iterator
+vk_pnext_iterator_init_const(const void *start)
+{
+   return vk_pnext_iterator_init((void *)start);
+}
+
+static inline VkBaseOutStructure *
+vk_pnext_iterator_next(struct vk_pnext_iterator *iter)
+{
+   iter->pos = iter->pos->pNext;
+
+#ifndef NDEBUG
+   if (iter->idx++ & 1) {
+      /** This the "tortoise and the hare" algorithm.  We increment
+       * chaser->pNext every other time *iter gets incremented.  Because *iter
+       * is incrementing twice as fast as chaser->pNext, the distance between
+       * them in the list increases by one for each time we get here.  If we
+       * have a loop, eventually, both iterators will be inside the loop and
+       * this distance will be an integer multiple of the loop length, at
+       * which point the two pointers will be equal.
+       */
+      iter->half_pos = iter->half_pos->pNext;
+      if (iter->half_pos == iter->pos)
+         assert(!"Vulkan input pNext chain has a loop!");
+   }
+#endif
+
+   return iter->pos;
+}
+
+/* Because the outer loop only executes once, independently of what happens in
+ * the inner loop, breaks and continues should work exactly the same as if
+ * there were only one for loop.
+ */
+#define vk_foreach_struct(__e, __start) \
+   for (struct vk_pnext_iterator __iter = vk_pnext_iterator_init(__start); \
+        !__iter.done; __iter.done = true) \
+      for (VkBaseOutStructure *__e = __iter.pos; \
+           __e; __e = vk_pnext_iterator_next(&__iter))
+
+#define vk_foreach_struct_const(__e, __start) \
+   for (struct vk_pnext_iterator __iter = \
+            vk_pnext_iterator_init_const(__start); \
+        !__iter.done; __iter.done = true) \
+      for (const VkBaseInStructure *__e = (VkBaseInStructure *)__iter.pos; \
+           __e; __e = (VkBaseInStructure *)vk_pnext_iterator_next(&__iter))
 
 /**
  * A wrapper for a Vulkan output array. A Vulkan output array is one that
@@ -199,11 +264,13 @@ __vk_find_struct(void *start, VkStructureType sType)
    return NULL;
 }
 
-#define vk_find_struct(__start, __sType) \
-   __vk_find_struct((__start), VK_STRUCTURE_TYPE_##__sType)
+#define vk_find_struct(__start, __sType)                                       \
+  (VK_STRUCTURE_TYPE_##__sType##_cast *)__vk_find_struct(                      \
+      (__start), VK_STRUCTURE_TYPE_##__sType)
 
-#define vk_find_struct_const(__start, __sType) \
-   (const void *)__vk_find_struct((void *)(__start), VK_STRUCTURE_TYPE_##__sType)
+#define vk_find_struct_const(__start, __sType)                                 \
+  (const VK_STRUCTURE_TYPE_##__sType##_cast *)__vk_find_struct(                \
+      (void *)(__start), VK_STRUCTURE_TYPE_##__sType)
 
 static inline void
 __vk_append_struct(void *start, void *element)
@@ -258,14 +325,14 @@ mesa_to_vk_shader_stage(gl_shader_stage mesa_stage)
 /* iterate over a sequence of indexed multidraws for VK_EXT_multi_draw extension */
 /* 'i' must be explicitly declared */
 #define vk_foreach_multi_draw_indexed(_draw, _i, _pDrawInfo, _num_draws, _stride) \
-   for (const VkMultiDrawIndexedInfoEXT *_draw = (const void*)(_pDrawInfo); \
+   for (const VkMultiDrawIndexedInfoEXT *_draw = (const VkMultiDrawIndexedInfoEXT*)(_pDrawInfo); \
         (_i) < (_num_draws); \
         (_i)++, (_draw) = (const VkMultiDrawIndexedInfoEXT*)((const uint8_t*)(_draw) + (_stride)))
 
 /* iterate over a sequence of multidraws for VK_EXT_multi_draw extension */
 /* 'i' must be explicitly declared */
 #define vk_foreach_multi_draw(_draw, _i, _pDrawInfo, _num_draws, _stride) \
-   for (const VkMultiDrawInfoEXT *_draw = (const void*)(_pDrawInfo); \
+   for (const VkMultiDrawInfoEXT *_draw = (const VkMultiDrawInfoEXT*)(_pDrawInfo); \
         (_i) < (_num_draws); \
         (_i)++, (_draw) = (const VkMultiDrawInfoEXT*)((const uint8_t*)(_draw) + (_stride)))
 
@@ -278,19 +345,42 @@ vk_spec_info_to_nir_spirv(const VkSpecializationInfo *spec_info,
 
 #define STACK_ARRAY_SIZE 8
 
-#ifdef __cplusplus
-#define STACK_ARRAY_ZERO_INIT {}
-#else
-#define STACK_ARRAY_ZERO_INIT {0}
-#endif
-
+/* Sometimes gcc may claim -Wmaybe-uninitialized for the stack array in some
+ * places it can't verify that when size is 0 nobody down the call chain reads
+ * the array. Please don't try to fix it by zero-initializing the array here
+ * since it's used in a lot of different places. An "if (size == 0) return;"
+ * may work for you.
+ */
 #define STACK_ARRAY(type, name, size) \
-   type _stack_##name[STACK_ARRAY_SIZE] = STACK_ARRAY_ZERO_INIT; \
+   type _stack_##name[STACK_ARRAY_SIZE]; \
    type *const name = \
      ((size) <= STACK_ARRAY_SIZE ? _stack_##name : (type *)malloc((size) * sizeof(type)))
 
 #define STACK_ARRAY_FINISH(name) \
    if (name != _stack_##name) free(name)
+
+static inline uint8_t
+vk_index_type_to_bytes(enum VkIndexType type)
+{
+   switch (type) {
+   case VK_INDEX_TYPE_NONE_KHR:  return 0;
+   case VK_INDEX_TYPE_UINT8_KHR: return 1;
+   case VK_INDEX_TYPE_UINT16:    return 2;
+   case VK_INDEX_TYPE_UINT32:    return 4;
+   default:                      unreachable("Invalid index type");
+   }
+}
+
+static inline uint32_t
+vk_index_to_restart(enum VkIndexType type)
+{
+   switch (type) {
+   case VK_INDEX_TYPE_UINT8_KHR: return 0xff;
+   case VK_INDEX_TYPE_UINT16:    return 0xffff;
+   case VK_INDEX_TYPE_UINT32:    return 0xffffffff;
+   default:                      unreachable("unexpected index type");
+   }
+}
 
 #ifdef __cplusplus
 }

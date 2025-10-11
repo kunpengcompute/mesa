@@ -25,10 +25,12 @@
 #include <stdint.h>
 #include <stdexcept>
 
+#include <unknwn.h>
 #include <directx/d3d12.h>
 #include <dxgi1_4.h>
 #include <gtest/gtest.h>
 #include <wrl.h>
+#include <dxguids/dxguids.h>
 
 #include "util/u_debug.h"
 #include "clc_compiler.h"
@@ -36,6 +38,46 @@
 #include "dxil_validator.h"
 
 #include <spirv-tools/libspirv.hpp>
+
+#if (defined(_WIN32) && defined(_MSC_VER))
+inline D3D12_CPU_DESCRIPTOR_HANDLE
+GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
+{
+   return heap->GetCPUDescriptorHandleForHeapStart();
+}
+inline D3D12_GPU_DESCRIPTOR_HANDLE
+GetGPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
+{
+   return heap->GetGPUDescriptorHandleForHeapStart();
+}
+inline D3D12_HEAP_PROPERTIES
+GetCustomHeapProperties(ID3D12Device *dev, D3D12_HEAP_TYPE type)
+{
+   return dev->GetCustomHeapProperties(0, type);
+}
+#else
+inline D3D12_CPU_DESCRIPTOR_HANDLE
+GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
+{
+   D3D12_CPU_DESCRIPTOR_HANDLE ret;
+   heap->GetCPUDescriptorHandleForHeapStart(&ret);
+   return ret;
+}
+inline D3D12_GPU_DESCRIPTOR_HANDLE
+GetGPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
+{
+   D3D12_GPU_DESCRIPTOR_HANDLE ret;
+   heap->GetGPUDescriptorHandleForHeapStart(&ret);
+   return ret;
+}
+inline D3D12_HEAP_PROPERTIES
+GetCustomHeapProperties(ID3D12Device *dev, D3D12_HEAP_TYPE type)
+{
+   D3D12_HEAP_PROPERTIES ret;
+   dev->GetCustomHeapProperties(&ret, 0, type);
+   return ret;
+}
+#endif
 
 using std::runtime_error;
 using Microsoft::WRL::ComPtr;
@@ -208,7 +250,7 @@ ComputeTest::create_root_signature(const ComputeTest::Resources &resources)
    if (FAILED(dev->CreateRootSignature(0,
        sig->GetBufferPointer(),
        sig->GetBufferSize(),
-       __uuidof(ret),
+       __uuidof(ID3D12RootSignature),
        (void **)& ret)))
       throw runtime_error("CreateRootSignature failed");
 
@@ -225,7 +267,7 @@ ComputeTest::create_pipeline_state(ComPtr<ID3D12RootSignature> &root_sig,
 
    ComPtr<ID3D12PipelineState> pipeline_state;
    if (FAILED(dev->CreateComputePipelineState(&pipeline_desc,
-                                              __uuidof(pipeline_state),
+                                              __uuidof(ID3D12PipelineState),
                                               (void **)& pipeline_state)))
       throw runtime_error("Failed to create pipeline state");
    return pipeline_state;
@@ -247,7 +289,7 @@ ComputeTest::create_buffer(int size, D3D12_HEAP_TYPE heap_type)
    desc.Flags = heap_type == D3D12_HEAP_TYPE_DEFAULT ? D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS : D3D12_RESOURCE_FLAG_NONE;
    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-   D3D12_HEAP_PROPERTIES heap_pris = dev->GetCustomHeapProperties(0, heap_type);
+   D3D12_HEAP_PROPERTIES heap_pris = GetCustomHeapProperties(dev, heap_type);
 
    ComPtr<ID3D12Resource> res;
    if (FAILED(dev->CreateCommittedResource(&heap_pris,
@@ -382,7 +424,7 @@ ComputeTest::add_uav_resource(ComputeTest::Resources &resources,
    size_t size = align(elem_size * num_elems, 4);
    D3D12_CPU_DESCRIPTOR_HANDLE handle;
    ComPtr<ID3D12Resource> res;
-   handle = uav_heap->GetCPUDescriptorHandleForHeapStart();
+   handle = GetCPUDescriptorHandleForHeapStart(uav_heap);
    handle = offset_cpu_handle(handle, resources.descs.size() * uav_heap_incr);
 
    if (size) {
@@ -407,7 +449,7 @@ ComputeTest::add_cbv_resource(ComputeTest::Resources &resources,
    unsigned aligned_size = align(size, 256);
    D3D12_CPU_DESCRIPTOR_HANDLE handle;
    ComPtr<ID3D12Resource> res;
-   handle = uav_heap->GetCPUDescriptorHandleForHeapStart();
+   handle = GetCPUDescriptorHandleForHeapStart(uav_heap);
    handle = offset_cpu_handle(handle, resources.descs.size() * uav_heap_incr);
 
    if (size) {
@@ -441,6 +483,8 @@ ComputeTest::run_shader_with_raw_args(Shader shader,
    // Older WARP and some hardware doesn't support int64, so for these tests, unconditionally lower away int64
    // A more complex runtime can be smarter about detecting when this needs to be done
    conf.lower_bit_size = 64;
+   conf.max_shader_model = SHADER_MODEL_6_2;
+   conf.validator_version = DXIL_VALIDATOR_1_4;
 
    if (!shader.dxil->metadata.local_size[0])
       conf.local_size[0] = compile_args.x;
@@ -568,7 +612,7 @@ ComputeTest::run_shader_with_raw_args(Shader shader,
 
    cmdlist->SetDescriptorHeaps(1, &uav_heap);
    cmdlist->SetComputeRootSignature(root_sig.Get());
-   cmdlist->SetComputeRootDescriptorTable(0, uav_heap->GetGPUDescriptorHandleForHeapStart());
+   cmdlist->SetComputeRootDescriptorTable(0, GetGPUDescriptorHandleForHeapStart(uav_heap));
    cmdlist->SetPipelineState(pipeline_state.Get());
 
    cmdlist->Dispatch(compile_args.x / conf.local_size[0],
@@ -696,7 +740,7 @@ ComputeTest::SetUp()
 
    uav_heap_incr = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-   event = CreateEvent(NULL, FALSE, FALSE, NULL);
+   event = CreateEvent(NULL, false, false, NULL);
    if (!event)
       throw runtime_error("Failed to create event");
    fence_value = 1;
@@ -753,6 +797,9 @@ ComputeTest::compile(const std::vector<const char *> &sources,
    };
    args.args = compile_args.data();
    args.num_args = (unsigned)compile_args.size();
+   args.features.images = true;
+   args.features.images_read_write = true;
+   args.features.int64 = true;
    ComputeTest::Shader shader;
 
    std::vector<Shader> shaders;
@@ -846,13 +893,14 @@ ComputeTest::configure(Shader &shader,
          throw runtime_error("failed to parse spirv!");
    }
 
-   shader.dxil = std::shared_ptr<clc_dxil_object>(new clc_dxil_object{}, [](clc_dxil_object *dxil)
+   std::unique_ptr<clc_dxil_object> dxil(new clc_dxil_object{});
+   if (!clc_spirv_to_dxil(compiler_ctx, shader.obj.get(), shader.metadata.get(), "main_test", conf, nullptr, &logger, dxil.get()))
+      throw runtime_error("failed to compile kernel!");
+   shader.dxil = std::shared_ptr<clc_dxil_object>(dxil.release(), [](clc_dxil_object *dxil)
       {
          clc_free_dxil_object(dxil);
          delete dxil;
       });
-   if (!clc_spirv_to_dxil(compiler_ctx, shader.obj.get(), shader.metadata.get(), "main_test", conf, nullptr, &logger, shader.dxil.get()))
-      throw runtime_error("failed to compile kernel!");
 }
 
 void

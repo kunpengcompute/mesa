@@ -97,7 +97,7 @@ i915_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
       mapped_indices = info->has_user_indices ? info->index.user : NULL;
       if (!mapped_indices)
          mapped_indices = i915_buffer(info->index.resource)->data;
-      draw_set_indexes(draw, (ubyte *)mapped_indices, info->index_size, ~0);
+      draw_set_indexes(draw, (uint8_t *)mapped_indices, info->index_size, ~0);
    }
 
    if (i915->constants[PIPE_SHADER_VERTEX])
@@ -152,10 +152,7 @@ i915_destroy(struct pipe_context *pipe)
       i915->iws->batchbuffer_destroy(i915->batch);
 
    /* unbind framebuffer */
-   for (i = 0; i < PIPE_MAX_COLOR_BUFS; i++) {
-      pipe_surface_reference(&i915->framebuffer.cbufs[i], NULL);
-   }
-   pipe_surface_reference(&i915->framebuffer.zsbuf, NULL);
+   util_unreference_framebuffer_state(&i915->framebuffer);
 
    /* unbind constant buffers */
    for (i = 0; i < PIPE_SHADER_TYPES; i++) {
@@ -237,7 +234,7 @@ i915_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
    i915->no_log_program_errors = false;
 
    draw_install_aaline_stage(i915->draw, &i915->base);
-   draw_install_aapoint_stage(i915->draw, &i915->base);
+   draw_install_aapoint_stage(i915->draw, &i915->base, nir_type_float32);
    draw_enable_point_sprites(i915->draw, true);
 
    i915->dirty = ~0;

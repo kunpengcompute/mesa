@@ -39,6 +39,11 @@ struct v3dv_bo {
 
    const char *name;
 
+   /* In a CL where a BRANCH has been emitted, the offset of the BRANCH
+    * instruction in the BO.
+    */
+   uint32_t cl_branch_offset;
+
    /** Entry in the linked list of buffers freed, by age. */
    struct list_head time_list;
    /** Entry in the per-page-count linked list of buffers freed (by age). */
@@ -52,6 +57,9 @@ struct v3dv_bo {
     */
    bool private;
 
+   /** If this BO has been imported */
+   bool is_import;
+
    /**
     * If this BO was allocated for a swapchain on the display device, the
     * handle of the dumb BO on that device.
@@ -62,6 +70,7 @@ struct v3dv_bo {
 };
 
 void v3dv_bo_init(struct v3dv_bo *bo, uint32_t handle, uint32_t size, uint32_t offset, const char *name, bool private);
+void v3dv_bo_init_import(struct v3dv_bo *bo, uint32_t handle, uint32_t size, uint32_t offset, bool private);
 
 struct v3dv_bo *v3dv_bo_alloc(struct v3dv_device *device, uint32_t size, const char *name, bool private);
 

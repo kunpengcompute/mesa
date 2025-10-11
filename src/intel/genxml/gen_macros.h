@@ -92,6 +92,12 @@
 #elif (GFX_VERx10 == 125)
 #  define GENX(X) GFX125_##X
 #  define genX(x) gfx125_##x
+#elif (GFX_VERx10 == 200)
+#  define GENX(X) GFX20_##X
+#  define genX(x) gfx20_##x
+#elif (GFX_VERx10 == 300)
+#  define GENX(X) GFX30_##X
+#  define genX(x) gfx30_##x
 #else
 #  error "Need to add prefixing macros for this gen"
 #endif

@@ -30,7 +30,7 @@
 
 #include <windows.h> /* for HDC */
 
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 #include "frontend/api.h"
 
 struct pipe_screen;
@@ -51,8 +51,9 @@ struct stw_winsys_framebuffer
    (*destroy)(struct stw_winsys_framebuffer *fb,
               struct pipe_context *context);
 
-   boolean
-   (*present)(struct stw_winsys_framebuffer *fb);
+   bool
+   (*present)(struct stw_winsys_framebuffer *fb,
+              int interval);
 
    void
    (*resize)(struct stw_winsys_framebuffer *fb,
@@ -62,6 +63,14 @@ struct stw_winsys_framebuffer
    struct pipe_resource *
    (*get_resource)(struct stw_winsys_framebuffer *fb,
                    enum st_attachment_type statt);
+
+   void
+   (*flush_frontbuffer)(struct stw_winsys_framebuffer *fb,
+                        struct pipe_context *context);
+
+   void
+   (*set_latency)(struct stw_winsys_framebuffer *fb,
+                  int latency);
 };
 
 struct stw_winsys
@@ -84,7 +93,7 @@ struct stw_winsys
     *
     * @sa GLCBPRESENTBUFFERSDATA::AdapterLuid;
     */
-   boolean
+   bool
    (*get_adapter_luid)( struct pipe_screen *screen,
                         HDC hDC,
                         LUID *pAdapterLuid );
@@ -120,13 +129,6 @@ struct stw_winsys
                ULONGLONG PresentHistoryToken );
 
    /**
-    * Query whether the driver can support GDI and/or double-buffering in its
-    * pixel formats (optional).
-    */
-   unsigned
-   (*get_pfd_flags)( struct pipe_screen *screen );
-
-   /**
     * Create a winsys-specific object for a given DC's framebuffer
     */
    struct stw_winsys_framebuffer *
@@ -141,10 +143,10 @@ struct stw_winsys
    (*get_name)(void);
 };
 
-boolean
+bool
 stw_init(const struct stw_winsys *stw_winsys);
 
-boolean
+bool
 stw_init_thread(void);
 
 void

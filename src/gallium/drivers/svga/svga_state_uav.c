@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2022 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2022-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "pipe/p_defines.h"
 #include "util/u_bitmask.h"
@@ -29,7 +11,6 @@
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "tgsi/tgsi_parse.h"
 
 #include "svga_context.h"
 #include "svga_cmd.h"
@@ -62,7 +43,7 @@ svga_uav_cache_init(struct svga_context *svga)
  * Helper function to compare two image view descriptions.
  * Return TRUE if they are identical.
  */
-static boolean
+static bool
 image_view_desc_identical(struct pipe_image_view *img1,
                           struct pipe_image_view *img2)
 {
@@ -70,15 +51,15 @@ image_view_desc_identical(struct pipe_image_view *img1,
        (img1->format != img2->format) ||
        (img1->access != img2->access) ||
        (img1->shader_access != img2->shader_access))
-      return FALSE;
+      return false;
 
    if (img1->resource->target == PIPE_BUFFER) {
       if ((img1->u.buf.offset != img2->u.buf.offset) ||
           (img1->u.buf.size != img2->u.buf.size))
-         return FALSE;
+         return false;
    }
 
-   return TRUE;
+   return true;
 }
 
 
@@ -86,7 +67,7 @@ image_view_desc_identical(struct pipe_image_view *img1,
  * Helper function to compare two shader buffer descriptions.
  * Return TRUE if they are identical.
  */
-static boolean
+static bool
 shader_buffer_desc_identical(struct pipe_shader_buffer *buf1,
                              struct pipe_shader_buffer *buf2)
 {
@@ -98,7 +79,7 @@ shader_buffer_desc_identical(struct pipe_shader_buffer *buf1,
  * Helper function to compare two uav cache entry descriptions.
  * Return TRUE if they are identical.
  */
-static boolean
+static bool
 uav_desc_identical(enum svga_uav_type uav_type,
                    void *desc, void *uav_desc)
 {
@@ -106,7 +87,7 @@ uav_desc_identical(enum svga_uav_type uav_type,
       struct svga_image_view *img = (struct svga_image_view *)desc;
       struct svga_image_view *uav_img = (struct svga_image_view *)uav_desc;
       if (img->resource != uav_img->resource)
-         return FALSE;
+         return false;
 
       return image_view_desc_identical(&img->desc, &uav_img->desc);
    }
@@ -116,10 +97,10 @@ uav_desc_identical(enum svga_uav_type uav_type,
          (struct svga_shader_buffer *)uav_desc;
 
       if (buf->resource != uav_buf->resource)
-         return FALSE;
+         return false;
 
       if (buf->handle != uav_buf->handle)
-         return FALSE;
+         return false;
 
       return shader_buffer_desc_identical(&buf->desc, &uav_buf->desc);
    }
@@ -267,7 +248,7 @@ svga_create_uav(struct svga_context *svga,
    /* allocate a uav id */
    uaViewId = util_bitmask_add(svga->uav_id_bm);
 
-   SVGA_DBG(DEBUG_UAV, "%s: uavId=%d surf=0x%x\n", __FUNCTION__, uaViewId, surf);
+   SVGA_DBG(DEBUG_UAV, "%s: uavId=%d surf=0x%x\n", __func__, uaViewId, surf);
 
    ret = SVGA3D_sm5_DefineUAView(svga->swc, uaViewId, surf,
                                  svga_format, resourceDim, desc);
@@ -289,7 +270,7 @@ svga_destroy_uav(struct svga_context *svga)
 {
    unsigned index = 0;
 
-   SVGA_DBG(DEBUG_UAV, "%s: ", __FUNCTION__);
+   SVGA_DBG(DEBUG_UAV, "%s: ", __func__);
 
    while ((index = util_bitmask_get_next_index(svga->uav_to_free_id_bm, index))
           != UTIL_BITMASK_INVALID_INDEX) {
@@ -363,21 +344,21 @@ svga_create_uav_list(struct svga_context *svga,
 
    if (pipe_type == SVGA_PIPE_GRAPHICS) {
       first_shader = PIPE_SHADER_VERTEX;
-      last_shader = PIPE_SHADER_TESS_EVAL;
+      last_shader = PIPE_SHADER_COMPUTE;
    } else {
       first_shader = PIPE_SHADER_COMPUTE;
-      last_shader = PIPE_SHADER_COMPUTE;
+      last_shader = first_shader + 1;
    }
 
    for (enum pipe_shader_type shader = first_shader;
-        shader <= last_shader; shader++) {
+        shader < last_shader; shader++) {
 
       unsigned num_image_views = svga->curr.num_image_views[shader];
       unsigned num_shader_buffers = svga->curr.num_shader_buffers[shader];
 
       SVGA_DBG(DEBUG_UAV,
             "%s: shader=%d num_image_views=%d num_shader_buffers=%d\n",
-            __FUNCTION__, shader, num_image_views, num_shader_buffers);
+            __func__, shader, num_image_views, num_shader_buffers);
 
       /* add enabled shader images to the uav list */
       if (num_image_views) {
@@ -448,6 +429,19 @@ svga_create_uav_list(struct svga_context *svga,
                 &svga->curr.shader_buffers[shader][i];
             struct pipe_resource *res = cur_sbuf->resource;
             SVGA3dUAViewId uaViewId;
+	    enum pipe_error ret;
+
+            /* Use srv rawbuffer to access readonly shader buffer */
+	    if (svga_shader_buffer_can_use_srv(svga, shader, i, cur_sbuf)) {
+               ret = svga_shader_buffer_bind_srv(svga, shader, i, cur_sbuf);
+               if (ret != PIPE_OK)
+                  return ret;
+               continue;
+	    } else {
+               ret = svga_shader_buffer_unbind_srv(svga, shader, i, cur_sbuf);
+               if (ret != PIPE_OK)
+                  return ret;
+            }
 
             if (res) {
                /* Get the buffer handle that can be bound as uav. */
@@ -511,7 +505,7 @@ svga_create_uav_list(struct svga_context *svga,
    unsigned num_atomic_buffers = svga->curr.num_atomic_buffers;
 
    SVGA_DBG(DEBUG_UAV,
-            "%s: num_atomic_buffers=%d\n", __FUNCTION__, num_atomic_buffers);
+            "%s: num_atomic_buffers=%d\n", __func__, num_atomic_buffers);
 
    if (num_atomic_buffers) {
       num_atomic_buffers = MIN2(num_atomic_buffers, num_free_uavs-*num_uavs);
@@ -600,14 +594,14 @@ svga_save_uav_state(struct svga_context *svga,
 
    if (pipe_type == SVGA_PIPE_GRAPHICS) {
       first_shader = PIPE_SHADER_VERTEX;
-      last_shader = PIPE_SHADER_TESS_EVAL;
+      last_shader = PIPE_SHADER_COMPUTE;
    } else {
       first_shader = PIPE_SHADER_COMPUTE;
-      last_shader = PIPE_SHADER_COMPUTE;
+      last_shader = first_shader + 1;
    }
 
    for (enum pipe_shader_type shader = first_shader;
-        shader <= last_shader; shader++) {
+        shader < last_shader; shader++) {
 
       /**
        * Save the current shader images
@@ -770,10 +764,10 @@ update_uav(struct svga_context *svga, uint64_t dirty)
       goto done;
 
    /* Send the SetUAViews command */
-   SVGA_DBG(DEBUG_UAV, "%s: SetUAViews uavSpliceIndex=%d", __FUNCTION__,
+   SVGA_DBG(DEBUG_UAV, "%s: SetUAViews uavSpliceIndex=%d", __func__,
             uavSpliceIndex);
 
-#ifdef DEBUG
+#if MESA_DEBUG
    for (unsigned i = 0; i < ARRAY_SIZE(uaViewIds); i++) {
       SVGA_DBG(DEBUG_UAV, " %d ", uaViewIds[i]);
    }
@@ -877,9 +871,9 @@ update_cs_uav(struct svga_context *svga, uint64_t dirty)
 
    /* Send the uaviews to compute */
 
-   SVGA_DBG(DEBUG_UAV, "%s: SetCSUAViews", __FUNCTION__);
+   SVGA_DBG(DEBUG_UAV, "%s: SetCSUAViews", __func__);
 
-#ifdef DEBUG
+#if MESA_DEBUG
    for (unsigned i = 0; i < ARRAY_SIZE(uaViewIds); i++) {
       SVGA_DBG(DEBUG_UAV, " %d ", uaViewIds[i]);
    }

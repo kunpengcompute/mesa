@@ -35,15 +35,9 @@
 #include "main/glformats.h"
 #include "main/format_unpack.h"
 #include "main/format_pack.h"
-#include "util/u_cpu_detect.h"
 
 // Test fixture for Format tests.
-// Currently just ensures that util_cpu_detect() has been called
 class MesaFormatsTest : public ::testing::Test {
-  protected:
-    MesaFormatsTest() {
-       util_cpu_detect();
-    }
 };
 
 /**
@@ -64,11 +58,8 @@ TEST_F(MesaFormatsTest, FormatTypeAndComps)
        * not handled.
        */
       if (!_mesa_is_format_compressed(f)) {
-         GLenum datatype = 0;
-         GLuint comps = 0;
-
          /* If the datatype is zero, the format was not handled */
-         _mesa_uncompressed_format_to_type_and_comps(f, &datatype, &comps);
+          GLenum datatype = _mesa_uncompressed_format_to_type(f);
          EXPECT_NE(datatype, (GLenum)0);
       }
 

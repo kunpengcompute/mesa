@@ -40,7 +40,7 @@
  */
 
 
-#include "glheader.h"
+#include "util/glheader.h"
 #include "hash.h"
 #include "image.h"
 
@@ -206,7 +206,7 @@ _mesa_lookup_vao(struct gl_context *ctx, GLuint id)
     *     the name of the vertex array object."
     */
    if (id == 0) {
-      if (ctx->API == API_OPENGL_COMPAT)
+      if (_mesa_is_desktop_gl_compat(ctx))
          return ctx->Array.DefaultVAO;
 
       return NULL;
@@ -218,7 +218,7 @@ _mesa_lookup_vao(struct gl_context *ctx, GLuint id)
          vao = ctx->Array.LastLookedUpVAO;
       } else {
          vao = (struct gl_vertex_array_object *)
-            _mesa_HashLookupLocked(ctx->Array.Objects, id);
+            _mesa_HashLookupLocked(&ctx->Array.Objects, id);
 
          _mesa_reference_vao(ctx, &ctx->Array.LastLookedUpVAO, vao);
       }
@@ -250,7 +250,7 @@ _mesa_lookup_vao_err(struct gl_context *ctx, GLuint id,
     *     the name of the vertex array object."
     */
    if (id == 0) {
-      if (is_ext_dsa || ctx->API == API_OPENGL_CORE) {
+      if (is_ext_dsa || _mesa_is_desktop_gl_core(ctx)) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "%s(zero is not valid vaobj name%s)",
                      caller,
@@ -267,7 +267,7 @@ _mesa_lookup_vao_err(struct gl_context *ctx, GLuint id,
          vao = ctx->Array.LastLookedUpVAO;
       } else {
          vao = (struct gl_vertex_array_object *)
-            _mesa_HashLookupLocked(ctx->Array.Objects, id);
+            _mesa_HashLookupLocked(&ctx->Array.Objects, id);
 
          /* The ARB_direct_state_access specification says:
           *
@@ -515,10 +515,12 @@ compute_vbo_offset_range(const struct gl_vertex_array_object *vao,
  */
 void
 _mesa_update_vao_derived_arrays(struct gl_context *ctx,
-                                struct gl_vertex_array_object *vao)
+                                struct gl_vertex_array_object *vao,
+                                bool display_list)
 {
+   assert(display_list || !ctx->Const.UseVAOFastPath);
    /* Make sure we do not run into problems with shared objects */
-   assert(!vao->SharedAndImmutable || (!vao->NewVertexBuffers && !vao->NewVertexElements));
+   assert(!vao->SharedAndImmutable);
 
    /* Limit used for common binding scanning below. */
    const GLsizeiptr MaxRelativeOffset =
@@ -541,24 +543,6 @@ _mesa_update_vao_derived_arrays(struct gl_context *ctx,
    const GLbitfield enabled = vao->Enabled;
    /* VBO array bits. */
    const GLbitfield vbos = vao->VertexAttribBufferMask;
-   const GLbitfield divisor_is_nonzero = vao->NonZeroDivisorMask;
-
-   /* Compute and store effectively enabled and mapped vbo arrays */
-   vao->_EffEnabledVBO = _mesa_vao_enable_to_vp_inputs(mode, enabled & vbos);
-   vao->_EffEnabledNonZeroDivisor =
-      _mesa_vao_enable_to_vp_inputs(mode, enabled & divisor_is_nonzero);
-
-   /* Fast path when the VAO is updated too often. */
-   if (vao->IsDynamic)
-      return;
-
-   /* More than 4 updates turn the VAO to dynamic. */
-   if (ctx->Const.AllowDynamicVAOFastPath && ++vao->NumUpdates > 4) {
-      vao->IsDynamic = true;
-      /* IsDynamic changes how vertex elements map to vertex buffers. */
-      vao->NewVertexElements = true;
-      return;
-   }
 
    /* Walk those enabled arrays that have a real vbo attached */
    GLbitfield mask = enabled;
@@ -807,17 +791,6 @@ _mesa_update_vao_derived_arrays(struct gl_context *ctx,
 }
 
 
-void
-_mesa_set_vao_immutable(struct gl_context *ctx,
-                        struct gl_vertex_array_object *vao)
-{
-   _mesa_update_vao_derived_arrays(ctx, vao);
-   vao->NewVertexBuffers = false;
-   vao->NewVertexElements = false;
-   vao->SharedAndImmutable = true;
-}
-
-
 /**
  * Map buffer objects used in attribute arrays.
  */
@@ -941,24 +914,13 @@ bind_vertex_array(struct gl_context *ctx, GLuint id, bool no_error)
       newObj->EverBound = GL_TRUE;
    }
 
-   /* The _DrawArrays pointer is pointing at the VAO being unbound and
-    * that VAO may be in the process of being deleted. If it's not going
-    * to be deleted, this will have no effect, because the pointer needs
-    * to be updated by the VBO module anyway.
-    *
-    * Before the VBO module can update the pointer, we have to set it
-    * to NULL for drivers not to set up arrays which are not bound,
-    * or to prevent a crash if the VAO being unbound is going to be
-    * deleted.
-    */
-   _mesa_set_draw_vao(ctx, ctx->Array._EmptyVAO, 0);
-
    _mesa_reference_vao(ctx, &ctx->Array.VAO, newObj);
+   _mesa_set_draw_vao(ctx, newObj);
 
    /* Update the valid-to-render state if binding on unbinding default VAO
     * if drawing with the default VAO is invalid.
     */
-   if (ctx->API == API_OPENGL_CORE &&
+   if (_mesa_is_desktop_gl_core(ctx) &&
        (oldObj == ctx->Array.DefaultVAO) != (newObj == ctx->Array.DefaultVAO))
       _mesa_update_valid_to_render_state(ctx);
 }
@@ -1009,12 +971,10 @@ delete_vertex_arrays(struct gl_context *ctx, GLsizei n, const GLuint *ids)
             _mesa_BindVertexArray_no_error(0);
 
          /* The ID is immediately freed for re-use */
-         _mesa_HashRemoveLocked(ctx->Array.Objects, obj->Name);
+         _mesa_HashRemoveLocked(&ctx->Array.Objects, obj->Name);
 
          if (ctx->Array.LastLookedUpVAO == obj)
             _mesa_reference_vao(ctx, &ctx->Array.LastLookedUpVAO, NULL);
-         if (ctx->Array._DrawVAO == obj)
-            _mesa_set_draw_vao(ctx, ctx->Array._EmptyVAO, 0);
 
          /* Unreference the array object.
           * If refcount hits zero, the object will be deleted.
@@ -1066,7 +1026,7 @@ gen_vertex_arrays(struct gl_context *ctx, GLsizei n, GLuint *arrays,
    if (!arrays)
       return;
 
-   _mesa_HashFindFreeKeys(ctx->Array.Objects, arrays, n);
+   _mesa_HashFindFreeKeys(&ctx->Array.Objects, arrays, n);
 
    /* For the sake of simplicity we create the array objects in both
     * the Gen* and Create* cases.  The only difference is the value of
@@ -1081,7 +1041,7 @@ gen_vertex_arrays(struct gl_context *ctx, GLsizei n, GLuint *arrays,
          return;
       }
       obj->EverBound = create;
-      _mesa_HashInsertLocked(ctx->Array.Objects, obj->Name, obj, true);
+      _mesa_HashInsertLocked(&ctx->Array.Objects, obj->Name, obj);
    }
 }
 

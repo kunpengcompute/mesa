@@ -1,24 +1,6 @@
 /*
- * Copyright (c) 2013 Rob Clark <robdclark@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2013 Rob Clark <robdclark@gmail.com>
+ * SPDX-License-Identifier: MIT
  */
 
 #include <assert.h>
@@ -31,7 +13,7 @@
 #include <util/log.h>
 #include <util/u_debug.h>
 
-#include "isa/isa.h"
+#include "freedreno/isa/ir3-isa.h"
 
 #include "disasm.h"
 #include "instr-a3xx.h"
@@ -153,7 +135,12 @@ static const struct opc_info {
    /* clang-format off */
    /* category 0: */
    OPC(0, OPC_NOP,          nop),
-   OPC(0, OPC_B,            b),
+   OPC(0, OPC_BR,           br),
+   OPC(0, OPC_BRAC,         brac),
+   OPC(0, OPC_BRAA,         braa),
+   OPC(0, OPC_BRAO,         brao),
+   OPC(0, OPC_BALL,         ball),
+   OPC(0, OPC_BANY,         bany),
    OPC(0, OPC_JUMP,         jump),
    OPC(0, OPC_CALL,         call),
    OPC(0, OPC_RET,          ret),
@@ -191,9 +178,10 @@ static const struct opc_info {
    OPC(1, OPC_ELECT_MACRO,  elect.macro),
    OPC(1, OPC_READ_COND_MACRO, read_cond.macro),
    OPC(1, OPC_READ_FIRST_MACRO, read_first.macro),
-   OPC(1, OPC_SWZ_SHARED_MACRO, swz_shared.macro),
    OPC(1, OPC_SCAN_MACRO, scan.macro),
+   OPC(1, OPC_SCAN_CLUSTERS_MACRO, scan_clusters.macro),
    OPC(1, OPC_SHPS_MACRO, shps.macro),
+   OPC(1, OPC_PUSH_CONSTS_LOAD_MACRO, push_consts_load.macro),
 
    /* category 2: */
    OPC(2, OPC_ADD_F,        add.f),
@@ -242,6 +230,7 @@ static const struct opc_info {
    OPC(2, OPC_CBITS_B,      cbits.b),
    OPC(2, OPC_SHB,          shb),
    OPC(2, OPC_MSAD,         msad),
+   OPC(2, OPC_FLAT_B,       flat.b),
 
    /* category 3: */
    OPC(3, OPC_MAD_U16,      mad.u16),
@@ -316,6 +305,7 @@ static const struct opc_info {
    OPC(5, OPC_QUAD_SHUFFLE_HORIZ, quad_shuffle.horiz),
    OPC(5, OPC_QUAD_SHUFFLE_VERT,  quad_shuffle.vert),
    OPC(5, OPC_QUAD_SHUFFLE_DIAG,  quad_shuffle.diag),
+   OPC(5, OPC_TCINV,        tcinv),
    /* macros are needed here for ir3_print */
    OPC(5, OPC_DSXPP_MACRO,  dsxpp.macro),
    OPC(5, OPC_DSYPP_MACRO,  dsypp.macro),
@@ -395,24 +385,26 @@ static const struct opc_info {
    OPC(6, OPC_GETWID,       getwid),
    OPC(6, OPC_GETFIBERID,   getfiberid),
    OPC(6, OPC_STC,          stc),
+   OPC(6, OPC_STSC,         stsc),
    OPC(6, OPC_LDC_K,        ldc.k),
+   OPC(6, OPC_LDG_K,        ldg.k),
+   OPC(6, OPC_SHFL,         shfl),
 
    OPC(6, OPC_SPILL_MACRO,  spill.macro),
    OPC(6, OPC_RELOAD_MACRO, reload.macro),
 
    OPC(7, OPC_BAR,          bar),
    OPC(7, OPC_FENCE,        fence),
+   OPC(7, OPC_LOCK,         lock),
+   OPC(7, OPC_UNLOCK,       unlock),
 /* clang-format on */
 #undef OPC
 };
 
-#define GETINFO(instr)                                                         \
-   (&(opcs[((instr)->opc_cat << NOPC_BITS) | instr_opc(instr, ctx->gpu_id)]))
-
 const char *
 disasm_a3xx_instr_name(opc_t opc)
 {
-   if (opc_cat(opc) == -1)
+   if (opc_cat(opc) == OPC_META)
       return "??meta??";
    return opcs[opc].name;
 }
@@ -580,7 +572,7 @@ disasm_a3xx_stat(uint32_t *dwords, int sizedwords, int level, FILE *out,
       .max_errors = 5,
       .branch_labels = true,
       .field_cb = disasm_field_cb,
-      .instr_cb = disasm_instr_cb,
+      .pre_instr_cb = disasm_instr_cb,
    };
    struct disasm_ctx ctx = {
       .out = out,
@@ -594,7 +586,7 @@ disasm_a3xx_stat(uint32_t *dwords, int sizedwords, int level, FILE *out,
 
    decode_options.cbdata = &ctx;
 
-   isa_decode(dwords, sizedwords * 4, out, &decode_options);
+   ir3_isa_disasm(dwords, sizedwords * 4, out, &decode_options);
 
    disasm_handle_last(&ctx);
 

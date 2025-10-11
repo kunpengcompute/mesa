@@ -1,28 +1,10 @@
 # Copyright © 2017 Intel Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 glapi_gen_gl_xml = files('../registry/gl.xml')
 glapi_gen_mapi_deps = [
   glapi_gen_gl_xml,
   genCommon_py,
-  glapi_gen_gl_xml,
 ]
 
 gl_and_es_api_files = files('gl_and_es_API.xml')
@@ -115,6 +97,7 @@ api_xml_files = files(
   'EXT_draw_buffers2.xml',
   'EXT_external_objects.xml',
   'EXT_external_objects_fd.xml',
+  'EXT_external_objects_win32.xml',
   'EXT_framebuffer_object.xml',
   'EXT_gpu_shader4.xml',
   'EXT_multisampled_render_to_texture.xml',
@@ -124,6 +107,8 @@ api_xml_files = files(
   'EXT_shader_image_load_store.xml',
   'EXT_texture_array.xml',
   'EXT_texture_integer.xml',
+  'EXT_texture_storage.xml',
+  'EXT_texture_storage_compression.xml',
   'EXT_transform_feedback.xml',
   'EXT_vertex_attrib_64bit.xml',
   'EXT_window_rectangles.xml',
@@ -133,6 +118,7 @@ api_xml_files = files(
   'KHR_context_flush_control.xml',
   'KHR_robustness.xml',
   'KHR_robustness_es.xml',
+  'KHR_shader_subgroup.xml',
   'KHR_texture_compression_astc.xml',
   'NV_alpha_to_coverage_dither_control.xml',
   'NV_copy_image.xml',
@@ -145,6 +131,7 @@ api_xml_files = files(
   'OES_fixed_point.xml',
   'OES_single_precision.xml',
   'OES_texture_compression_astc.xml',
+  'OVR_multiview.xml',
   'GL3x.xml',
   'GL4x.xml',
 )
@@ -252,12 +239,30 @@ main_api_save_h = custom_target(
   capture : true,
 )
 
-main_api_vtxfmt_init_h = custom_target(
-  'api_vtxfmt_init.h',
-  input : ['api_vtxfmt_init_h.py', 'gl_and_es_API.xml'],
-  output : 'api_vtxfmt_init.h',
+main_api_beginend_init_h = custom_target(
+  'api_beginend_init.h',
+  input : ['api_beginend_init_h.py', 'gl_and_es_API.xml'],
+  output : 'api_beginend_init.h',
   command : [prog_python, '@INPUT0@', '-f', '@INPUT1@'],
   depend_files : files('apiexec.py') + glapi_gen_depends,
+  capture : true,
+)
+
+main_api_hw_select_init_h = custom_target(
+  'api_hw_select_init.h',
+  input : ['api_hw_select_init_h.py', 'gl_API.xml'],
+  output : 'api_hw_select_init.h',
+  command : [prog_python, '@INPUT0@', '-f', '@INPUT1@'],
+  depend_files : files('apiexec.py') + glapi_gen_depends,
+  capture : true,
+)
+
+main_unmarshal_table_c = custom_target(
+  'unmarshal_table.c',
+  input : ['gl_unmarshal_table.py', 'gl_and_es_API.xml'],
+  output : 'unmarshal_table.c',
+  command : [prog_python, '@INPUT0@', '@INPUT1@', sizeof_pointer],
+  depend_files : files('marshal_XML.py') + glapi_gen_depends,
   capture : true,
 )
 
@@ -267,7 +272,7 @@ foreach x : ['0', '1', '2', '3', '4', '5', '6', '7']
     'marshal_generated' + x + '.c',
     input : ['gl_marshal.py', 'gl_and_es_API.xml'],
     output : 'marshal_generated' + x + '.c',
-    command : [prog_python, '@INPUT0@', '-f', '@INPUT1@', '-i', x, '-n', '8'],
+    command : [prog_python, '@INPUT0@', '@INPUT1@', x, '8', sizeof_pointer],
     depend_files : files('marshal_XML.py') + glapi_gen_depends,
     capture : true,
   )

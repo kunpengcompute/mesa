@@ -42,7 +42,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "c99_compat.h"
+#include "drm-uapi/drm_fourcc.h"
 #include "util/compiler.h"
 #include "util/macros.h"
 #include "util/format/u_format.h"
@@ -52,14 +52,13 @@ extern "C" {
 #endif
 
 struct intel_device_info;
-struct brw_image_param;
 
 #ifndef ISL_GFX_VER
 /**
- * @brief Get the hardware generation of isl_device.
+ * Get the hardware generation of isl_device.
  *
  * You can define this as a compile-time constant in the CFLAGS. For example,
- * `gcc -DISL_GFX_VER(dev)=9 ...`.
+ * ``gcc -DISL_GFX_VER(dev)=9 ...``.
  */
 #define ISL_GFX_VER(__dev) ((__dev)->info->ver)
 #define ISL_GFX_VERX10(__dev) ((__dev)->info->verx10)
@@ -79,7 +78,7 @@ struct brw_image_param;
  * @brief Get the hardware generation of isl_device.
  *
  * You can define this as a compile-time constant in the CFLAGS. For example,
- * `gcc -DISL_GFX_VER(dev)=9 ...`.
+ * ``gcc -DISL_GFX_VER(dev)=9 ...``.
  */
 #define ISL_DEV_IS_HASWELL(__dev) ((__dev)->info->platform == INTEL_PLATFORM_HSW)
 #endif
@@ -91,7 +90,7 @@ struct brw_image_param;
 #ifndef ISL_DEV_USE_SEPARATE_STENCIL
 /**
  * You can define this as a compile-time constant in the CFLAGS. For example,
- * `gcc -DISL_DEV_USE_SEPARATE_STENCIL(dev)=1 ...`.
+ * ``gcc -DISL_DEV_USE_SEPARATE_STENCIL(dev)=1 ...``.
  */
 #define ISL_DEV_USE_SEPARATE_STENCIL(__dev) ((__dev)->use_separate_stencil)
 #define ISL_DEV_USE_SEPARATE_STENCIL_SANITIZE(__dev)
@@ -415,7 +414,7 @@ enum isl_format {
 /**
  * Numerical base type for channels of isl_format.
  */
-enum PACKED isl_base_type {
+enum ENUM_PACKED isl_base_type {
    /** Data which takes up space but is ignored */
    ISL_VOID,
 
@@ -427,7 +426,7 @@ enum PACKED isl_base_type {
     *
     * Though stored as an integer, the data is interpreted as a floating-point
     * number in the range [0, 1] where the conversion from the in-memory
-    * representation to float is given by \f$\frac{x}{2^{bits} - 1}\f$.
+    * representation to float is given by :math:`\frac{x}{2^{bits} - 1}`.
     */
    ISL_UNORM,
 
@@ -437,7 +436,7 @@ enum PACKED isl_base_type {
     * Though stored as an integer, the data is interpreted as a floating-point
     * number in the range [-1, 1] where the conversion from the in-memory
     * representation to float is given by
-    * \f$max\left(\frac{x}{2^{bits - 1} - 1}, -1\right)\f$.
+    * :math:`max\left(\frac{x}{2^{bits - 1} - 1}, -1\right)`.
     */
    ISL_SNORM,
 
@@ -451,14 +450,12 @@ enum PACKED isl_base_type {
     * the mantissa.  The available bit sizes for unsigned floats are as
     * follows:
     *
-    * \rst
     * =====  =========  =========
     * Bits   Mantissa   Exponent
     * =====  =========  =========
     *  11       6          5
     *  10       5          5
     * =====  =========  =========
-    * \endrst
     *
     * In particular, both unsigned floating-point formats are identical to
     * IEEE float16 except that the sign bit and the bottom mantissa bits are
@@ -471,7 +468,6 @@ enum PACKED isl_base_type {
     * Signed floating-point data is represented as standard IEEE floats with
     * the usual number of mantissa and exponent bits
     *
-    * \rst
     * =====  =========  =========
     * Bits   Mantissa   Exponent
     * =====  =========  =========
@@ -479,7 +475,6 @@ enum PACKED isl_base_type {
     *  32      23          8
     *  16      10          5
     * =====  =========  =========
-    * \endrst
     */
    ISL_SFLOAT,
 
@@ -572,17 +567,32 @@ enum isl_txc {
  * clearly distinguish it from Yf and Ys.
  */
 enum isl_tiling {
-   ISL_TILING_LINEAR = 0, /**< Linear, or no tiling */
-   ISL_TILING_W, /**< W tiling */
-   ISL_TILING_X, /**< X tiling */
-   ISL_TILING_Y0, /**< Legacy Y tiling */
-   ISL_TILING_Yf, /**< Standard 4K tiling. The 'f' means "four". */
-   ISL_TILING_Ys, /**< Standard 64K tiling. The 's' means "sixty-four". */
-   ISL_TILING_4,  /**< 4K tiling. */
-   ISL_TILING_64,  /**< 64K tiling.*/
-   ISL_TILING_HIZ, /**< Tiling format for HiZ surfaces */
-   ISL_TILING_CCS, /**< Tiling format for CCS surfaces */
-   ISL_TILING_GFX12_CCS, /**< Tiling format for Gfx12 CCS surfaces */
+   /** Linear, or no tiling */
+   ISL_TILING_LINEAR = 0,
+   /** W tiling */
+   ISL_TILING_W,
+   /** X tiling */
+   ISL_TILING_X,
+   /** Legacy Y tiling */
+   ISL_TILING_Y0,
+   /** Standard 4K tiling. The 'f' means "four". */
+   ISL_TILING_SKL_Yf,
+   /** Standard 64K tiling. The 's' means "sixty-four". */
+   ISL_TILING_SKL_Ys,
+   /** Standard 4K tiling. The 'f' means "four". */
+   ISL_TILING_ICL_Yf,
+   /** Standard 64K tiling. The 's' means "sixty-four". */
+   ISL_TILING_ICL_Ys,
+   /** 4K tiling. */
+   ISL_TILING_4,
+   /** 64K tiling.*/
+   ISL_TILING_64,
+   /** Xe2 64K tiling.*/
+   ISL_TILING_64_XE2,
+   /** Tiling format for HiZ surfaces */
+   ISL_TILING_HIZ,
+   /** Tiling format for CCS surfaces */
+   ISL_TILING_CCS,
 };
 
 /**
@@ -594,24 +604,35 @@ typedef uint32_t isl_tiling_flags_t;
 #define ISL_TILING_W_BIT                  (1u << ISL_TILING_W)
 #define ISL_TILING_X_BIT                  (1u << ISL_TILING_X)
 #define ISL_TILING_Y0_BIT                 (1u << ISL_TILING_Y0)
-#define ISL_TILING_Yf_BIT                 (1u << ISL_TILING_Yf)
-#define ISL_TILING_Ys_BIT                 (1u << ISL_TILING_Ys)
+#define ISL_TILING_SKL_Yf_BIT             (1u << ISL_TILING_SKL_Yf)
+#define ISL_TILING_SKL_Ys_BIT             (1u << ISL_TILING_SKL_Ys)
+#define ISL_TILING_ICL_Yf_BIT             (1u << ISL_TILING_ICL_Yf)
+#define ISL_TILING_ICL_Ys_BIT             (1u << ISL_TILING_ICL_Ys)
 #define ISL_TILING_4_BIT                  (1u << ISL_TILING_4)
 #define ISL_TILING_64_BIT                 (1u << ISL_TILING_64)
+#define ISL_TILING_64_XE2_BIT             (1u << ISL_TILING_64_XE2)
 #define ISL_TILING_HIZ_BIT                (1u << ISL_TILING_HIZ)
 #define ISL_TILING_CCS_BIT                (1u << ISL_TILING_CCS)
-#define ISL_TILING_GFX12_CCS_BIT          (1u << ISL_TILING_GFX12_CCS)
 #define ISL_TILING_ANY_MASK               (~0u)
 #define ISL_TILING_NON_LINEAR_MASK        (~ISL_TILING_LINEAR_BIT)
 
 /** Any Y tiling, including legacy Y tiling. */
 #define ISL_TILING_ANY_Y_MASK             (ISL_TILING_Y0_BIT | \
-                                           ISL_TILING_Yf_BIT | \
-                                           ISL_TILING_Ys_BIT)
+                                           ISL_TILING_SKL_Yf_BIT | \
+                                           ISL_TILING_SKL_Ys_BIT | \
+                                           ISL_TILING_ICL_Yf_BIT | \
+                                           ISL_TILING_ICL_Ys_BIT)
 
 /** The Skylake BSpec refers to Yf and Ys as "standard tiling formats". */
-#define ISL_TILING_STD_Y_MASK             (ISL_TILING_Yf_BIT | \
-                                           ISL_TILING_Ys_BIT)
+#define ISL_TILING_STD_Y_MASK             (ISL_TILING_SKL_Yf_BIT | \
+                                           ISL_TILING_SKL_Ys_BIT | \
+                                           ISL_TILING_ICL_Yf_BIT | \
+                                           ISL_TILING_ICL_Ys_BIT)
+
+/** Any Tiling 64 */
+#define ISL_TILING_STD_64_MASK            (ISL_TILING_64_BIT | \
+                                           ISL_TILING_64_XE2_BIT)
+
 /** @} */
 
 /**
@@ -639,8 +660,6 @@ enum isl_dim_layout {
     *
     *    One-dimensional surfaces are identical to 2D surfaces with height of
     *    one.
-    *
-    * @invariant isl_surf::phys_level0_sa::depth == 1
     */
    ISL_DIM_LAYOUT_GFX4_2D,
 
@@ -648,7 +667,7 @@ enum isl_dim_layout {
     * For details, see the G35 PRM >> Volume 1: Graphics Core >> Section
     * 6.17.5: 3D Surfaces.
     *
-    * @invariant isl_surf::phys_level0_sa::array_len == 1
+    * :invariant: isl_surf::phys_level0_sa::array_len == 1
     */
    ISL_DIM_LAYOUT_GFX4_3D,
 
@@ -736,7 +755,7 @@ enum isl_aux_usage {
     * the clear color. Exact details about the data stored in the MCS and how
     * it maps samples to slices is documented in the PRMs.
     *
-    * @invariant isl_surf::samples > 1
+    * :invariant: :c:member:`isl_surf.samples` > 1
     */
    ISL_AUX_USAGE_MCS,
 
@@ -749,8 +768,8 @@ enum isl_aux_usage {
     * On Skylake, this is increased to two bits per cache line pair with 0x0
     * meaning resolved and 0x3 meaning clear.
     *
-    * @invariant The surface is a color surface
-    * @invariant isl_surf::samples == 1
+    * :invariant: The surface is a color surface
+    * :invariant: :c:member:`isl_surf.samples` == 1
     */
    ISL_AUX_USAGE_CCS_D,
 
@@ -761,35 +780,37 @@ enum isl_aux_usage {
     * main surface which says how the corresponding pair of cache lines in the
     * main surface are to be interpreted.  Valid CCS values include:
     *
-    *  - `0x0`: Indicates that the corresponding pair of cache lines in the
+    *  - ``0x0``: Indicates that the corresponding pair of cache lines in the
     *    main surface contain valid color data
     *
-    *  - `0x1`: Indicates that the corresponding pair of cache lines in the
+    *  - ``0x1``: Indicates that the corresponding pair of cache lines in the
     *    main surface contain compressed color data.  Typically, the
     *    compressed data fits in one of the two cache lines.
     *
-    *  - `0x3`: Indicates that the corresponding pair of cache lines in the
+    *  - ``0x3``: Indicates that the corresponding pair of cache lines in the
     *    main surface should be ignored.  Those cache lines should be
     *    considered to contain the clear color.
     *
     * Starting with Tigerlake, each CCS value is 4 bits per cache line pair in
     * the main surface.
     *
-    * @invariant The surface is a color surface
-    * @invariant isl_surf::samples == 1
+    * :invariant: The surface is a color surface
+    * :invariant: :c:member:`isl_surf.samples` == 1
     */
    ISL_AUX_USAGE_CCS_E,
 
-   /** Single-sample lossless color compression on Tigerlake
+   /** Single-sample lossless color compression with fast clear optimization
     *
-    * This is identical to ISL_AUX_USAGE_CCS_E except it also encodes the
-    * Tigerlake quirk about regular render writes possibly fast-clearing
-    * blocks in the surface.
+    * Introduced on Tigerlake, this is identical to ISL_AUX_USAGE_CCS_E except
+    * it also encodes a feature about regular render writes possibly
+    * fast-clearing blocks in the surface. In the Alchemist docs, the name of
+    * the feature is easier to find. In the 3DSTATE_3D_MODE packet, it is
+    * referred to as "Fast Clear Optimization (FCV)".
     *
-    * @invariant The surface is a color surface
-    * @invariant isl_surf::samples == 1
+    * :invariant: The surface is a color surface
+    * :invariant: :c:member:`isl_surf.samples` == 1
     */
-   ISL_AUX_USAGE_GFX12_CCS_E,
+   ISL_AUX_USAGE_FCV_CCS_E,
 
    /** Media color compression
     *
@@ -798,8 +819,8 @@ enum isl_aux_usage {
     * consume it in order to get end-to-end compression when the image comes
     * from media decode.
     *
-    * @invariant The surface is a color surface
-    * @invariant isl_surf::samples == 1
+    * :invariant: The surface is a color surface
+    * :invariant: :c:member:`isl_surf.samples` == 1
     */
    ISL_AUX_USAGE_MC,
 
@@ -812,8 +833,9 @@ enum isl_aux_usage {
     * accelerating depth testing and not for actual compression.  The
     * CCS-compressed surface contains valid data at all times.
     *
-    * @invariant The surface is a color surface
-    * @invariant isl_surf::samples == 1
+    * :invariant: The surface is a color surface
+    * :invariant: :c:member:`isl_surf.samples` == 1 for GFX 12, GFX 20 can
+    *             be multisampled
     */
    ISL_AUX_USAGE_HIZ_CCS_WT,
 
@@ -827,7 +849,7 @@ enum isl_aux_usage {
     * depth hardware is to do a full resolve which resolves both HiZ and CCS
     * so the surface is in the pass-through state.
     *
-    * @invariant The surface is a depth surface
+    * :invariant: The surface is a depth surface
     */
    ISL_AUX_USAGE_HIZ_CCS,
 
@@ -837,8 +859,8 @@ enum isl_aux_usage {
     * where the MCS is used for fast-clears and "identical samples"
     * compression just like on Gfx7-11 but each plane is then CCS compressed.
     *
-    * @invariant The surface is a depth surface
-    * @invariant isl_surf::samples > 1
+    * :invariant: The surface is a depth surface
+    * :invariant: :c:member:`isl_surf.samples` > 1
     */
    ISL_AUX_USAGE_MCS_CCS,
 
@@ -847,8 +869,8 @@ enum isl_aux_usage {
     * Introduced on Tigerlake, this is similar to CCS_E only used to compress
     * stencil surfaces.
     *
-    * @invariant The surface is a stencil surface
-    * @invariant isl_surf::samples == 1
+    * :invariant: The surface is a stencil surface
+    * :invariant: :c:member:`isl_surf.samples` == 1
     */
    ISL_AUX_USAGE_STC_CCS,
 };
@@ -866,6 +888,8 @@ enum isl_aux_usage {
  * Not all operations are valid or useful in all states.  The diagram below
  * contains a complete description of the states and all valid and useful
  * transitions except clear.
+ *
+ * ::
  *
  *     Draw w/ Aux
  *     +----------+
@@ -945,12 +969,14 @@ enum isl_aux_usage {
  * provides fast clear and partial resolve operations which work as described
  * above.
  *
- * @note
- * The state machine above isn't quite correct for CCS on TGL.  There is a HW
- * bug (or feature, depending on who you ask) which can cause blocks to enter
- * the fast-clear state as a side-effect of a regular draw call.  This means
- * that a draw in the resolved or compressed without clear states takes you to
- * the compressed with clear state, not the compressed without clear state.
+ * .. note::
+ *
+ *   The state machine above isn't quite correct for CCS on TGL.  There is a
+ *   HW bug (or feature, depending on who you ask) which can cause blocks to
+ *   enter the fast-clear state as a side-effect of a regular draw call.  This
+ *   means that a draw in the resolved or compressed without clear states
+ *   takes you to the compressed with clear state, not the compressed without
+ *   clear state.
  */
 enum isl_aux_state {
 #ifdef IN_UNIT_TEST
@@ -1116,6 +1142,16 @@ typedef uint64_t isl_surf_usage_flags_t;
 #define ISL_SURF_USAGE_CONSTANT_BUFFER_BIT     (1u << 13)
 #define ISL_SURF_USAGE_STAGING_BIT             (1u << 14)
 #define ISL_SURF_USAGE_CPB_BIT                 (1u << 15)
+#define ISL_SURF_USAGE_PROTECTED_BIT           (1u << 16)
+#define ISL_SURF_USAGE_VIDEO_DECODE_BIT        (1u << 17)
+#define ISL_SURF_USAGE_STREAM_OUT_BIT          (1u << 18)
+#define ISL_SURF_USAGE_2D_3D_COMPATIBLE_BIT    (1u << 19)
+#define ISL_SURF_USAGE_SPARSE_BIT              (1u << 20)
+#define ISL_SURF_USAGE_NO_AUX_TT_ALIGNMENT_BIT (1u << 21)
+#define ISL_SURF_USAGE_BLITTER_DST_BIT         (1u << 22)
+#define ISL_SURF_USAGE_BLITTER_SRC_BIT         (1u << 23)
+#define ISL_SURF_USAGE_MULTI_ENGINE_SEQ_BIT    (1u << 24)
+#define ISL_SURF_USAGE_MULTI_ENGINE_PAR_BIT    (1u << 25)
 /** @} */
 
 /**
@@ -1136,7 +1172,7 @@ typedef uint8_t isl_channel_mask_t;
 /**
  * @brief A channel select (also known as texture swizzle) value
  */
-enum PACKED isl_channel_select {
+enum ENUM_PACKED isl_channel_select {
    ISL_CHANNEL_SELECT_ZERO = 0,
    ISL_CHANNEL_SELECT_ONE = 1,
    ISL_CHANNEL_SELECT_RED = 4,
@@ -1162,7 +1198,7 @@ typedef uint32_t isl_sample_count_mask_t;
  */
 enum isl_msaa_layout {
    /**
-    * @brief Suface is single-sampled.
+    * @brief Surface is single-sampled.
     */
    ISL_MSAA_LAYOUT_NONE,
 
@@ -1207,8 +1243,8 @@ enum isl_msaa_layout {
     * Suppose the multisample surface's logical extent is (w, h) and its
     * sample count is N. Then surface's physical extent is the same as
     * a singlesample 2D surface whose logical extent is (w, h) and array
-    * length is N.  Array slice `i` contains the pixel values for sample
-    * index `i`.
+    * length is N.  Array slice ``i`` contains the pixel values for sample
+    * index ``i``.
     *
     * The Ivybridge docs refer to surfaces in this format as UMS
     * (Uncompressed Multsample Layout) and CMS (Compressed Multisample
@@ -1230,6 +1266,12 @@ typedef enum {
   ISL_MEMCPY_STREAMING_LOAD,
   ISL_MEMCPY_INVALID,
 } isl_memcpy_type;
+
+struct isl_surf_fill_state_info;
+struct isl_buffer_fill_state_info;
+struct isl_depth_stencil_hiz_emit_info;
+struct isl_null_fill_state_info;
+struct isl_cpb_emit_info;
 
 struct isl_device {
    const struct intel_device_info *info;
@@ -1282,10 +1324,43 @@ struct isl_device {
    struct {
       uint32_t internal;
       uint32_t external;
+      uint32_t uncached;
       uint32_t l1_hdc_l3_llc;
       uint32_t blitter_src;
       uint32_t blitter_dst;
+      /* Protected is an additional bit on top of the existing entry index. */
+      uint32_t protected_mask;
    } mocs;
+
+   /* Options to configure by the driver: */
+   bool sampler_route_to_lsc;
+
+   /**
+    * Write buffer length in the upper dword of the
+    * RENDER_SURFACE_STATE::AuxilliarySurfaceBaseAddress field.
+    *
+    * This field is unused for buffer surfaces so we can reuse it store the
+    * buffer length. This is useful when you want to load a vec4 with (main
+    * address, size).
+    */
+   bool buffer_length_in_aux_addr;
+
+   uint64_t dummy_aux_address;
+
+   void (*surf_fill_state_s)(const struct isl_device *dev, void *state,
+                             const struct isl_surf_fill_state_info *restrict info);
+
+   void (*buffer_fill_state_s)(const struct isl_device *dev, void *state,
+                               const struct isl_buffer_fill_state_info *restrict info);
+
+   void (*emit_depth_stencil_hiz_s)(const struct isl_device *dev, void *batch,
+                                    const struct isl_depth_stencil_hiz_emit_info *restrict info);
+
+   void (*null_fill_state_s)(const struct isl_device *dev, void *state,
+                             const struct isl_null_fill_state_info *restrict info);
+
+   void (*emit_cpb_control_s)(const struct isl_device *dev, void *batch,
+                              const struct isl_cpb_emit_info *restrict info);
 };
 
 struct isl_extent2d {
@@ -1310,9 +1385,12 @@ struct isl_extent4d {
  * Describes a single channel of an isl_format
  */
 struct isl_channel_layout {
-   enum isl_base_type type; /**< Channel data encoding */
-   uint8_t start_bit; /**< Bit at which this channel starts */
-   uint8_t bits; /**< Size in bits */
+   /** Channel data encoding */
+   enum isl_base_type type;
+   /** Bit at which this channel starts */
+   uint8_t start_bit;
+   /** Size in bits */
+   uint8_t bits;
 };
 
 /**
@@ -1320,27 +1398,41 @@ struct isl_channel_layout {
  *
  * Each format has 3D block extent (width, height, depth). The block extent of
  * compressed formats is that of the format's compression block. For example,
- * the block extent of `ISL_FORMAT_ETC2_RGB8` is `(w=4, h=4, d=1)`. The block
- * extent of uncompressed pixel formats, such as `ISL_FORMAT_R8G8B8A8_UNORM`,
- * is `(w=1, h=1, d=1)`.
+ * the block extent of ``ISL_FORMAT_ETC2_RGB8`` is ``(w=4, h=4, d=1)``. The block
+ * extent of uncompressed pixel formats, such as ``ISL_FORMAT_R8G8B8A8_UNORM``,
+ * is ``(w=1, h=1, d=1)``.
  */
 struct isl_format_layout {
-   enum isl_format format; /**< Format */
+   /** Format */
+   enum isl_format format;
 
-   uint16_t bpb; /**< Bits per block */
-   uint8_t bw; /**< Block width, in pixels */
-   uint8_t bh; /**< Block height, in pixels */
-   uint8_t bd; /**< Block depth, in pixels */
+   /** Bits per block */
+   uint16_t bpb;
+   /** Block width, in pixels */
+   uint8_t bw;
+   /** Block height, in pixels */
+   uint8_t bh;
+   /** Block depth, in pixels */
+   uint8_t bd;
 
+   /***/
    union {
+      /***/
       struct {
-         struct isl_channel_layout r; /**< Red channel */
-         struct isl_channel_layout g; /**< Green channel */
-         struct isl_channel_layout b; /**< Blue channel */
-         struct isl_channel_layout a; /**< Alpha channel */
-         struct isl_channel_layout l; /**< Luminance channel */
-         struct isl_channel_layout i; /**< Intensity channel */
-         struct isl_channel_layout p; /**< Palette channel */
+         /** Red channel */
+         struct isl_channel_layout r;
+         /** Green channel */
+         struct isl_channel_layout g;
+         /** Blue channel */
+         struct isl_channel_layout b;
+         /** Alpha channel */
+         struct isl_channel_layout a;
+         /** Luminance channel */
+         struct isl_channel_layout l;
+         /** Intensity channel */
+         struct isl_channel_layout i;
+         /** Palette channel */
+         struct isl_channel_layout p;
       } channels;
       struct isl_channel_layout channels_array[7];
    };
@@ -1352,6 +1444,7 @@ struct isl_format_layout {
    enum isl_txc txc;
 };
 
+/***/
 struct isl_tile_info {
    /** Tiling represented by this isl_tile_info */
    enum isl_tiling tiling;
@@ -1368,11 +1461,11 @@ struct isl_tile_info {
     * of the tiling formats can actually hold an integer number of 96-bit
     * surface elements so isl_tiling_get_info returns an isl_tile_info for a
     * 32-bit element size.  It is the responsibility of the caller to
-    * recognize that 32 != 96 ad adjust accordingly.  For instance, to compute
-    * the width of a surface in tiles, you would do:
+    * recognize that 32 != 96 and adjust accordingly.  For instance, to compute
+    * the width of a surface in tiles, you would do::
     *
-    * width_tl = DIV_ROUND_UP(width_el * (format_bpb / tile_info.format_bpb),
-    *                         tile_info.logical_extent_el.width);
+    *   width_tl = DIV_ROUND_UP(width_el * (format_bpb / tile_info.format_bpb),
+    *                           tile_info.logical_extent_el.width);
     */
    uint32_t format_bpb;
 
@@ -1388,15 +1481,23 @@ struct isl_tile_info {
    struct isl_extent4d logical_extent_el;
 
    /**
+    * The maximum number of miplevels that will fit in the miptail.
+    *
+    * This does not guarantee that the given number of miplevels will fit in
+    * the miptail as that is also dependent on the size of the miplevels.
+    */
+   uint32_t max_miptail_levels;
+
+   /**
     * The physical size of the tile in bytes and rows of bytes
     *
-    * This field determines how the tiles of a surface are physically layed
+    * This field determines how the tiles of a surface are physically laid
     * out in memory.  The logical and physical tile extent are frequently the
     * same but this is not always the case.  For instance, a W-tile (which is
     * always used with ISL_FORMAT_R8) has a logical size of 64el x 64el but
     * its physical size is 128B x 32rows, the same as a Y-tile.
     *
-    * @see isl_surf::row_pitch_B
+    * See :c:member:`isl_surf.row_pitch_B`
     */
    struct isl_extent2d phys_extent_B;
 };
@@ -1413,8 +1514,9 @@ struct isl_drm_modifier_info {
    /** ISL tiling implied by this modifier */
    enum isl_tiling tiling;
 
-   /** ISL aux usage implied by this modifier */
-   enum isl_aux_usage aux_usage;
+   /** Compression types supported by this modifier */
+   bool supports_render_compression;
+   bool supports_media_compression;
 
    /** Whether or not this modifier supports clear color */
    bool supports_clear_color;
@@ -1423,16 +1525,16 @@ struct isl_drm_modifier_info {
 /**
  * @brief Input to surface initialization
  *
- * @invariant width >= 1
- * @invariant height >= 1
- * @invariant depth >= 1
- * @invariant levels >= 1
- * @invariant samples >= 1
- * @invariant array_len >= 1
+ * :invariant: width >= 1
+ * :invariant: height >= 1
+ * :invariant: depth >= 1
+ * :invariant: levels >= 1
+ * :invariant: samples >= 1
+ * :invariant: array_len >= 1
  *
- * @invariant if 1D then height == 1 and depth == 1 and samples == 1
- * @invariant if 2D then depth == 1
- * @invariant if 3D then array_len == 1 and samples == 1
+ * :invariant: if 1D then height == 1 and depth == 1 and samples == 1
+ * :invariant: if 2D then depth == 1
+ * :invariant: if 3D then array_len == 1 and samples == 1
  */
 struct isl_surf_init_info {
    enum isl_surf_dim dim;
@@ -1445,12 +1547,15 @@ struct isl_surf_init_info {
    uint32_t array_len;
    uint32_t samples;
 
-   /** Lower bound for isl_surf::alignment, in bytes. */
+   /** Lower bound for :c:member:`isl_surf.alignment`, in bytes. */
    uint32_t min_alignment_B;
 
+   /** Lower bound for where to start the miptail */
+   uint32_t min_miptail_start_level;
+
    /**
-    * Exact value for isl_surf::row_pitch. Ignored if zero.  isl_surf_init()
-    * will fail if this is misaligned or out of bounds.
+    * Exact value for :c:member:`isl_surf.row_pitch`. Ignored if zero.
+    * isl_surf_init() will fail if this is misaligned or out of bounds.
     */
    uint32_t row_pitch_B;
 
@@ -1460,6 +1565,7 @@ struct isl_surf_init_info {
    isl_tiling_flags_t tiling_flags;
 };
 
+/***/
 struct isl_surf {
    /** Dimensionality of the surface */
    enum isl_surf_dim dim;
@@ -1467,7 +1573,7 @@ struct isl_surf {
    /**
     * Spatial layout of the surface in memory
     *
-    * This is dependent on isl_surf::dim and hardware generation.
+    * This is dependent on :c:member:`isl_surf.dim` and hardware generation.
     */
    enum isl_dim_layout dim_layout;
 
@@ -1516,7 +1622,7 @@ struct isl_surf {
    /**
     * Number of samples in the surface
     *
-    * @invariant samples >= 1
+    * :invariant: samples >= 1
     */
    uint32_t samples;
 
@@ -1547,6 +1653,14 @@ struct isl_surf {
    uint32_t array_pitch_el_rows;
 
    enum isl_array_pitch_span array_pitch_span;
+
+   /**
+    * Level at which the miptail starts.
+    *
+    * This value is inclusive in the sense that the miptail contains this
+    * level.
+    */
+   uint32_t miptail_start_level;
 
    /** Copy of isl_surf_init_info::usage. */
    isl_surf_usage_flags_t usage;
@@ -1595,7 +1709,7 @@ struct isl_view {
     * specified in terms of 2-D layers and must be a multiple of 6.
     *
     * 3-D textures are effectively treated as 2-D arrays when used as a
-    * storage image or render target.  If `usage` contains
+    * storage image or render target.  If ``usage`` contains
     * ISL_SURF_USAGE_RENDER_TARGET_BIT or ISL_SURF_USAGE_STORAGE_BIT then
     * base_array_layer and array_len are applied.  If the surface is only used
     * for texturing, they are ignored.
@@ -1608,6 +1722,14 @@ struct isl_view {
     * Indicates the number of array elements starting at  Base Array Layer.
     */
    uint32_t array_len;
+
+   /**
+    * Minimum LOD
+    *
+    * Similar to sampler minimum LOD, the computed LOD is clamped to be at
+    * least min_lod_clamp.
+    */
+   float min_lod_clamp;
 
    struct isl_swizzle swizzle;
 };
@@ -1635,7 +1757,7 @@ struct isl_surf_fill_state_info {
    uint32_t mocs;
 
    /**
-    * The auxilary surface or NULL if no auxilary surface is to be used.
+    * The auxiliary surface or NULL if no auxiliary surface is to be used.
     */
    const struct isl_surf *aux_surf;
    enum isl_aux_usage aux_usage;
@@ -1676,6 +1798,13 @@ struct isl_surf_fill_state_info {
 
    /* Intra-tile offset */
    uint16_t x_offset_sa, y_offset_sa;
+
+   /**
+    * Robust image access enabled
+    *
+    * This is used to turn off a performance workaround.
+    */
+   bool robust_image_access;
 };
 
 struct isl_buffer_fill_state_info {
@@ -1802,6 +1931,48 @@ struct isl_cpb_emit_info {
    uint32_t mocs;
 };
 
+/*
+ * Image metadata structure as laid out in the shader parameter
+ * buffer.  Entries have to be 16B-aligned for the vec4 back-end to be
+ * able to use them.  That's okay because the padding and any unused
+ * entries [most of them except when we're doing untyped surface
+ * access] will be removed by the uniform packing pass.
+ */
+#define ISL_IMAGE_PARAM_OFFSET_OFFSET           0
+#define ISL_IMAGE_PARAM_SIZE_OFFSET             4
+#define ISL_IMAGE_PARAM_STRIDE_OFFSET           8
+#define ISL_IMAGE_PARAM_TILING_OFFSET           12
+#define ISL_IMAGE_PARAM_SWIZZLING_OFFSET        16
+#define ISL_IMAGE_PARAM_SIZE                    20
+
+struct isl_image_param {
+   /** Offset applied to the X and Y surface coordinates. */
+   uint32_t offset[2];
+
+   /** Surface X, Y and Z dimensions. */
+   uint32_t size[3];
+
+   /** X-stride in bytes, Y-stride in pixels, horizontal slice stride in
+    * pixels, vertical slice stride in pixels.
+    */
+   uint32_t stride[4];
+
+   /** Log2 of the tiling modulus in the X, Y and Z dimension. */
+   uint32_t tiling[3];
+
+   /**
+    * Right shift to apply for bit 6 address swizzling.  Two different
+    * swizzles can be specified and will be applied one after the other.  The
+    * resulting address will be:
+    *
+    *  addr' = addr ^ ((1 << 6) & ((addr >> swizzling[0]) ^
+    *                              (addr >> swizzling[1])))
+    *
+    * Use \c 0xff if any of the swizzles is not required.
+    */
+   uint32_t swizzling[2];
+};
+
 extern const struct isl_format_layout isl_format_layouts[];
 extern const char isl_format_names[];
 extern const uint16_t isl_format_name_offsets[];
@@ -1811,10 +1982,18 @@ isl_device_init(struct isl_device *dev,
                 const struct intel_device_info *info);
 
 isl_sample_count_mask_t ATTRIBUTE_CONST
-isl_device_get_sample_counts(struct isl_device *dev);
+isl_device_get_sample_counts(const struct isl_device *dev);
 
 /**
- * \return The isl_format_layout for the given isl_format
+ * :returns: The offset of the field within CLEAR_COLOR from which the sampler
+ *           fetches the clear color.
+ */
+uint64_t
+isl_get_sampler_clear_field_offset(const struct intel_device_info *devinfo,
+                                   enum isl_format format);
+
+/**
+ * :returns: The isl_format_layout for the given isl_format
  */
 static inline const struct isl_format_layout * ATTRIBUTE_CONST
 isl_format_get_layout(enum isl_format fmt)
@@ -1834,18 +2013,31 @@ isl_format_get_name(enum isl_format fmt)
    return isl_format_names + isl_format_name_offsets[fmt];
 }
 
+static inline const char * ATTRIBUTE_CONST
+isl_format_get_short_name(enum isl_format fmt)
+{
+   return isl_format_get_name(fmt) + 11 /* ISL_FORMAT_ */;
+}
+
+/***/
 enum isl_format isl_format_for_pipe_format(enum pipe_format pf);
 
+/***/
 bool isl_format_supports_rendering(const struct intel_device_info *devinfo,
                                    enum isl_format format);
+/***/
 bool isl_format_supports_alpha_blending(const struct intel_device_info *devinfo,
                                         enum isl_format format);
+/***/
 bool isl_format_supports_sampling(const struct intel_device_info *devinfo,
                                   enum isl_format format);
+/***/
 bool isl_format_supports_filtering(const struct intel_device_info *devinfo,
                                    enum isl_format format);
+/***/
 bool isl_format_supports_vertex_fetch(const struct intel_device_info *devinfo,
                                       enum isl_format format);
+/***/
 bool isl_format_supports_typed_writes(const struct intel_device_info *devinfo,
                                       enum isl_format format);
 bool isl_format_supports_typed_reads(const struct intel_device_info *devinfo,
@@ -1854,14 +2046,16 @@ bool isl_format_supports_ccs_d(const struct intel_device_info *devinfo,
                                enum isl_format format);
 bool isl_format_supports_ccs_e(const struct intel_device_info *devinfo,
                                enum isl_format format);
+/***/
 bool isl_format_supports_multisampling(const struct intel_device_info *devinfo,
                                        enum isl_format format);
+bool isl_format_supports_typed_atomics(const struct intel_device_info *devinfo,
+                                       enum isl_format fmt);
 
 bool isl_formats_are_ccs_e_compatible(const struct intel_device_info *devinfo,
                                       enum isl_format format1,
                                       enum isl_format format2);
 uint8_t isl_format_get_aux_map_encoding(enum isl_format format);
-uint8_t isl_get_render_compression_format(enum isl_format format);
 
 bool isl_formats_have_same_bits_per_channel(enum isl_format format1,
                                             enum isl_format format2);
@@ -2016,6 +2210,8 @@ enum isl_format isl_format_rgb_to_rgba(enum isl_format rgb) ATTRIBUTE_CONST;
 enum isl_format isl_format_rgb_to_rgbx(enum isl_format rgb) ATTRIBUTE_CONST;
 enum isl_format isl_format_rgbx_to_rgba(enum isl_format rgb) ATTRIBUTE_CONST;
 
+bool isl_format_support_sampler_route_to_lsc(enum isl_format fmt);
+
 union isl_color_value
 isl_color_value_swizzle(union isl_color_value src,
                         struct isl_swizzle swizzle,
@@ -2032,7 +2228,8 @@ void isl_color_value_unpack(union isl_color_value *value,
                             enum isl_format format,
                             const uint32_t *data_in);
 
-bool isl_is_storage_image_format(enum isl_format fmt);
+bool isl_is_storage_image_format(const struct intel_device_info *devinfo,
+                                 enum isl_format fmt);
 
 enum isl_format
 isl_lower_storage_image_format(const struct intel_device_info *devinfo,
@@ -2072,25 +2269,41 @@ isl_tiling_is_std_y(enum isl_tiling tiling)
    return (1u << tiling) & ISL_TILING_STD_Y_MASK;
 }
 
+static inline bool
+isl_tiling_is_64(enum isl_tiling tiling)
+{
+   return (1u << tiling) & ISL_TILING_STD_64_MASK;
+}
+
 uint32_t
 isl_tiling_to_i915_tiling(enum isl_tiling tiling);
 
 enum isl_tiling
 isl_tiling_from_i915_tiling(uint32_t tiling);
 
+
+/**
+ * Return an isl_aux_state to describe an auxiliary surface that is either
+ * uninitialized or zeroed.
+ */
+enum isl_aux_state
+isl_aux_get_initial_state(const struct intel_device_info *devinfo,
+                          enum isl_aux_usage usage,
+                          bool zeroed);
+
 /**
  * Return an isl_aux_op needed to enable an access to occur in an
  * isl_aux_state suitable for the isl_aux_usage.
  *
- * @note
- * If the access will invalidate the main surface, this function should not be
- * called and the isl_aux_op of NONE should be used instead. Otherwise, an
- * extra (but still lossless) ambiguate may occur.
+ * .. note::
+ *    If the access will invalidate the main surface, this function should not be
+ *    called and the isl_aux_op of NONE should be used instead. Otherwise, an
+ *    extra (but still lossless) ambiguate may occur.
  *
- * @invariant initial_state is possible with an isl_aux_usage compatible with
- *            the given usage. Two usages are compatible if it's possible to
- *            switch between them (e.g. CCS_E <-> CCS_D).
- * @invariant fast_clear is false if the aux doesn't support fast clears.
+ * :invariant: initial_state is possible with an isl_aux_usage compatible with
+ *             the given usage. Two usages are compatible if it's possible to
+ *             switch between them (e.g. CCS_E <-> CCS_D).
+ * :invariant: fast_clear is false if the aux doesn't support fast clears.
  */
 enum isl_aux_op
 isl_aux_prepare_access(enum isl_aux_state initial_state,
@@ -2100,9 +2313,9 @@ isl_aux_prepare_access(enum isl_aux_state initial_state,
 /**
  * Return the isl_aux_state entered after performing an isl_aux_op.
  *
- * @invariant initial_state is possible with the given usage.
- * @invariant op is possible with the given usage.
- * @invariant op must not cause HW to read from an invalid aux.
+ * :invariant: initial_state is possible with the given usage.
+ * :invariant: op is possible with the given usage.
+ * :invariant: op must not cause HW to read from an invalid aux.
  */
 enum isl_aux_state
 isl_aux_state_transition_aux_op(enum isl_aux_state initial_state,
@@ -2112,14 +2325,15 @@ isl_aux_state_transition_aux_op(enum isl_aux_state initial_state,
 /**
  * Return the isl_aux_state entered after performing a write.
  *
- * @note
- * full_surface should be true if the write covers the entire slice. Setting
- * it to false in this case will still result in a correct (but imprecise) aux
- * state.
+ * .. note::
  *
- * @invariant if usage is not ISL_AUX_USAGE_NONE, then initial_state is
+ *   full_surface should be true if the write covers the entire slice. Setting
+ *   it to false in this case will still result in a correct (but imprecise)
+ *   aux state.
+ *
+ * :invariant: if usage is not ISL_AUX_USAGE_NONE, then initial_state is
  *            possible with the given usage.
- * @invariant usage can be ISL_AUX_USAGE_NONE iff:
+ * :invariant: usage can be ISL_AUX_USAGE_NONE iff:
  *            * the main surface is valid, or
  *            * the main surface is being invalidated/replaced.
  */
@@ -2128,12 +2342,15 @@ isl_aux_state_transition_write(enum isl_aux_state initial_state,
                                enum isl_aux_usage usage,
                                bool full_surface);
 
+/***/
 bool
 isl_aux_usage_has_fast_clears(enum isl_aux_usage usage);
 
+/***/
 bool
 isl_aux_usage_has_compression(enum isl_aux_usage usage);
 
+/***/
 static inline bool
 isl_aux_usage_has_hiz(enum isl_aux_usage usage)
 {
@@ -2142,6 +2359,7 @@ isl_aux_usage_has_hiz(enum isl_aux_usage usage)
           usage == ISL_AUX_USAGE_HIZ_CCS;
 }
 
+/***/
 static inline bool
 isl_aux_usage_has_mcs(enum isl_aux_usage usage)
 {
@@ -2149,12 +2367,13 @@ isl_aux_usage_has_mcs(enum isl_aux_usage usage)
           usage == ISL_AUX_USAGE_MCS_CCS;
 }
 
+/***/
 static inline bool
 isl_aux_usage_has_ccs(enum isl_aux_usage usage)
 {
    return usage == ISL_AUX_USAGE_CCS_D ||
           usage == ISL_AUX_USAGE_CCS_E ||
-          usage == ISL_AUX_USAGE_GFX12_CCS_E ||
+          usage == ISL_AUX_USAGE_FCV_CCS_E ||
           usage == ISL_AUX_USAGE_MC ||
           usage == ISL_AUX_USAGE_HIZ_CCS_WT ||
           usage == ISL_AUX_USAGE_HIZ_CCS ||
@@ -2163,6 +2382,14 @@ isl_aux_usage_has_ccs(enum isl_aux_usage usage)
 }
 
 static inline bool
+isl_aux_usage_has_ccs_e(enum isl_aux_usage usage)
+{
+   return usage == ISL_AUX_USAGE_CCS_E ||
+          usage == ISL_AUX_USAGE_FCV_CCS_E;
+}
+
+/***/
+static inline bool
 isl_aux_state_has_valid_primary(enum isl_aux_state state)
 {
    return state == ISL_AUX_STATE_RESOLVED ||
@@ -2170,6 +2397,7 @@ isl_aux_state_has_valid_primary(enum isl_aux_state state)
           state == ISL_AUX_STATE_AUX_INVALID;
 }
 
+/***/
 static inline bool
 isl_aux_state_has_valid_aux(enum isl_aux_state state)
 {
@@ -2183,13 +2411,55 @@ extern const struct isl_drm_modifier_info isl_drm_modifier_info_list[];
         __info->modifier != DRM_FORMAT_MOD_INVALID; \
         ++__info)
 
+/* According to drm_fourcc.h, the clear color pitch is ignored on MTL but it
+ * should be 64B aligned for TGL and DG2. There's no need to special-case MTL.
+ */
+#define ISL_DRM_CC_PLANE_PITCH_B 64
+
 const struct isl_drm_modifier_info * ATTRIBUTE_CONST
 isl_drm_modifier_get_info(uint64_t modifier);
 
 static inline bool
 isl_drm_modifier_has_aux(uint64_t modifier)
 {
-   return isl_drm_modifier_get_info(modifier)->aux_usage != ISL_AUX_USAGE_NONE;
+   if (modifier == DRM_FORMAT_MOD_INVALID)
+      return false;
+
+   return isl_drm_modifier_get_info(modifier)->supports_render_compression ||
+          isl_drm_modifier_get_info(modifier)->supports_media_compression;
+}
+
+static inline bool
+isl_drm_modifier_needs_display_layout(uint64_t modifier)
+{
+   /* Modifiers supporting compression are specified to be compatible with the
+    * display engine, even if they won't actually be used for scanout.
+    */
+   return isl_drm_modifier_has_aux(modifier);
+}
+
+static inline bool
+isl_drm_modifier_plane_is_clear_color(uint64_t modifier, uint32_t plane)
+{
+   if (modifier == DRM_FORMAT_MOD_INVALID)
+      return false;
+
+   ASSERTED const struct isl_drm_modifier_info *mod_info =
+      isl_drm_modifier_get_info(modifier);
+   assert(mod_info);
+
+   switch (modifier) {
+   case I915_FORMAT_MOD_4_TILED_MTL_RC_CCS_CC:
+   case I915_FORMAT_MOD_Y_TILED_GEN12_RC_CCS_CC:
+      assert(mod_info->supports_clear_color);
+      return plane == 2;
+   case I915_FORMAT_MOD_4_TILED_DG2_RC_CCS_CC:
+      assert(mod_info->supports_clear_color);
+      return plane == 1;
+   default:
+      assert(!mod_info->supports_clear_color);
+      return false;
+   }
 }
 
 /** Returns the default isl_aux_state for the given modifier.
@@ -2220,12 +2490,11 @@ isl_drm_modifier_get_default_aux_state(uint64_t modifier)
    const struct isl_drm_modifier_info *mod_info =
       isl_drm_modifier_get_info(modifier);
 
-   if (!mod_info || mod_info->aux_usage == ISL_AUX_USAGE_NONE)
+   if (!mod_info || !isl_drm_modifier_has_aux(modifier))
       return ISL_AUX_STATE_AUX_INVALID;
 
-   assert(mod_info->aux_usage == ISL_AUX_USAGE_CCS_E ||
-          mod_info->aux_usage == ISL_AUX_USAGE_GFX12_CCS_E ||
-          mod_info->aux_usage == ISL_AUX_USAGE_MC);
+   assert(mod_info->supports_render_compression !=
+          mod_info->supports_media_compression);
    return mod_info->supports_clear_color ? ISL_AUX_STATE_COMPRESSED_CLEAR :
                                            ISL_AUX_STATE_COMPRESSED_NO_CLEAR;
 }
@@ -2241,6 +2510,12 @@ isl_drm_modifier_get_default_aux_state(uint64_t modifier)
 uint32_t
 isl_drm_modifier_get_score(const struct intel_device_info *devinfo,
                            uint64_t modifier);
+
+/* Return the number of planes used by an image with the given parameters. */
+uint32_t
+isl_drm_modifier_get_plane_count(const struct intel_device_info *devinfo,
+                                 uint64_t modifier,
+                                 uint32_t fmt_planes);
 
 struct isl_extent2d ATTRIBUTE_CONST
 isl_get_interleaved_msaa_px_size_sa(uint32_t samples);
@@ -2348,6 +2623,22 @@ isl_swizzle_is_identity(struct isl_swizzle swizzle)
           swizzle.a == ISL_CHANNEL_SELECT_ALPHA;
 }
 
+static inline bool
+isl_swizzle_is_identity_for_format(enum isl_format format,
+                                   struct isl_swizzle swizzle)
+{
+   const struct isl_format_layout *layout = isl_format_get_layout(format);
+
+#define channel_id_or_zero(name, ID)                 \
+   (swizzle.name == ISL_CHANNEL_SELECT_##ID ||       \
+    layout->channels.name.bits == 0)
+   return channel_id_or_zero(r, RED) &&
+          channel_id_or_zero(g, GREEN) &&
+          channel_id_or_zero(b, BLUE) &&
+          channel_id_or_zero(a, ALPHA);
+#undef channel_id_or_zero
+}
+
 bool
 isl_swizzle_supports_rendering(const struct intel_device_info *devinfo,
                                struct isl_swizzle swizzle);
@@ -2374,10 +2665,10 @@ isl_surf_get_tile_info(const struct isl_surf *surf,
                        struct isl_tile_info *tile_info);
 
 /**
- * @param[in]  surf              The main surface
- * @param[in]  hiz_or_mcs_surf   HiZ or MCS surface associated with the main
- *                               surface
- * @returns true if the given surface supports CCS.
+ * :param surf:                 |in|  The main surface
+ * :param hiz_or_mcs_surf:      |in|  HiZ or MCS surface associated with the main
+ *                                    surface
+ * :returns: true if the given surface supports CCS.
  */
 bool
 isl_surf_supports_ccs(const struct isl_device *dev,
@@ -2386,9 +2677,9 @@ isl_surf_supports_ccs(const struct isl_device *dev,
 
 /** Constructs a HiZ surface for the given main surface.
  *
- * @param[in]  surf     The main surface
- * @param[out] hiz_surf The HiZ surface to populate on success
- * @returns false if the main surface cannot support HiZ.
+ * :param surf:         |in|  The main surface
+ * :param hiz_surf:     |out| The HiZ surface to populate on success
+ * :returns: false if the main surface cannot support HiZ.
  */
 bool
 isl_surf_get_hiz_surf(const struct isl_device *dev,
@@ -2397,9 +2688,9 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
 
 /** Constructs a MCS for the given main surface.
  *
- * @param[in]  surf     The main surface
- * @param[out] mcs_surf The MCS to populate on success
- * @returns false if the main surface cannot support MCS.
+ * :param surf:         |in|  The main surface
+ * :param mcs_surf:     |out| The MCS to populate on success
+ * :returns: false if the main surface cannot support MCS.
  */
 bool
 isl_surf_get_mcs_surf(const struct isl_device *dev,
@@ -2408,80 +2699,77 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
 
 /** Constructs a CCS for the given main surface.
  *
- * @note
- * Starting with Tigerlake, the CCS is no longer really a surface.  It's not
- * laid out as an independent surface and isn't referenced by
- * RENDER_SURFACE_STATE::"Auxiliary Surface Base Address" like other auxiliary
- * compression surfaces.  It's a blob of memory that's a 1:256 scale-down from
- * the main surfaced that's attached side-band via a second set of page
- * tables.
+ * .. note::
  *
- * @par
- * In spite of this, it's sometimes useful to think of it as being a linear
- * buffer-like surface, at least for the purposes of allocation.  When invoked
- * on Tigerlake or later, this function still works and produces such a linear
- * surface.
+ *   Starting with Tigerlake, the CCS is no longer really a surface.  It's not
+ *   laid out as an independent surface and isn't referenced by
+ *   RENDER_SURFACE_STATE::"Auxiliary Surface Base Address" like other
+ *   auxiliary compression surfaces.  It's a blob of memory that's a 1:256
+ *   scale-down from the main surfaced that's attached side-band via a second
+ *   set of page tables.
  *
- * @param[in]  surf              The main surface
- * @param[in]  hiz_or_mcs_surf   HiZ or MCS surface associated with the main
- *                               surface
- * @param[out] ccs_surf          The CCS to populate on success
- * @param row_pitch_B:           The row pitch for the CCS in bytes or 0 if
- *                               ISL should calculate the row pitch.
- * @returns false if the main surface cannot support CCS.
+ * :param surf:                 |in|  The main surface
+ * :param ccs_surf:             |out| The CCS to populate on success
+ * :param row_pitch_B:                The row pitch for the CCS in bytes or 0 if
+ *                                    ISL should calculate the row pitch.
+ * :returns: false if the main surface cannot support CCS.
  */
 bool
 isl_surf_get_ccs_surf(const struct isl_device *dev,
                       const struct isl_surf *surf,
-                      const struct isl_surf *hiz_or_mcs_surf,
                       struct isl_surf *ccs_surf,
                       uint32_t row_pitch_B);
 
+/* The value is from Bspec 47709, MCS/CCS Buffers for Render Target(s):
+ *
+ *    "CCS is a linear buffer created for storing meta-data (AUX data) for
+ *    lossless compression. This buffer related information is mentioned in
+ *    Render Surface State. CCS buffer's size is based on the padded main
+ *    surface (after following Halign and Valign requirements mentioned in the
+ *    Render Surface State). CCS_Buffer_Size = Padded_Main_Surface_Size/256"
+ */
+#define ISL_MAIN_TO_CCS_SIZE_RATIO_XE 256
+
 #define isl_surf_fill_state(dev, state, ...) \
-   isl_surf_fill_state_s((dev), (state), \
+   (dev)->surf_fill_state_s(dev, state, \
                          &(struct isl_surf_fill_state_info) {  __VA_ARGS__ });
 
-void
-isl_surf_fill_state_s(const struct isl_device *dev, void *state,
-                      const struct isl_surf_fill_state_info *restrict info);
+#define isl_surf_fill_state_s(dev, state, info) \
+   (dev)->surf_fill_state_s(dev, state, info)
 
 #define isl_buffer_fill_state(dev, state, ...) \
-   isl_buffer_fill_state_s((dev), (state), \
-                           &(struct isl_buffer_fill_state_info) {  __VA_ARGS__ });
+   (dev)->buffer_fill_state_s(dev, state, \
+                              &(struct isl_buffer_fill_state_info) {  __VA_ARGS__ });
 
-void
-isl_buffer_fill_state_s(const struct isl_device *dev, void *state,
-                        const struct isl_buffer_fill_state_info *restrict info);
-
-void
-isl_null_fill_state_s(const struct isl_device *dev, void *state,
-                      const struct isl_null_fill_state_info *restrict info);
+#define isl_buffer_fill_state_s(dev, state, info) \
+   (dev)->buffer_fill_state_s(dev, state, info);
 
 #define isl_null_fill_state(dev, state, ...) \
-   isl_null_fill_state_s((dev), (state), \
-                           &(struct isl_null_fill_state_info) {  __VA_ARGS__ });
+   (dev)->null_fill_state_s(dev, state, \
+                            &(struct isl_null_fill_state_info) {  __VA_ARGS__ });
+
+#define isl_null_fill_state_s(dev, state, info) \
+   (dev)->null_fill_state_s(dev, state, info);
 
 #define isl_emit_depth_stencil_hiz(dev, batch, ...) \
-   isl_emit_depth_stencil_hiz_s((dev), (batch), \
-                                &(struct isl_depth_stencil_hiz_emit_info) {  __VA_ARGS__ })
+   (dev)->emit_depth_stencil_hiz_s(dev, batch, \
+                                   &(struct isl_depth_stencil_hiz_emit_info) {  __VA_ARGS__ })
 
-void
-isl_emit_depth_stencil_hiz_s(const struct isl_device *dev, void *batch,
-                             const struct isl_depth_stencil_hiz_emit_info *restrict info);
+#define isl_emit_depth_stencil_hiz_s(dev, batch, info) \
+   (dev)->emit_depth_stencil_hiz_s(dev, batch, info)
 
-void
-isl_emit_cpb_control_s(const struct isl_device *dev, void *batch,
-                       const struct isl_cpb_emit_info *restrict info);
+#define isl_emit_cpb_control_s(dev, batch, info) \
+   (dev)->emit_cpb_control_s(dev, batch, info)
 
 void
 isl_surf_fill_image_param(const struct isl_device *dev,
-                          struct brw_image_param *param,
+                          struct isl_image_param *param,
                           const struct isl_surf *surf,
                           const struct isl_view *view);
 
 void
 isl_buffer_fill_image_param(const struct isl_device *dev,
-                            struct brw_image_param *param,
+                            struct isl_image_param *param,
                             enum isl_format format,
                             uint64_t size);
 
@@ -2600,9 +2888,9 @@ isl_surf_get_array_pitch(const struct isl_surf *surf)
  * Calculate the offset, in units of surface samples, to a subimage in the
  * surface.
  *
- * @invariant level < surface levels
- * @invariant logical_array_layer < logical array length of surface
- * @invariant logical_z_offset_px < logical depth of surface at level
+ * :invariant: level < surface levels
+ * :invariant: logical_array_layer < logical array length of surface
+ * :invariant: logical_z_offset_px < logical depth of surface at level
  */
 void
 isl_surf_get_image_offset_sa(const struct isl_surf *surf,
@@ -2618,9 +2906,9 @@ isl_surf_get_image_offset_sa(const struct isl_surf *surf,
  * Calculate the offset, in units of surface elements, to a subimage in the
  * surface.
  *
- * @invariant level < surface levels
- * @invariant logical_array_layer < logical array length of surface
- * @invariant logical_z_offset_px < logical depth of surface at level
+ * :invariant: level < surface levels
+ * :invariant: logical_array_layer < logical array length of surface
+ * :invariant: logical_z_offset_px < logical depth of surface at level
  */
 void
 isl_surf_get_image_offset_el(const struct isl_surf *surf,
@@ -2640,9 +2928,9 @@ isl_surf_get_image_offset_el(const struct isl_surf *surf,
  * result to isl_tiling_get_intratile_offset_el, and converting the tile
  * offsets to samples.
  *
- * @invariant level < surface levels
- * @invariant logical_array_layer < logical array length of surface
- * @invariant logical_z_offset_px < logical depth of surface at level
+ * :invariant: level < surface levels
+ * :invariant: logical_array_layer < logical array length of surface
+ * :invariant: logical_z_offset_px < logical depth of surface at level
  */
 void
 isl_surf_get_image_offset_B_tile_sa(const struct isl_surf *surf,
@@ -2660,9 +2948,9 @@ isl_surf_get_image_offset_B_tile_sa(const struct isl_surf *surf,
  * This is equivalent to calling isl_surf_get_image_offset_el, passing the
  * result to isl_tiling_get_intratile_offset_el.
  *
- * @invariant level < surface levels
- * @invariant logical_array_layer < logical array length of surface
- * @invariant logical_z_offset_px < logical depth of surface at level
+ * :invariant: level < surface levels
+ * :invariant: logical_array_layer < logical array length of surface
+ * :invariant: logical_z_offset_px < logical depth of surface at level
  */
 void
 isl_surf_get_image_offset_B_tile_el(const struct isl_surf *surf,
@@ -2682,9 +2970,9 @@ isl_surf_get_image_offset_B_tile_el(const struct isl_surf *surf,
  * from other sub-images.  The returned range is a half-open interval where
  * all of the addresses within the subimage are < end_tile_B.
  *
- * @invariant level < surface levels
- * @invariant logical_array_layer < logical array length of surface
- * @invariant logical_z_offset_px < logical depth of surface at level
+ * :invariant: level < surface levels
+ * :invariant: logical_array_layer < logical array length of surface
+ * :invariant: logical_z_offset_px < logical depth of surface at level
  */
 void
 isl_surf_get_image_range_B_tile(const struct isl_surf *surf,
@@ -2702,9 +2990,9 @@ isl_surf_get_image_range_B_tile(const struct isl_surf *surf,
  *
  * It is safe to call this function with surf == image_surf.
  *
- * @invariant level < surface levels
- * @invariant logical_array_layer < logical array length of surface
- * @invariant logical_z_offset_px < logical depth of surface at level
+ * :invariant: level < surface levels
+ * :invariant: logical_array_layer < logical array length of surface
+ * :invariant: logical_z_offset_px < logical depth of surface at level
  */
 void
 isl_surf_get_image_surf(const struct isl_device *dev,
@@ -2754,20 +3042,20 @@ isl_surf_get_uncompressed_surf(const struct isl_device *dev,
  * given coordinate in tile space.  The returned x/y/z/array offsets are
  * guaranteed to lie within the tile.
  *
- * @param[in]  tiling               The tiling of the surface
- * @param[in]  bpb                  The size of the surface format in bits per
- *                                  block
- * @param[in]  array_pitch_el_rows  The array pitch of the surface for flat 2D
- *                                  tilings such as ISL_TILING_Y0
- * @param[in]  total_x_offset_el    The X offset in tile space, in elements
- * @param[in]  total_y_offset_el    The Y offset in tile space, in elements
- * @param[in]  total_z_offset_el    The Z offset in tile space, in elements
- * @param[in]  total_array_offset   The array offset in tile space
- * @param[out] tile_offset_B        The returned byte offset to the tile
- * @param[out] x_offset_el          The X offset within the tile, in elements
- * @param[out] y_offset_el          The Y offset within the tile, in elements
- * @param[out] z_offset_el          The Z offset within the tile, in elements
- * @param[out] array_offset         The array offset within the tile
+ * :param tiling:               |in|  The tiling of the surface
+ * :param bpb:                  |in|  The size of the surface format in bits per
+ *                                    block
+ * :param array_pitch_el_rows:  |in|  The array pitch of the surface for flat 2D
+ *                                    tilings such as ISL_TILING_Y0
+ * :param total_x_offset_el:    |in|  The X offset in tile space, in elements
+ * :param total_y_offset_el:    |in|  The Y offset in tile space, in elements
+ * :param total_z_offset_el:    |in|  The Z offset in tile space, in elements
+ * :param total_array_offset:   |in|  The array offset in tile space
+ * :param tile_offset_B:        |out| The returned byte offset to the tile
+ * :param x_offset_el:          |out| The X offset within the tile, in elements
+ * :param y_offset_el:          |out| The Y offset within the tile, in elements
+ * :param z_offset_el:          |out| The Z offset within the tile, in elements
+ * :param array_offset:         |out| The array offset within the tile
  */
 void
 isl_tiling_get_intratile_offset_el(enum isl_tiling tiling,
@@ -2795,20 +3083,20 @@ isl_tiling_get_intratile_offset_el(enum isl_tiling tiling,
  * given coordinate in tile space.  The returned x/y/z/array offsets are
  * guaranteed to lie within the tile.
  *
- * @param[in]  tiling               The tiling of the surface
- * @param[in]  bpb                  The size of the surface format in bits per
- *                                  block
- * @param[in]  array_pitch_el_rows  The array pitch of the surface for flat 2D
- *                                  tilings such as ISL_TILING_Y0
- * @param[in]  total_x_offset_sa    The X offset in tile space, in samples
- * @param[in]  total_y_offset_sa    The Y offset in tile space, in samples
- * @param[in]  total_z_offset_sa    The Z offset in tile space, in samples
- * @param[in]  total_array_offset   The array offset in tile space
- * @param[out] tile_offset_B        The returned byte offset to the tile
- * @param[out] x_offset_sa          The X offset within the tile, in samples
- * @param[out] y_offset_sa          The Y offset within the tile, in samples
- * @param[out] z_offset_sa          The Z offset within the tile, in samples
- * @param[out] array_offset         The array offset within the tile
+ * :param tiling:               |in|  The tiling of the surface
+ * :param bpb:                  |in|  The size of the surface format in bits per
+ *                                    block
+ * :param array_pitch_el_rows:  |in|  The array pitch of the surface for flat 2D
+ *                                    tilings such as ISL_TILING_Y0
+ * :param total_x_offset_sa:    |in|  The X offset in tile space, in samples
+ * :param total_y_offset_sa:    |in|  The Y offset in tile space, in samples
+ * :param total_z_offset_sa:    |in|  The Z offset in tile space, in samples
+ * :param total_array_offset:   |in|  The array offset in tile space
+ * :param tile_offset_B:        |out| The returned byte offset to the tile
+ * :param x_offset_sa:          |out| The X offset within the tile, in samples
+ * :param y_offset_sa:          |out| The Y offset within the tile, in samples
+ * :param z_offset_sa:          |out| The Z offset within the tile, in samples
+ * :param array_offset:         |out| The array offset within the tile
  */
 static inline void
 isl_tiling_get_intratile_offset_sa(enum isl_tiling tiling,
@@ -2857,7 +3145,7 @@ isl_tiling_get_intratile_offset_sa(enum isl_tiling tiling,
 }
 
 /**
- * @brief Get value of 3DSTATE_DEPTH_BUFFER.SurfaceFormat
+ * Get value of 3DSTATE_DEPTH_BUFFER.SurfaceFormat
  *
  * @pre surf->usage has ISL_SURF_USAGE_DEPTH_BIT
  * @pre surf->format must be a valid format for depth surfaces
@@ -2867,8 +3155,7 @@ isl_surf_get_depth_format(const struct isl_device *dev,
                           const struct isl_surf *surf);
 
 /**
- * @brief performs a copy from linear to tiled surface
- *
+ * Performs a copy from linear to tiled surface
  */
 void
 isl_memcpy_linear_to_tiled(uint32_t xt1, uint32_t xt2,
@@ -2880,8 +3167,7 @@ isl_memcpy_linear_to_tiled(uint32_t xt1, uint32_t xt2,
                            isl_memcpy_type copy_type);
 
 /**
- * @brief performs a copy from tiled to linear surface
- *
+ * Performs a copy from tiled to linear surface
  */
 void
 isl_memcpy_tiled_to_linear(uint32_t xt1, uint32_t xt2,
@@ -2893,7 +3179,7 @@ isl_memcpy_tiled_to_linear(uint32_t xt1, uint32_t xt2,
                            isl_memcpy_type copy_type);
 
 /**
- * @brief computes the tile_w (in bytes) and tile_h (in rows) of
+ * Computes the tile_w (in bytes) and tile_h (in rows) of
  * different tiling patterns.
  */
 static inline void
@@ -2919,9 +3205,9 @@ isl_get_tile_dims(enum isl_tiling tiling, uint32_t cpp,
 }
 
 /**
- * @brief Computes masks that may be used to select the bits of the X
- * and Y coordinates that indicate the offset within a tile.  If the BO is
- * untiled, the masks are set to 0.
+ * Computes masks that may be used to select the bits of the X and Y
+ * coordinates that indicate the offset within a tile.  If the BO is untiled,
+ * the masks are set to 0.
  */
 static inline void
 isl_get_tile_masks(enum isl_tiling tiling, uint32_t cpp,
@@ -2937,6 +3223,15 @@ isl_get_tile_masks(enum isl_tiling tiling, uint32_t cpp,
 
 const char *
 isl_aux_op_to_name(enum isl_aux_op op);
+
+const char *
+isl_tiling_to_name(enum isl_tiling tiling);
+
+const char *
+isl_aux_usage_to_name(enum isl_aux_usage usage);
+
+const char *
+isl_aux_state_to_name(enum isl_aux_state state);
 
 #ifdef __cplusplus
 }

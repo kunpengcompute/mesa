@@ -1,56 +1,30 @@
 # Copyright © 2017 Intel Corporation
+# SPDX-License-Identifier: MIT
 
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
+general_ir_test_files = files(
+  'array_refcount_test.cpp',
+  'builtin_variable_test.cpp',
+  'general_ir_test.cpp',
+)
+general_ir_test_files += ir_expression_operation_h
 
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+if with_gles2
+  general_ir_test_files += files('test_gl_lower_mediump.cpp')
+endif
 
 test(
   'general_ir_test',
   executable(
     'general_ir_test',
-    ['array_refcount_test.cpp', 'builtin_variable_test.cpp',
-     'invalidate_locations_test.cpp', 'general_ir_test.cpp',
-     'lower_int64_test.cpp', 'opt_add_neg_to_sub_test.cpp',
-     'varyings_test.cpp', ir_expression_operation_h],
+    general_ir_test_files,
     cpp_args : [cpp_msvc_compat_args],
     gnu_symbol_visibility : 'hidden',
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glsl],
     link_with : [libglsl, libglsl_standalone, libglsl_util],
-    dependencies : [dep_clock, dep_thread, idep_gtest, idep_mesautil],
+    dependencies : [dep_clock, dep_thread, idep_gtest, idep_mesautil, idep_nir],
   ),
   suite : ['compiler', 'glsl'],
-  protocol : gtest_test_protocol,
-)
-
-test(
-  'uniform_initializer_test',
-  executable(
-    'uniform_initializer_test',
-    ['copy_constant_to_storage_tests.cpp', 'set_uniform_initializer_tests.cpp',
-     'uniform_initializer_utils.cpp', 'uniform_initializer_utils.h',
-     ir_expression_operation_h],
-    cpp_args : [cpp_msvc_compat_args],
-    gnu_symbol_visibility : 'hidden',
-    include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glsl],
-    link_with : [libglsl, libglsl_util],
-    dependencies : [dep_thread, idep_gtest, idep_mesautil],
-  ),
-  suite : ['compiler', 'glsl'],
-  protocol : gtest_test_protocol,
+  protocol : 'gtest',
 )
 
 test(
@@ -62,10 +36,10 @@ test(
     gnu_symbol_visibility : 'hidden',
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_glsl],
     link_with : [libglsl, libglsl_util],
-    dependencies : [dep_thread, idep_gtest, idep_mesautil],
+    dependencies : [dep_thread, idep_gtest, idep_mesautil, idep_compiler],
   ),
   suite : ['compiler', 'glsl'],
-  protocol : gtest_test_protocol,
+  protocol : 'gtest',
 )
 
 test(
@@ -80,22 +54,19 @@ test(
     dependencies : [dep_thread, idep_gtest],
   ),
   suite : ['compiler', 'glsl'],
-  protocol : gtest_test_protocol,
+  protocol : 'gtest',
 )
 
 # Meson can't auto-skip these on cross builds because of the python wrapper
-#
-# TODO: has_exe_wrapper() is deprecated and renamed to can_run_host_binaries()
-# starting with Meson 0.55.0
-if meson.has_exe_wrapper()
+if meson.can_run_host_binaries()
   test(
     'glsl compiler warnings',
     prog_python,
     args : [
-      join_paths(meson.current_source_dir(), 'warnings_test.py'),
+      files('warnings_test.py'),
       '--glsl-compiler', glsl_compiler,
       '--test-directory', join_paths(
-        meson.source_root(), 'src', 'compiler', 'glsl', 'tests', 'warnings'
+        dir_source_root, 'src', 'compiler', 'glsl', 'tests', 'warnings'
       ),
     ],
     suite : ['compiler', 'glsl'],
@@ -106,7 +77,7 @@ if meson.has_exe_wrapper()
     'glsl optimization',
     prog_python,
     args : [
-      join_paths(meson.current_source_dir(), 'optimization_test.py'),
+      files('optimization_test.py'),
       '--test-runner', glsl_test
     ],
     suite : ['compiler', 'glsl'],
@@ -114,20 +85,15 @@ if meson.has_exe_wrapper()
 endif
 
 if with_tools.contains('glsl')
-  test(
-    'glsl dump-builder test',
-    glsl_compiler,
-    args : ['--version', '110', '--dump-builder',
-            join_paths(meson.current_source_dir(), 'standalone_dump-builder.frag'),
-           ],
-    suite : ['compiler', 'glsl'],
-  )
-  test(
-    'glsl lower-precision test',
-    prog_python,
-    args : [join_paths(meson.current_source_dir(), 'lower_precision_test.py'),
-            glsl_compiler
-           ],
-    suite : ['compiler', 'glsl'],
-  )
+  if with_gles2
+    test(
+      'glsl lower-precision test',
+      prog_python,
+      args : [files('lower_precision_test.py'),
+              glsl_compiler
+            ],
+      suite : ['compiler', 'glsl'],
+      timeout: 60,
+    )
+  endif
 endif

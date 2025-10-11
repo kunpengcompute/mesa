@@ -76,7 +76,7 @@
  */
 
 
-#include "glheader.h"
+#include "util/glheader.h"
 
 #include "accum.h"
 #include "arrayobj.h"
@@ -87,7 +87,6 @@
 #include "bufferobj.h"
 #include "conservativeraster.h"
 #include "context.h"
-#include "cpuinfo.h"
 #include "debug.h"
 #include "debug_output.h"
 #include "depth.h"
@@ -124,9 +123,10 @@
 #include "shaderobj.h"
 #include "shaderimage.h"
 #include "state.h"
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/disk_cache.h"
 #include "util/strtod.h"
+#include "util/u_call_once.h"
 #include "stencil.h"
 #include "shaderimage.h"
 #include "texcompress_s3tc.h"
@@ -184,7 +184,6 @@ static void
 one_time_fini(void)
 {
    glsl_type_singleton_decref();
-   _mesa_locale_fini();
 }
 
 /**
@@ -203,8 +202,6 @@ one_time_init(const char *extensions_override)
    STATIC_ASSERT(sizeof(GLint) == 4);
    STATIC_ASSERT(sizeof(GLuint) == 4);
 
-   _mesa_locale_init();
-
    const char *env_const = os_get_option("MESA_EXTENSION_OVERRIDE");
    if (env_const) {
       if (extensions_override &&
@@ -216,7 +213,6 @@ one_time_init(const char *extensions_override)
 
    _mesa_one_time_init_extension_overrides(extensions_override);
 
-   _mesa_get_cpu_features();
 
    for (i = 0; i < 256; i++) {
       _mesa_ubyte_to_float_color_tab[i] = (float) i / 255.0F;
@@ -224,7 +220,7 @@ one_time_init(const char *extensions_override)
 
    atexit(one_time_fini);
 
-#if defined(DEBUG)
+#if MESA_DEBUG
    if (MESA_VERBOSE != 0) {
       _mesa_debug(NULL, "Mesa " PACKAGE_VERSION " DEBUG build" MESA_GIT_SHA1 "\n");
    }
@@ -239,20 +235,6 @@ one_time_init(const char *extensions_override)
 }
 
 /**
- * One-time initialization flag
- *
- * \sa Used by _mesa_initialize().
- */
-static bool init_done = false;
-static mtx_t init_once_lock;
-static once_flag init_once = ONCE_FLAG_INIT;
-
-static void init_lock(void) {
-   mtx_init(&init_once_lock, mtx_plain);
-}
-
-
-/**
  * Calls all the various one-time-init functions in Mesa.
  *
  * While holding a global mutex lock, calls several initialization functions,
@@ -262,14 +244,9 @@ static void init_lock(void) {
 void
 _mesa_initialize(const char *extensions_override)
 {
-   call_once(&init_once, init_lock);
-
-   mtx_lock(&init_once_lock);
-   if (!init_done) {
-      one_time_init(extensions_override);
-      init_done = true;
-   }
-   mtx_unlock(&init_once_lock);
+   static util_once_flag once = UTIL_ONCE_FLAG_INIT;
+   util_call_once_data(&once,
+      (util_call_once_data_func)one_time_init, extensions_override);
 }
 
 
@@ -311,6 +288,7 @@ init_program_limits(struct gl_constants *consts, gl_shader_stage stage,
    prog->MaxEnvParams = MAX_PROGRAM_ENV_PARAMS;
    prog->MaxLocalParams = MAX_PROGRAM_LOCAL_PARAMS;
    prog->MaxAddressOffset = MAX_PROGRAM_LOCAL_PARAMS;
+   prog->MaxAddressRegs = 0; /* only meaningful for vertex/fragment shaders */
 
    switch (stage) {
    case MESA_SHADER_VERTEX:
@@ -334,7 +312,6 @@ init_program_limits(struct gl_constants *consts, gl_shader_stage stage,
    case MESA_SHADER_GEOMETRY:
       prog->MaxParameters = MAX_VERTEX_PROGRAM_PARAMS;
       prog->MaxAttribs = MAX_VERTEX_GENERIC_ATTRIBS;
-      prog->MaxAddressRegs = MAX_VERTEX_PROGRAM_ADDRESS_REGS;
       prog->MaxUniformComponents = 4 * MAX_UNIFORMS;
       prog->MaxInputComponents = 16 * 4; /* old limit not to break tnl and swrast */
       prog->MaxOutputComponents = 16 * 4; /* old limit not to break tnl and swrast */
@@ -342,7 +319,6 @@ init_program_limits(struct gl_constants *consts, gl_shader_stage stage,
    case MESA_SHADER_COMPUTE:
       prog->MaxParameters = 0; /* not meaningful for compute shaders */
       prog->MaxAttribs = 0; /* not meaningful for compute shaders */
-      prog->MaxAddressRegs = 0; /* not meaningful for compute shaders */
       prog->MaxUniformComponents = 4 * MAX_UNIFORMS;
       prog->MaxInputComponents = 0; /* not meaningful for compute shaders */
       prog->MaxOutputComponents = 0; /* not meaningful for compute shaders */
@@ -350,18 +326,6 @@ init_program_limits(struct gl_constants *consts, gl_shader_stage stage,
    default:
       assert(0 && "Bad shader stage in init_program_limits()");
    }
-
-   /* Set the native limits to zero.  This implies that there is no native
-    * support for shaders.  Let the drivers fill in the actual values.
-    */
-   prog->MaxNativeInstructions = 0;
-   prog->MaxNativeAluInstructions = 0;
-   prog->MaxNativeTexInstructions = 0;
-   prog->MaxNativeTexIndirections = 0;
-   prog->MaxNativeAttribs = 0;
-   prog->MaxNativeTemps = 0;
-   prog->MaxNativeAddressRegs = 0;
-   prog->MaxNativeParameters = 0;
 
    /* Set GLSL datatype range/precision info assuming IEEE float values.
     * Drivers should override these defaults as needed.
@@ -481,12 +445,6 @@ _mesa_init_constants(struct gl_constants *consts, gl_api api)
 
    consts->GLSLLowerConstArrays = true;
 
-   /* Assume that if GLSL 1.30+ (or GLSL ES 3.00+) is supported that
-    * gl_VertexID is implemented using a native hardware register with OpenGL
-    * semantics.
-    */
-   consts->VertexID_is_zero_based = false;
-
    /* GL_ARB_draw_buffers */
    consts->MaxDrawBuffers = MAX_DRAW_BUFFERS;
 
@@ -501,7 +459,7 @@ _mesa_init_constants(struct gl_constants *consts, gl_api api)
    consts->MaxGeometryTotalOutputComponents = MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS;
    consts->MaxGeometryShaderInvocations = MAX_GEOMETRY_SHADER_INVOCATIONS;
 
-#ifdef DEBUG
+#if MESA_DEBUG
    consts->GenerateTemporaryNames = true;
 #else
    consts->GenerateTemporaryNames = false;
@@ -714,6 +672,7 @@ init_attrib_groups(struct gl_context *ctx)
    _mesa_init_pixelstore( ctx );
    _mesa_init_point( ctx );
    _mesa_init_polygon( ctx );
+   _mesa_init_varray( ctx ); /* should be before _mesa_init_program */
    _mesa_init_program( ctx );
    _mesa_init_queryobj( ctx );
    _mesa_init_sync( ctx );
@@ -723,7 +682,6 @@ init_attrib_groups(struct gl_context *ctx)
    _mesa_init_stencil( ctx );
    _mesa_init_transform( ctx );
    _mesa_init_transform_feedback( ctx );
-   _mesa_init_varray( ctx );
    _mesa_init_viewport( ctx );
    _mesa_init_resident_handles( ctx );
 
@@ -734,11 +692,10 @@ init_attrib_groups(struct gl_context *ctx)
    ctx->TileRasterOrderIncreasingX = GL_TRUE;
    ctx->TileRasterOrderIncreasingY = GL_TRUE;
    ctx->NewState = _NEW_ALL;
-   ctx->NewDriverState = ~0;
+   ctx->NewDriverState = ST_ALL_STATES_MASK;
    ctx->ErrorValue = GL_NO_ERROR;
    ctx->ShareGroupReset = false;
-   ctx->VertexProgram._VaryingInputs = VERT_BIT_ALL;
-   ctx->IntelBlackholeRender = env_var_as_boolean("INTEL_BLACKHOLE_DEFAULT", false);
+   ctx->IntelBlackholeRender = debug_get_bool_option("INTEL_BLACKHOLE_DEFAULT", false);
 
    return GL_TRUE;
 }
@@ -930,18 +887,60 @@ _mesa_alloc_dispatch_table(bool glthread)
    return table;
 }
 
-void
+/**
+ * Allocate dispatch tables and set all functions to nop.
+ * It also makes the OutsideBeginEnd dispatch table current within gl_dispatch.
+ *
+ * \param glthread Whether to set nop dispatch for glthread or regular dispatch
+ */
+bool
+_mesa_alloc_dispatch_tables(gl_api api, struct gl_dispatch *d, bool glthread)
+{
+   d->OutsideBeginEnd = _mesa_alloc_dispatch_table(glthread);
+   if (!d->OutsideBeginEnd)
+      return false;
+
+   if (api == API_OPENGL_COMPAT) {
+      d->BeginEnd = _mesa_alloc_dispatch_table(glthread);
+      d->Save = _mesa_alloc_dispatch_table(glthread);
+      if (!d->BeginEnd || !d->Save)
+         return false;
+   }
+
+   d->Current = d->Exec = d->OutsideBeginEnd;
+   return true;
+}
+
+static void
+_mesa_free_dispatch_tables(struct gl_dispatch *d)
+{
+   free(d->OutsideBeginEnd);
+   free(d->BeginEnd);
+   free(d->HWSelectModeBeginEnd);
+   free(d->Save);
+   free(d->ContextLost);
+}
+
+bool
 _mesa_initialize_dispatch_tables(struct gl_context *ctx)
 {
-   /* Do the code-generated setup of the exec table in api_exec_init.c. */
-   _mesa_initialize_exec_table(ctx);
+   if (!_mesa_alloc_dispatch_tables(ctx->API, &ctx->Dispatch, false))
+      return false;
 
-   if (ctx->Save)
-      _mesa_initialize_save_table(ctx);
+   /* Do the code-generated initialization of dispatch tables. */
+   _mesa_init_dispatch(ctx);
+   vbo_init_dispatch_begin_end(ctx);
 
-   vbo_install_exec_vtxfmt(ctx);
-   if (ctx->API == API_OPENGL_COMPAT)
-      _mesa_install_save_vtxfmt(ctx);
+   if (_mesa_is_desktop_gl_compat(ctx)) {
+      _mesa_init_dispatch_save(ctx);
+      _mesa_init_dispatch_save_begin_end(ctx);
+   }
+
+   /* This binds the dispatch table to the context, but MakeCurrent will
+    * bind it for the user. If glthread is enabled, it will override it.
+    */
+   ctx->GLApi = ctx->Dispatch.Current;
+   return true;
 }
 
 /**
@@ -981,6 +980,24 @@ _mesa_initialize_context(struct gl_context *ctx,
 {
    struct gl_shared_state *shared;
    int i;
+
+   switch (api) {
+   case API_OPENGL_COMPAT:
+   case API_OPENGL_CORE:
+      if (!HAVE_OPENGL)
+         return GL_FALSE;
+      break;
+   case API_OPENGLES2:
+      if (!HAVE_OPENGL_ES_2)
+         return GL_FALSE;
+      break;
+   case API_OPENGLES:
+      if (!HAVE_OPENGL_ES_1)
+         return GL_FALSE;
+      break;
+   default:
+      return GL_FALSE;
+   }
 
    ctx->API = api;
    ctx->DrawBuffer = NULL;
@@ -1031,13 +1048,6 @@ _mesa_initialize_context(struct gl_context *ctx,
    if (no_error)
       ctx->Const.ContextFlags |= GL_CONTEXT_FLAG_NO_ERROR_BIT_KHR;
 
-   /* setup the API dispatch tables with all nop functions */
-   ctx->OutsideBeginEnd = _mesa_alloc_dispatch_table(false);
-   if (!ctx->OutsideBeginEnd)
-      goto fail;
-   ctx->Exec = ctx->OutsideBeginEnd;
-   ctx->CurrentClientDispatch = ctx->CurrentServerDispatch = ctx->OutsideBeginEnd;
-
    _mesa_reset_vertex_processing_mode(ctx);
 
    /* Mesa core handles all the formats that mesa core knows about.
@@ -1049,12 +1059,6 @@ _mesa_initialize_context(struct gl_context *ctx,
 
    switch (ctx->API) {
    case API_OPENGL_COMPAT:
-      ctx->BeginEnd = _mesa_alloc_dispatch_table(false);
-      ctx->Save = _mesa_alloc_dispatch_table(false);
-      if (!ctx->BeginEnd || !ctx->Save)
-         goto fail;
-
-      FALLTHROUGH;
    case API_OPENGL_CORE:
    case API_OPENGLES2:
       break;
@@ -1076,8 +1080,8 @@ _mesa_initialize_context(struct gl_context *ctx,
       }
       break;
    }
-   ctx->VertexProgram.PointSizeEnabled = ctx->API == API_OPENGLES2;
-   ctx->PointSizeIsOne = GL_TRUE;
+   ctx->VertexProgram.PointSizeEnabled = _mesa_is_gles2(ctx);
+   ctx->PointSizeIsSet = GL_TRUE;
 
    ctx->FirstTimeCurrent = GL_TRUE;
 
@@ -1085,9 +1089,6 @@ _mesa_initialize_context(struct gl_context *ctx,
 
 fail:
    _mesa_reference_shared_state(ctx, &ctx->Shared, NULL);
-   free(ctx->BeginEnd);
-   free(ctx->OutsideBeginEnd);
-   free(ctx->Save);
    return GL_FALSE;
 }
 
@@ -1131,11 +1132,11 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
 
    _mesa_reference_vao(ctx, &ctx->Array.VAO, NULL);
    _mesa_reference_vao(ctx, &ctx->Array.DefaultVAO, NULL);
-   _mesa_reference_vao(ctx, &ctx->Array._EmptyVAO, NULL);
    _mesa_reference_vao(ctx, &ctx->Array._DrawVAO, NULL);
 
    _mesa_free_attrib_data(ctx);
    _mesa_free_eval_data( ctx );
+   _mesa_free_feedback(ctx);
    _mesa_free_texture_data( ctx );
    _mesa_free_image_textures(ctx);
    _mesa_free_matrix_data( ctx );
@@ -1162,10 +1163,7 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    _mesa_free_buffer_objects(ctx);
 
    /* free dispatch tables */
-   free(ctx->BeginEnd);
-   free(ctx->OutsideBeginEnd);
-   free(ctx->Save);
-   free(ctx->ContextLost);
+   _mesa_free_dispatch_tables(&ctx->Dispatch);
    free(ctx->MarshalExec);
 
    /* Shared context state (display lists, textures, etc) */
@@ -1192,6 +1190,7 @@ _mesa_free_context_data(struct gl_context *ctx, bool destroy_debug_output)
    }
 
    free(ctx->Const.SpirVExtensions);
+   free(ctx->tmp_draws);
 }
 
 
@@ -1302,7 +1301,7 @@ _mesa_copy_context( const struct gl_context *src, struct gl_context *dst,
    /* XXX FIXME:  Call callbacks?
     */
    dst->NewState = _NEW_ALL;
-   dst->NewDriverState = ~0;
+   dst->NewDriverState = ST_ALL_STATES_MASK;
 }
 
 
@@ -1426,8 +1425,8 @@ handle_first_current(struct gl_context *ctx)
        * that will erroneously allow this usage in a 3.0 forward-compatible
        * context too.
        */
-      ctx->_AttribZeroAliasesVertex = (ctx->API == API_OPENGLES
-                                       || (ctx->API == API_OPENGL_COMPAT
+      ctx->_AttribZeroAliasesVertex = (_mesa_is_gles1(ctx)
+                                       || (_mesa_is_desktop_gl_compat(ctx)
                                            && !is_forward_compatible_context));
    }
 
@@ -1488,13 +1487,10 @@ _mesa_make_current( struct gl_context *newCtx,
        curCtx->Const.ContextReleaseBehavior ==
        GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH) {
       FLUSH_VERTICES(curCtx, 0, 0);
-      st_glFlush(curCtx, 0);
+      if (curCtx->st){
+         st_glFlush(curCtx, 0);
+      }
    }
-
-   /* Call this periodically to detect when the user has begun using
-    * GL rendering from multiple threads.
-    */
-   _glapi_check_multithread();
 
    if (!newCtx) {
       _glapi_set_dispatch(NULL);  /* none current */
@@ -1512,7 +1508,7 @@ _mesa_make_current( struct gl_context *newCtx,
    else {
       _glapi_set_context((void *) newCtx);
       assert(_mesa_get_current_context() == newCtx);
-      _glapi_set_dispatch(newCtx->CurrentClientDispatch);
+      _glapi_set_dispatch(newCtx->GLApi);
 
       if (drawBuffer && readBuffer) {
          assert(_mesa_is_winsys_fbo(drawBuffer));
@@ -1609,25 +1605,6 @@ struct gl_context *
 _mesa_get_current_context( void )
 {
    return (struct gl_context *) _glapi_get_context();
-}
-
-
-/**
- * Get context's current API dispatch table.
- *
- * It'll either be the immediate-mode execute dispatcher, the display list
- * compile dispatcher, or the thread marshalling dispatcher.
- *
- * \param ctx GL context.
- *
- * \return pointer to dispatch_table.
- *
- * Simply returns __struct gl_contextRec::CurrentClientDispatch.
- */
-struct _glapi_table *
-_mesa_get_dispatch(struct gl_context *ctx)
-{
-   return ctx->CurrentClientDispatch;
 }
 
 /*@}*/

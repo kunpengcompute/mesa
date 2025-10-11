@@ -28,8 +28,8 @@
 #include <xcb/glx.h>
 #include <X11/Xlib-xcb.h>
 
-_X_HIDDEN void
-__glX_send_client_info(struct glx_display *glx_dpy)
+void
+glxSendClientInfo(struct glx_display *glx_dpy, int screen)
 {
    const unsigned ext_length = strlen("GLX_ARB_create_context");
    const unsigned prof_length = strlen("_profile");
@@ -96,7 +96,7 @@ __glX_send_client_info(struct glx_display *glx_dpy)
    /* There are three possible flavors of the client info structure that the
     * client could send to the server.  The version sent depends on the
     * combination of GLX versions and extensions supported by the client and
-    * the server. This client only supports GLX major version 1.
+    * the server. This client only supports GLX version >= 1.3.
     *
     * Server supports                  Client sends
     * ----------------------------------------------------------------------
@@ -117,9 +117,6 @@ __glX_send_client_info(struct glx_display *glx_dpy)
     * requirement in this case does not seem like a limitation.
     */
 
-   if (glx_dpy->minorVersion == 0)
-      return;
-
    /* Determine whether any screen on the server supports either of the
     * create-context extensions.
     */
@@ -128,43 +125,39 @@ __glX_send_client_info(struct glx_display *glx_dpy)
 
       const char *haystack = src->serverGLXexts;
       while (haystack != NULL) {
-	 char *match = strstr(haystack, "GLX_ARB_create_context");
+    char *match = strstr(haystack, "GLX_ARB_create_context");
 
-	 if (match == NULL)
-	    break;
+    if (match == NULL)
+       break;
 
-	 match += ext_length;
+    match += ext_length;
 
-	 switch (match[0]) {
-	 case '\0':
-	 case ' ':
-	    any_screen_has_ARB_create_context = True;
-	    break;
+    switch (match[0]) {
+    case '\0':
+    case ' ':
+       any_screen_has_ARB_create_context = True;
+       break;
 
-	 case '_':
-	    if (strncmp(match, "_profile", prof_length) == 0
-		    && (match[prof_length] == '\0'
-			|| match[prof_length] == ' ')) {
-	       any_screen_has_ARB_create_context_profile = True;
-	       match += prof_length;
-	    }
-	    break;
-	 }
+    case '_':
+       if (strncmp(match, "_profile", prof_length) == 0
+          && (match[prof_length] == '\0'
+         || match[prof_length] == ' ')) {
+          any_screen_has_ARB_create_context_profile = True;
+          match += prof_length;
+       }
+       break;
+    }
 
-	 haystack = match;
+    haystack = match;
       }
    }
 
-   gl_extension_string = __glXGetClientGLExtensionString();
-   if (gl_extension_string == NULL) {
-      return;
-   }
-
+   gl_extension_string = __glXGetClientGLExtensionString(screen);
    gl_extension_length = strlen(gl_extension_string) + 1;
 
    c = XGetXCBConnection(glx_dpy->dpy);
 
-   /* Depending on the GLX verion and the available extensions on the server,
+   /* Depending on the GLX version and the available extensions on the server,
     * send the correct "flavor" of protocol to the server.
     *
     * THE ORDER IS IMPORTANT.  We want to send the most recent version of the
@@ -173,30 +166,30 @@ __glX_send_client_info(struct glx_display *glx_dpy)
    if (glx_dpy->minorVersion == 4
        && any_screen_has_ARB_create_context_profile) {
       xcb_glx_set_client_info_2arb(c,
-				  GLX_MAJOR_VERSION, GLX_MINOR_VERSION,
-				   sizeof(gl_versions_profiles)
-				   / (3 * sizeof(gl_versions_profiles[0])),
-				  gl_extension_length,
-				  strlen(glx_extensions) + 1,
-				  gl_versions_profiles,
-				  gl_extension_string,
-				  glx_extensions);
+              GLX_MAJOR_VERSION, GLX_MINOR_VERSION,
+               sizeof(gl_versions_profiles)
+               / (3 * sizeof(gl_versions_profiles[0])),
+              gl_extension_length,
+              strlen(glx_extensions) + 1,
+              gl_versions_profiles,
+              gl_extension_string,
+              glx_extensions);
    } else if (glx_dpy->minorVersion == 4
-	      && any_screen_has_ARB_create_context) {
+         && any_screen_has_ARB_create_context) {
       xcb_glx_set_client_info_arb(c,
-				  GLX_MAJOR_VERSION, GLX_MINOR_VERSION,
-				  sizeof(gl_versions)
-				  / (2 * sizeof(gl_versions[0])),
-				  gl_extension_length,
-				  strlen(glx_extensions) + 1,
-				  gl_versions,
-				  gl_extension_string,
-				  glx_extensions);
+              GLX_MAJOR_VERSION, GLX_MINOR_VERSION,
+              sizeof(gl_versions)
+              / (2 * sizeof(gl_versions[0])),
+              gl_extension_length,
+              strlen(glx_extensions) + 1,
+              gl_versions,
+              gl_extension_string,
+              glx_extensions);
    } else {
       xcb_glx_client_info(c,
-			  GLX_MAJOR_VERSION, GLX_MINOR_VERSION,
-			  gl_extension_length,
-			  gl_extension_string);
+           GLX_MAJOR_VERSION, GLX_MINOR_VERSION,
+           gl_extension_length,
+           gl_extension_string);
    }
 
    free(gl_extension_string);

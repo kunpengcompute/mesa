@@ -1,24 +1,6 @@
 /*
  * Copyright © 2020 Google LLC
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
- * IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "freedreno_layout.h"
@@ -916,6 +898,39 @@ static const struct testcase
                         {.offset = 655360, .pitch = 1024},
                         {.offset = 688128, .pitch = 1024},
                         {.offset = 720896, .pitch = 1024},
+                     },
+               },
+         },
+
+         /* dEQP-VK.image.texel_view_compatible.graphic.extended.3d_image.texture_read.astc_8x8_unorm_block.r32g32b32a32_uint
+          *
+          * This is an interesting case where the size is 4K-aligned but the
+          * height becomes not aligned, and we have to use MINLAYERSZ to
+          * intervene.
+          *
+          * This test can only use tiled layouts on a750+, and the blob seems
+          * to make this one texture linear rather than deal with the
+          * alignment problem.
+          */
+         {
+            .format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+            .is_3d = true,
+            .layout =
+               {
+                  .tile_mode = TILE6_3,
+                  .ubwc = false,
+                  .width0 = 76,
+                  .height0 = 76,
+                  .depth0 = 1,
+                  .slices =
+                     {
+                        {.offset = 0, .pitch = 2048, .size0 = 163840},
+                        {.offset = 163840, .pitch = 1024, .size0 = 49152},
+                        {.offset = 212992, .pitch = 1024, .size0 = 49152},
+                        {.offset = 262144, .pitch = 1024},
+                        {.offset = 311296, .pitch = 1024},
+                        {.offset = 360448, .pitch = 1024},
+                        {.offset = 409600, .pitch = 1024},
                      },
                },
          },

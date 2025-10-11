@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -103,7 +85,7 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
          else
             pformat = util_format_linear(pformat);
 
-         debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+         assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
          offset = fd_resource_offset(rsc, psurf->u.tex.level,
                                      psurf->u.tex.first_layer);
@@ -146,6 +128,14 @@ use_hw_binning(struct fd_batch *batch)
 {
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 
+   /* workaround: Like on a3xx, hw binning and scissor optimization
+    * don't play nice together.
+    *
+    * Disable binning if scissor optimization is used.
+    */
+   if (gmem->minx || gmem->miny)
+      return false;
+
    if ((gmem->maxpw * gmem->maxph) > 32)
       return false;
 
@@ -170,7 +160,7 @@ emit_gmem2mem_surf(struct fd_batch *batch, bool stencil, uint32_t base,
       return;
 
    if (stencil) {
-      debug_assert(rsc->stencil);
+      assert(rsc->stencil);
       rsc = rsc->stencil;
       pformat = rsc->b.b.format;
    }
@@ -179,7 +169,7 @@ emit_gmem2mem_surf(struct fd_batch *batch, bool stencil, uint32_t base,
       fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
    pitch = fd_resource_pitch(rsc, psurf->u.tex.level);
 
-   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    OUT_PKT0(ring, REG_A4XX_RB_COPY_CONTROL, 4);
    OUT_RING(ring, A4XX_RB_COPY_CONTROL_MSAA_RESOLVE(MSAA_ONE) |

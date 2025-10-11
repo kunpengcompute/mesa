@@ -34,9 +34,9 @@
 
 #include <stdint.h>
 #include <assert.h>
-#include <time.h>
 #include <stdbool.h>
 
+#include "c11/time.h"
 #include "macros.h"
 
 #define NSEC_PER_SEC 1000000000
@@ -76,6 +76,24 @@ timespec_sub(struct timespec *r,
    if (r->tv_nsec < 0) {
       r->tv_sec--;
       r->tv_nsec += NSEC_PER_SEC;
+   }
+}
+
+/**
+ * Saturating timespec subtraction
+ *
+ * \param r[out] result: max(a - b, 0)
+ * \param a[in] operand
+ * \param b[in] operand
+ */
+static inline void
+timespec_sub_saturate(struct timespec *r,
+                      const struct timespec *a, const struct timespec *b)
+{
+   timespec_sub(r, a, b);
+   if (r->tv_sec < 0) {
+      r->tv_sec = 0;
+      r->tv_nsec = 0;
    }
 }
 
@@ -329,22 +347,5 @@ timespec_after(const struct timespec *a, const struct timespec *b)
       (a->tv_nsec > b->tv_nsec) :
       (a->tv_sec > b->tv_sec);
 }
-
-#ifndef _MSC_VER
-/**
- * Checks whether a timespec value is after the current time
- *
- * \param clock_domain[in] clock in which to do the comparison
- * \param deadline[in] timespec to compare
- * \return whether deadline is after the current time
- */
-static inline bool
-timespec_passed(clockid_t clock_domain, const struct timespec *deadline)
-{
-   struct timespec current_time;
-   clock_gettime(clock_domain, &current_time);
-   return timespec_after(&current_time, deadline);
-}
-#endif
 
 #endif /* TIMESPEC_H */

@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -39,6 +21,7 @@ struct fd_ringbuffer;
 
 void fd_draw_init(struct pipe_context *pctx);
 
+#ifndef __cplusplus
 static inline void
 fd_draw(struct fd_batch *batch, struct fd_ringbuffer *ring,
         enum pc_di_primtype primtype, enum pc_di_vis_cull_mode vismode,
@@ -169,6 +152,24 @@ fd_draw_emit(struct fd_batch *batch, struct fd_ringbuffer *ring,
    fd_draw(batch, ring, primtype, vismode, src_sel, draw->count,
            info->instance_count - 1, idx_type, idx_size, idx_offset,
            idx_buffer);
+}
+#endif
+
+static inline void
+fd_blend_tracking(struct fd_context *ctx)
+   assert_dt
+{
+   if (ctx->dirty & FD_DIRTY_BLEND) {
+      struct fd_batch *batch = ctx->batch;
+      struct pipe_framebuffer_state *pfb = &batch->framebuffer;
+
+      if (ctx->blend->logicop_enable)
+         batch->gmem_reason |= FD_GMEM_LOGICOP_ENABLED;
+      for (unsigned i = 0; i < pfb->nr_cbufs; i++) {
+         if (ctx->blend->rt[i].blend_enable)
+            batch->gmem_reason |= FD_GMEM_BLEND_ENABLED;
+      }
+   }
 }
 
 #endif /* FREEDRENO_DRAW_H_ */

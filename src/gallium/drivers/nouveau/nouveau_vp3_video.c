@@ -27,6 +27,7 @@
 
 #include <nvif/class.h>
 
+#include "nouveau_winsys.h"
 #include "nouveau_screen.h"
 #include "nouveau_context.h"
 #include "nouveau_vp3_video.h"
@@ -34,6 +35,20 @@
 #include "util/u_video.h"
 #include "util/format/u_format.h"
 #include "util/u_sampler.h"
+
+static void
+nouveau_vp3_video_buffer_resources(struct pipe_video_buffer *buffer,
+                                   struct pipe_resource **resources)
+{
+   struct nouveau_vp3_video_buffer *buf = (struct nouveau_vp3_video_buffer *)buffer;
+   unsigned i;
+
+   assert(buf);
+
+   for (i = 0; i < buf->num_planes; ++i) {
+      resources[i] = buf->resources[i];
+   }
+}
 
 static struct pipe_sampler_view **
 nouveau_vp3_video_buffer_sampler_view_planes(struct pipe_video_buffer *buffer)
@@ -85,7 +100,7 @@ nouveau_vp3_video_buffer_create(struct pipe_context *pipe,
    struct pipe_sampler_view sv_templ;
    struct pipe_surface surf_templ;
 
-   if (getenv("XVMC_VL") || templat->buffer_format != PIPE_FORMAT_NV12)
+   if (templat->buffer_format != PIPE_FORMAT_NV12)
       return vl_video_buffer_create(pipe, templat);
 
    assert(templat->interlaced);
@@ -100,6 +115,7 @@ nouveau_vp3_video_buffer_create(struct pipe_context *pipe,
    buffer->base.destroy = nouveau_vp3_video_buffer_destroy;
    buffer->base.width = templat->width;
    buffer->base.height = templat->height;
+   buffer->base.get_resources = nouveau_vp3_video_buffer_resources;
    buffer->base.get_sampler_view_planes = nouveau_vp3_video_buffer_sampler_view_planes;
    buffer->base.get_sampler_view_components = nouveau_vp3_video_buffer_sampler_view_components;
    buffer->base.get_surfaces = nouveau_vp3_video_buffer_surfaces;
@@ -182,11 +198,12 @@ nouveau_vp3_decoder_begin_frame(struct pipe_video_codec *decoder,
 {
 }
 
-static void
+static int
 nouveau_vp3_decoder_end_frame(struct pipe_video_codec *decoder,
                               struct pipe_video_buffer *target,
                               struct pipe_picture_desc *picture)
 {
+   return 0;
 }
 
 static void
@@ -213,11 +230,11 @@ nouveau_vp3_decoder_destroy(struct pipe_video_codec *decoder)
 
    if (dec->channel[0] != dec->channel[1]) {
       for (i = 0; i < 3; ++i) {
-         nouveau_pushbuf_del(&dec->pushbuf[i]);
+         nouveau_pushbuf_destroy(&dec->pushbuf[i]);
          nouveau_object_del(&dec->channel[i]);
       }
    } else {
-      nouveau_pushbuf_del(dec->pushbuf);
+      nouveau_pushbuf_destroy(dec->pushbuf);
       nouveau_object_del(dec->channel);
    }
 
@@ -284,13 +301,14 @@ nouveau_vp3_load_firmware(struct nouveau_vp3_decoder *dec,
    char path[PATH_MAX];
    ssize_t r;
    uint32_t *end, endval;
+   struct nouveau_screen *screen = nouveau_screen(dec->base.context->screen);
 
    if (chipset >= 0xa3 && chipset != 0xaa && chipset != 0xac)
       vp4_getpath(profile, path);
    else
       vp3_getpath(profile, path);
 
-   if (nouveau_bo_map(dec->fw_bo, NOUVEAU_BO_WR, dec->client))
+   if (BO_MAP(screen, dec->fw_bo, NOUVEAU_BO_WR, dec->client))
       return 1;
 
    fd = open(path, O_RDONLY | O_CLOEXEC);
@@ -377,7 +395,7 @@ firmware_present(struct pipe_screen *pscreen, enum pipe_video_profile profile)
       struct nouveau_object *channel = NULL, *bsp = NULL;
       struct nv04_fifo nv04_data = {.vram = 0xbeef0201, .gart = 0xbeef0202};
       struct nvc0_fifo nvc0_args = {};
-      struct nve0_fifo nve0_args = {.engine = NVE0_FIFO_ENGINE_BSP};
+      struct nve0_fifo nve0_args = {.engine = NOUVEAU_FIFO_ENGINE_BSP};
       void *data = NULL;
       int size;
 

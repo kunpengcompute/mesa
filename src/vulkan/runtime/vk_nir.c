@@ -24,14 +24,17 @@
 
 #include "vk_nir.h"
 
+#include "compiler/nir/nir_xfb_info.h"
 #include "compiler/spirv/nir_spirv.h"
+#include "vk_device.h"
 #include "vk_log.h"
+#include "vk_physical_device.h"
 #include "vk_util.h"
 
 #define SPIR_V_MAGIC_NUMBER 0x07230203
 
 uint32_t
-vk_spirv_version(uint32_t *spirv_data, size_t spirv_size_B)
+vk_spirv_version(const uint32_t *spirv_data, size_t spirv_size_B)
 {
    assert(spirv_size_B >= 8);
    assert(spirv_data[0] == SPIR_V_MAGIC_NUMBER);
@@ -64,31 +67,75 @@ spirv_nir_debug(void *private_data,
    }
 }
 
-static bool
-is_not_xfb_output(nir_variable *var, void *data)
+bool
+nir_vk_is_not_xfb_output(nir_variable *var, void *data)
 {
    if (var->data.mode != nir_var_shader_out)
       return true;
 
-   return !var->data.explicit_xfb_buffer &&
-          !var->data.explicit_xfb_stride;
+   /* From the Vulkan 1.3.259 spec:
+    *
+    *    VUID-StandaloneSpirv-Offset-04716
+    *
+    *    "Only variables or block members in the output interface decorated
+    *    with Offset can be captured for transform feedback, and those
+    *    variables or block members must also be decorated with XfbBuffer
+    *    and XfbStride, or inherit XfbBuffer and XfbStride decorations from
+    *    a block containing them"
+    *
+    * glslang generates gl_PerVertex builtins when they are not declared,
+    * enabled XFB should not prevent them from being DCE'd.
+    *
+    * The logic should match nir_gather_xfb_info_with_varyings
+    */
+
+   if (!var->data.explicit_xfb_buffer)
+      return true;
+
+   bool is_array_block = var->interface_type != NULL &&
+      glsl_type_is_array(var->type) &&
+      glsl_without_array(var->type) == var->interface_type;
+
+   if (!is_array_block) {
+      return !var->data.explicit_offset;
+   } else {
+      /* For array of blocks we have to check each element */
+      unsigned aoa_size = glsl_get_aoa_size(var->type);
+      const struct glsl_type *itype = var->interface_type;
+      unsigned nfields = glsl_get_length(itype);
+      for (unsigned b = 0; b < aoa_size; b++) {
+         for (unsigned f = 0; f < nfields; f++) {
+            if (glsl_get_struct_field_offset(itype, f) >= 0)
+               return false;
+         }
+      }
+
+      return true;
+   }
 }
 
 nir_shader *
 vk_spirv_to_nir(struct vk_device *device,
-                uint32_t *spirv_data, size_t spirv_size_B,
+                const uint32_t *spirv_data, size_t spirv_size_B,
                 gl_shader_stage stage, const char *entrypoint_name,
+                enum gl_subgroup_size subgroup_size,
                 const VkSpecializationInfo *spec_info,
                 const struct spirv_to_nir_options *spirv_options,
                 const struct nir_shader_compiler_options *nir_options,
+                bool internal,
                 void *mem_ctx)
 {
    assert(spirv_size_B >= 4 && spirv_size_B % 4 == 0);
    assert(spirv_data[0] == SPIR_V_MAGIC_NUMBER);
 
+   const struct spirv_capabilities spirv_caps =
+      vk_physical_device_get_spirv_capabilities(device->physical);
+
    struct spirv_to_nir_options spirv_options_local = *spirv_options;
+   spirv_options_local.capabilities = &spirv_caps;
    spirv_options_local.debug.func = spirv_nir_debug;
    spirv_options_local.debug.private_data = (void *)device;
+   spirv_options_local.subgroup_size = subgroup_size;
 
    uint32_t num_spec_entries = 0;
    struct nir_spirv_specialization *spec_entries =
@@ -109,6 +156,8 @@ vk_spirv_to_nir(struct vk_device *device,
    if (mem_ctx != NULL)
       ralloc_steal(mem_ctx, nir);
 
+   nir->info.internal = internal;
+
    /* We have to lower away local constant initializers right before we
     * inline functions.  That way they get properly initialized at the top
     * of the function and not at the top of its caller.
@@ -120,11 +169,7 @@ vk_spirv_to_nir(struct vk_device *device,
    NIR_PASS_V(nir, nir_opt_deref);
 
    /* Pick off the single entrypoint that we want */
-   foreach_list_typed_safe(nir_function, func, node, &nir->functions) {
-      if (!func->is_entrypoint)
-         exec_node_remove(&func->node);
-   }
-   assert(exec_list_length(&nir->functions) == 1);
+   nir_remove_non_entrypoints(nir);
 
    /* Now that we've deleted all but the main function, we can go ahead and
     * lower the rest of the constant initializers.  We do this here so that
@@ -140,12 +185,23 @@ vk_spirv_to_nir(struct vk_device *device,
    NIR_PASS_V(nir, nir_split_per_member_structs);
 
    nir_remove_dead_variables_options dead_vars_opts = {
-      .can_remove_var = is_not_xfb_output,
+      .can_remove_var = nir_vk_is_not_xfb_output,
    };
    NIR_PASS_V(nir, nir_remove_dead_variables,
               nir_var_shader_in | nir_var_shader_out | nir_var_system_value |
               nir_var_shader_call_data | nir_var_ray_hit_attrib,
               &dead_vars_opts);
+
+   /* This needs to happen after remove_dead_vars because GLSLang likes to
+    * insert dead clip/cull vars and we don't want to clip/cull based on
+    * uninitialized garbage.
+    */
+   NIR_PASS_V(nir, nir_lower_clip_cull_distance_arrays);
+
+   if (nir->info.stage == MESA_SHADER_VERTEX ||
+       nir->info.stage == MESA_SHADER_TESS_EVAL ||
+       nir->info.stage == MESA_SHADER_GEOMETRY)
+      NIR_PASS_V(nir, nir_shader_gather_xfb_info);
 
    NIR_PASS_V(nir, nir_propagate_invariant, false);
 

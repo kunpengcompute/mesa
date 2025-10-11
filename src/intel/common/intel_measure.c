@@ -38,9 +38,9 @@
 #include <inttypes.h>
 
 #include "dev/intel_device_info.h"
-#include "util/debug.h"
-#include "util/macros.h"
+#include "util/os_time.h"
 #include "util/u_debug.h"
+#include "util/macros.h"
 
 
 static const struct debug_control debug_control[] = {
@@ -64,8 +64,12 @@ intel_measure_init(struct intel_measure_device *device)
       if (!env)
          return;
 
+      char env_copy[1024];
+      strncpy(env_copy, env, 1024);
+      env_copy[1023] = '\0';
+
       config.file = stderr;
-      config.flags = parse_debug_string(env, debug_control);
+      config.flags = parse_debug_string(env_copy, debug_control);
       if (!config.flags)
          config.flags = INTEL_MEASURE_DRAW;
       config.enabled = true;
@@ -76,7 +80,8 @@ intel_measure_init(struct intel_measure_device *device)
        * warning on the output filehandle.
        */
 
-      /* default batch_size allows for 64k renders in a single batch */
+      /* default batch_size allows for 32k renders in a single batch */
+      const int MINIMUM_BATCH_SIZE = 1024;
       const int DEFAULT_BATCH_SIZE = 64 * 1024;
       config.batch_size = DEFAULT_BATCH_SIZE;
 
@@ -84,31 +89,34 @@ intel_measure_init(struct intel_measure_device *device)
        * csv.  Overflow may occur for offscreen workloads or large 'interval'
        * settings.
        */
+      const int MINIMUM_BUFFER_SIZE = 1024;
       const int DEFAULT_BUFFER_SIZE = 64 * 1024;
       config.buffer_size = DEFAULT_BUFFER_SIZE;
 
-      const char *filename = strstr(env, "file=");
-      const char *start_frame_s = strstr(env, "start=");
-      const char *count_frame_s = strstr(env, "count=");
-      const char *control_path = strstr(env, "control=");
-      const char *interval_s = strstr(env, "interval=");
-      const char *batch_size_s = strstr(env, "batch_size=");
-      const char *buffer_size_s = strstr(env, "buffer_size=");
+      const char *filename = strstr(env_copy, "file=");
+      const char *start_frame_s = strstr(env_copy, "start=");
+      const char *count_frame_s = strstr(env_copy, "count=");
+      const char *control_path = strstr(env_copy, "control=");
+      const char *interval_s = strstr(env_copy, "interval=");
+      const char *batch_size_s = strstr(env_copy, "batch_size=");
+      const char *buffer_size_s = strstr(env_copy, "buffer_size=");
+      const char *cpu_s = strstr(env_copy, "cpu");
+      const char *no_ogl = strstr(env_copy, "nogl");
       while (true) {
-         char *sep = strrchr(env, ',');
+         char *sep = strrchr(env_copy, ',');
          if (sep == NULL)
             break;
          *sep = '\0';
       }
 
-      if (filename && !__check_suid()) {
+      if (no_ogl && device->type == INTEL_MEASURE_DEVICE_OGL) {
+         config.enabled = false;
+         return;
+      }
+
+      if (filename && __normal_user()) {
          filename += 5;
-         config.file = fopen(filename, "w");
-         if (!config.file) {
-            fprintf(stderr, "INTEL_MEASURE failed to open output file %s: %s\n",
-                    filename, strerror (errno));
-            abort();
-         }
+         config.deferred_create_filename = strdup(filename);
       }
 
       if (start_frame_s) {
@@ -174,12 +182,12 @@ intel_measure_init(struct intel_measure_device *device)
       if (batch_size_s) {
          batch_size_s += 11;
          const int batch_size = atoi(batch_size_s);
-         if (batch_size < DEFAULT_BATCH_SIZE) {
-            fprintf(stderr, "INTEL_MEASURE minimum batch_size is 4k: "
+         if (batch_size < MINIMUM_BATCH_SIZE ) {
+            fprintf(stderr, "INTEL_MEASURE minimum batch_size is 1k: "
                     "%d\n", batch_size);
             abort();
          }
-         if (batch_size > DEFAULT_BATCH_SIZE * 1024) {
+         if (batch_size > MINIMUM_BATCH_SIZE * 4 * 1024) {
             fprintf(stderr, "INTEL_MEASURE batch_size limited to 4M: "
                     "%d\n", batch_size);
             abort();
@@ -191,11 +199,11 @@ intel_measure_init(struct intel_measure_device *device)
       if (buffer_size_s) {
          buffer_size_s += 12;
          const int buffer_size = atoi(buffer_size_s);
-         if (buffer_size < DEFAULT_BUFFER_SIZE) {
+         if (buffer_size < MINIMUM_BUFFER_SIZE) {
             fprintf(stderr, "INTEL_MEASURE minimum buffer_size is 1k: "
                     "%d\n", DEFAULT_BUFFER_SIZE);
          }
-         if (buffer_size > DEFAULT_BUFFER_SIZE * 1024) {
+         if (buffer_size > MINIMUM_BUFFER_SIZE * 1024) {
             fprintf(stderr, "INTEL_MEASURE buffer_size limited to 1M: "
                     "%d\n", buffer_size);
          }
@@ -203,14 +211,15 @@ intel_measure_init(struct intel_measure_device *device)
          config.buffer_size = buffer_size;
       }
 
-      fputs("draw_start,draw_end,frame,batch,"
-            "event_index,event_count,type,count,vs,tcs,tes,"
-            "gs,fs,cs,framebuffer,idle_us,time_us\n",
-            config.file);
+      if (cpu_s) {
+         config.cpu_measure = true;
+      }
    }
 
    device->config = NULL;
    device->frame = 0;
+   device->render_pass_count = 0;
+   device->release_batch = NULL;
    pthread_mutex_init(&device->mutex, NULL);
    list_inithead(&device->queued_snapshots);
 
@@ -234,6 +243,7 @@ intel_measure_snapshot_string(enum intel_measure_snapshot_type type)
       [INTEL_SNAPSHOT_HIZ_AMBIGUATE]       = "hiz ambiguate",
       [INTEL_SNAPSHOT_HIZ_CLEAR]           = "hiz clear",
       [INTEL_SNAPSHOT_HIZ_RESOLVE]         = "hiz resolve",
+      [INTEL_SNAPSHOT_MCS_AMBIGUATE]       = "mcs ambiguate",
       [INTEL_SNAPSHOT_MCS_COLOR_CLEAR]     = "mcs color clear",
       [INTEL_SNAPSHOT_MCS_PARTIAL_RESOLVE] = "mcs partial resolve",
       [INTEL_SNAPSHOT_SLOW_COLOR_CLEAR]    = "slow color clear",
@@ -262,8 +272,9 @@ intel_measure_snapshot_string(enum intel_measure_snapshot_type type)
  */
 bool
 intel_measure_state_changed(const struct intel_measure_batch *batch,
-                            uintptr_t vs, uintptr_t tcs, uintptr_t tes,
-                            uintptr_t gs, uintptr_t fs, uintptr_t cs)
+                            uint32_t vs, uint32_t tcs, uint32_t tes,
+                            uint32_t gs, uint32_t fs, uint32_t cs,
+                            uint32_t ms, uint32_t ts)
 {
    if (batch->index == 0) {
       /* always record the first event */
@@ -287,9 +298,9 @@ intel_measure_state_changed(const struct intel_measure_batch *batch,
    }
 
    if (config.flags & INTEL_MEASURE_RENDERPASS) {
-      return ((last_snap->framebuffer != batch->framebuffer) ||
-              /* compute workloads are always in their own renderpass */
-              (cs != 0));
+      bool new_renderpass = !cs && last_snap->renderpass != batch->renderpass;
+      bool new_compute_block = cs && last_snap->type != INTEL_SNAPSHOT_COMPUTE;
+      return new_renderpass || new_compute_block;
    }
 
    /* remaining comparisons check the state of the render pipeline for
@@ -297,17 +308,19 @@ intel_measure_state_changed(const struct intel_measure_batch *batch,
     */
    assert(config.flags & INTEL_MEASURE_SHADER);
 
-   if (!vs && !tcs && !tes && !gs && !fs && !cs) {
+   if (!vs && !tcs && !tes && !gs && !fs && !cs && !ms && !ts) {
       /* blorp always changes program */
       return true;
    }
 
-   return (last_snap->vs  != (uintptr_t) vs ||
-           last_snap->tcs != (uintptr_t) tcs ||
-           last_snap->tes != (uintptr_t) tes ||
-           last_snap->gs  != (uintptr_t) gs ||
-           last_snap->fs  != (uintptr_t) fs ||
-           last_snap->cs  != (uintptr_t) cs);
+   return (last_snap->vs  != vs ||
+           last_snap->tcs != tcs ||
+           last_snap->tes != tes ||
+           last_snap->gs  != gs ||
+           last_snap->fs  != fs ||
+           last_snap->cs  != cs ||
+           last_snap->ms  != ms ||
+           last_snap->ts  != ts);
 }
 
 /**
@@ -402,7 +415,7 @@ intel_measure_push_result(struct intel_measure_device *device,
 
    uint64_t *timestamps = batch->timestamps;
    assert(timestamps != NULL);
-   assert(timestamps[0] != 0);
+   assert(batch->index == 0 || timestamps[0] != 0);
 
    for (int i = 0; i < batch->index; i += 2) {
       const struct intel_measure_snapshot *begin = &batch->snapshots[i];
@@ -413,6 +426,8 @@ intel_measure_push_result(struct intel_measure_device *device,
       if (begin->type == INTEL_SNAPSHOT_SECONDARY_BATCH) {
          assert(begin->secondary != NULL);
          begin->secondary->batch_count = batch->batch_count;
+         begin->secondary->batch_size = 0;
+         begin->secondary->primary_renderpass = batch->renderpass;
          intel_measure_push_result(device, begin->secondary);
          continue;
       }
@@ -447,6 +462,8 @@ intel_measure_push_result(struct intel_measure_device *device,
          raw_timestamp_delta(prev_end_ts, buffered_result->start_ts);
       buffered_result->frame = batch->frame;
       buffered_result->batch_count = batch->batch_count;
+      buffered_result->batch_size = batch->batch_size;
+      buffered_result->primary_renderpass = batch->primary_renderpass;
       buffered_result->event_index = i / 2;
       buffered_result->snapshot.event_count = end->event_count;
    }
@@ -563,7 +580,7 @@ buffered_event_count(struct intel_measure_device *device)
 static void
 print_combined_results(struct intel_measure_device *measure_device,
                        int result_count,
-                       struct intel_device_info *info)
+                       const struct intel_device_info *info)
 {
    if (result_count == 0)
       return;
@@ -596,17 +613,39 @@ print_combined_results(struct intel_measure_device *measure_device,
    uint64_t duration_time_ns =
       intel_device_info_timebase_scale(info, duration_ts);
    const struct intel_measure_snapshot *begin = &start_result->snapshot;
-   fprintf(config.file, "%"PRIu64",%"PRIu64",%u,%u,%u,%u,%s,%u,"
-           "0x%"PRIxPTR",0x%"PRIxPTR",0x%"PRIxPTR",0x%"PRIxPTR",0x%"PRIxPTR","
-           "0x%"PRIxPTR",0x%"PRIxPTR",%.3lf,%.3lf\n",
+   uint32_t renderpass = (start_result->primary_renderpass)
+      ? start_result->primary_renderpass : begin->renderpass;
+   fprintf(config.file, "%"PRIu64",%"PRIu64",%u,%u,%"PRIu64",%u,%u,%u,%s,%u,"
+           "0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,0x%x,%.3lf,%.3lf\n",
            start_result->start_ts, current_result->end_ts,
-           start_result->frame, start_result->batch_count,
-           start_result->event_index, event_count,
+           start_result->frame,
+           start_result->batch_count, start_result->batch_size,
+           renderpass, start_result->event_index, event_count,
            begin->event_name, begin->count,
-           begin->vs, begin->tcs, begin->tes, begin->gs, begin->fs, begin->cs,
-           begin->framebuffer,
+           begin->vs, begin->tcs, begin->tes, begin->gs,
+           begin->fs, begin->cs, begin->ms, begin->ts,
            (double)duration_idle_ns / 1000.0,
            (double)duration_time_ns / 1000.0);
+}
+
+/**
+ * Write data for a cpu event.
+ */
+void
+intel_measure_print_cpu_result(unsigned int frame,
+                               unsigned int batch_count,
+                               uint64_t batch_size,
+                               unsigned int event_index,
+                               unsigned int event_count,
+                               unsigned int count,
+                               const char* event_name)
+{
+   assert(config.cpu_measure);
+   uint64_t start_ns = os_time_get_nano();
+
+   fprintf(config.file, "%"PRIu64",%u,%3u,%"PRIu64",%3u,%u,%s,%u\n",
+           start_ns, frame, batch_count, batch_size,
+           event_index, event_count, event_name, count);
 }
 
 /**
@@ -614,8 +653,29 @@ print_combined_results(struct intel_measure_device *measure_device,
  */
 static void
 intel_measure_print(struct intel_measure_device *device,
-                    struct intel_device_info *info)
+                    const struct intel_device_info *info)
 {
+   if (unlikely(config.deferred_create_filename)) {
+      config.file = fopen(config.deferred_create_filename, "w");
+      if (!config.file) {
+         fprintf(stderr, "INTEL_MEASURE failed to open output file %s: %s\n",
+                  config.deferred_create_filename, strerror(errno));
+         abort();
+      }
+      free(config.deferred_create_filename);
+      config.deferred_create_filename = NULL;
+
+      if (!config.cpu_measure)
+         fputs("draw_start,draw_end,frame,batch,batch_size,renderpass,"
+               "event_index,event_count,type,count,vs,tcs,tes,"
+               "gs,fs,cs,ms,ts,idle_us,time_us\n",
+               config.file);
+      else
+         fputs("draw_start,frame,batch,batch_size,event_index,event_count,"
+               "type,count\n",
+               config.file);
+   }
+
    while (true) {
       const int events_to_combine = buffered_event_count(device);
       if (events_to_combine == 0)
@@ -630,7 +690,7 @@ intel_measure_print(struct intel_measure_device *device,
  */
 void
 intel_measure_gather(struct intel_measure_device *measure_device,
-                     struct intel_device_info *info)
+                     const struct intel_device_info *info)
 {
    pthread_mutex_lock(&measure_device->mutex);
 
@@ -657,9 +717,10 @@ intel_measure_gather(struct intel_measure_device *measure_device,
 
       batch->index = 0;
       batch->frame = 0;
+      if (measure_device->release_batch)
+         measure_device->release_batch(batch);
    }
 
    intel_measure_print(measure_device, info);
    pthread_mutex_unlock(&measure_device->mutex);
 }
-

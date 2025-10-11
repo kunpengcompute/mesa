@@ -97,10 +97,10 @@ util_draw_max_index(
 
       buffer_size -= format_size;
 
-      if (buffer->stride != 0) {
+      if (element->src_stride != 0) {
          unsigned buffer_max_index;
 
-         buffer_max_index = buffer_size / buffer->stride;
+         buffer_max_index = buffer_size / element->src_stride;
 
          if (element->instance_divisor == 0) {
             /* Per-vertex data */
@@ -115,7 +115,7 @@ util_draw_max_index(
                 * indices/instances and simply start clamping against buffer
                 * size. */
                debug_printf("%s: too many instances for vertex buffer\n",
-                            __FUNCTION__);
+                            __func__);
                return 0;
             }
          }
@@ -147,7 +147,7 @@ util_draw_indirect_read(struct pipe_context *pipe,
                                                  indirect->indirect_draw_count_offset,
                                                  4, PIPE_MAP_READ, &dc_transfer);
       if (!dc_transfer) {
-         debug_printf("%s: failed to map indirect draw count buffer\n", __FUNCTION__);
+         debug_printf("%s: failed to map indirect draw count buffer\n", __func__);
          return NULL;
       }
       draw_count = dc_param[0];
@@ -169,7 +169,7 @@ util_draw_indirect_read(struct pipe_context *pipe,
                                   PIPE_MAP_READ,
                                   &transfer);
    if (!transfer) {
-      debug_printf("%s: failed to map indirect buffer\n", __FUNCTION__);
+      debug_printf("%s: failed to map indirect buffer\n", __func__);
       free(draws);
       return NULL;
    }
@@ -194,6 +194,7 @@ util_draw_indirect_read(struct pipe_context *pipe,
 void
 util_draw_indirect(struct pipe_context *pipe,
                    const struct pipe_draw_info *info_in,
+                   unsigned drawid_offset,
                    const struct pipe_draw_indirect_info *indirect)
 {
    struct pipe_draw_info info;
@@ -215,13 +216,16 @@ util_draw_indirect(struct pipe_context *pipe,
                                                  indirect->indirect_draw_count_offset,
                                                  4, PIPE_MAP_READ, &dc_transfer);
       if (!dc_transfer) {
-         debug_printf("%s: failed to map indirect draw count buffer\n", __FUNCTION__);
+         debug_printf("%s: failed to map indirect draw count buffer\n", __func__);
          return;
       }
       if (dc_param[0] < draw_count)
          draw_count = dc_param[0];
       pipe_buffer_unmap(pipe, dc_transfer);
    }
+
+   if (!draw_count)
+      return;
 
    if (indirect->stride)
       num_params = MIN2(indirect->stride / 4, num_params);
@@ -233,7 +237,7 @@ util_draw_indirect(struct pipe_context *pipe,
                             PIPE_MAP_READ,
                             &transfer);
    if (!transfer) {
-      debug_printf("%s: failed to map indirect buffer\n", __FUNCTION__);
+      debug_printf("%s: failed to map indirect buffer\n", __func__);
       return;
    }
 
@@ -246,7 +250,7 @@ util_draw_indirect(struct pipe_context *pipe,
       draw.index_bias = info_in->index_size ? params[3] : 0;
       info.start_instance = info_in->index_size ? params[4] : params[3];
 
-      pipe->draw_vbo(pipe, &info, i, NULL, &draw, 1);
+      pipe->draw_vbo(pipe, &info, i + drawid_offset, NULL, &draw, 1);
 
       params += indirect->stride / 4;
    }
@@ -260,7 +264,6 @@ util_draw_multi(struct pipe_context *pctx, const struct pipe_draw_info *info,
                 const struct pipe_draw_start_count_bias *draws,
                 unsigned num_draws)
 {
-   struct pipe_draw_info tmp_info = *info;
    unsigned drawid = drawid_offset;
 
    /* If you call this with num_draws==1, that is probably going to be
@@ -270,8 +273,8 @@ util_draw_multi(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    for (unsigned i = 0; i < num_draws; i++) {
       if (indirect || (draws[i].count && info->instance_count))
-         pctx->draw_vbo(pctx, &tmp_info, drawid, indirect, &draws[i], 1);
-      if (tmp_info.increment_draw_id)
+         pctx->draw_vbo(pctx, info, drawid, indirect, &draws[i], 1);
+      if (info->increment_draw_id)
          drawid++;
    }
 }

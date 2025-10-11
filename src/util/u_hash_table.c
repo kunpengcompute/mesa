@@ -29,7 +29,7 @@
 #include "util/u_pointer.h"
 #include "util/u_hash_table.h"
 
-#if DETECT_OS_UNIX
+#if DETECT_OS_POSIX
 #include <sys/stat.h>
 #endif
 
@@ -57,7 +57,7 @@ util_hash_table_create_ptr_keys(void)
 
 static uint32_t hash_fd(const void *key)
 {
-#if DETECT_OS_UNIX
+#if DETECT_OS_POSIX
    int fd = pointer_to_intptr(key);
    struct stat stat;
 
@@ -72,7 +72,7 @@ static uint32_t hash_fd(const void *key)
 
 static bool equal_fd(const void *key1, const void *key2)
 {
-#if DETECT_OS_UNIX
+#if DETECT_OS_POSIX
    int fd1 = pointer_to_intptr(key1);
    int fd2 = pointer_to_intptr(key2);
    struct stat stat1, stat2;
@@ -106,16 +106,16 @@ util_hash_table_get(struct hash_table *ht,
 }
 
 
-enum pipe_error
+int
 util_hash_table_foreach(struct hash_table *ht,
-                        enum pipe_error (*callback)
+                        int (*callback)
                         (void *key, void *value, void *data),
                         void *data)
 {
    hash_table_foreach(ht, entry) {
-      enum pipe_error error = callback((void*)entry->key, entry->data, data);
-      if (error != PIPE_OK)
+      int error = callback((void*)entry->key, entry->data, data);
+      if (error != 0)
          return error;
    }
-   return PIPE_OK;
+   return 0;
 }

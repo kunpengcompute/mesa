@@ -1,6 +1,5 @@
 /*
  * Copyright © 2021 Google, Inc.
- *
  * SPDX-License-Identifier: MIT
  */
 
@@ -8,11 +7,16 @@
 
 #include "pps/pps_driver.h"
 
-#include "common/freedreno_dev_info.h"
-#include "drm/freedreno_drmif.h"
-#include "drm/freedreno_ringbuffer.h"
-#include "perfcntrs/freedreno_dt.h"
-#include "perfcntrs/freedreno_perfcntr.h"
+extern "C" {
+struct fd_dev_id;
+struct fd_dev_info;
+struct fd_device;
+struct fd_pipe;
+struct fd_ringbuffer;
+struct fd_perfcntr_group;
+struct fd_perfcntr_countable;
+struct fd_perfcntr_counter;
+};
 
 namespace pps
 {
@@ -20,6 +24,7 @@ namespace pps
 class FreedrenoDriver : public Driver
 {
 public:
+   bool is_dump_perfcnt_preemptible() const override;
    uint64_t get_min_sampling_period_ns() override;
    bool init_perfcnt() override;
    void enable_counter(uint32_t counter_id) override;
@@ -30,6 +35,8 @@ public:
    uint64_t next() override;
    uint32_t gpu_clock_id() const override;
    uint64_t gpu_timestamp() const override;
+   bool cpu_gpu_timestamp(uint64_t &cpu_timestamp,
+                          uint64_t &gpu_timestamp) const override;
 
 private:
    struct fd_device *dev;
@@ -58,7 +65,7 @@ private:
     * The number of counters assigned per perfcntr group, the index
     * into this matches the index into perfcntrs
     */
-   std::vector<int> assigned_counters;
+   std::vector<unsigned> assigned_counters;
 
    /*
     * Values that can be used by derived counters evaluation
@@ -103,9 +110,9 @@ private:
 
       operator int64_t() const { return get_value(); };
 
-      void configure(struct fd_ringbuffer *ring, bool reset);
-      void collect();
-      void resolve();
+      void configure(struct fd_ringbuffer *ring, bool reset) const;
+      void collect() const;
+      void resolve() const;
 
    private:
 

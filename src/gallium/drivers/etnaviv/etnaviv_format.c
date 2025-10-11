@@ -292,6 +292,9 @@ texture_use_int_filter(const struct pipe_sampler_view *sv,
    if (util_format_is_srgb(sv->format))
       return false;
 
+   if (util_format_is_depth_or_stencil(sv->format))
+      return false;
+
    if (util_format_description(sv->format)->layout == UTIL_FORMAT_LAYOUT_ASTC)
       return false;
 
@@ -299,8 +302,6 @@ texture_use_int_filter(const struct pipe_sampler_view *sv,
       return false;
 
    switch (sv->format) {
-   /* apparently D16 can't use int filter but D24 can */
-   case PIPE_FORMAT_Z16_UNORM:
    case PIPE_FORMAT_R10G10B10A2_UNORM:
    case PIPE_FORMAT_R10G10B10X2_UNORM:
    case PIPE_FORMAT_ETC2_R11_UNORM:
@@ -324,6 +325,16 @@ get_texture_swiz(enum pipe_format fmt, unsigned swizzle_r,
    unsigned char swiz[4] = {
       swizzle_r, swizzle_g, swizzle_b, swizzle_a,
    };
+
+   if (unlikely(fmt == PIPE_FORMAT_DXT1_RGB)) {
+      /* The HW uses the same decompression scheme for RGB and RGBA DXT1
+       * textures, tell it to 1-fill the alpha channel for plain RGB.
+       */
+      for (unsigned i = 0; i < 4; i++) {
+         if (swiz[i] == PIPE_SWIZZLE_W)
+            swiz[i] = PIPE_SWIZZLE_1;
+      }
+   }
 
    if (util_format_linear(fmt) == PIPE_FORMAT_R8_UNORM) {
       /* R8 is emulated with L8, needs yz channels set to zero */

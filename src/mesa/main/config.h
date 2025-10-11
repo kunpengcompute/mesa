@@ -76,6 +76,10 @@
 
 /** Maximum Name stack depth */
 #define MAX_NAME_STACK_DEPTH 64
+/** Name stack buffer size */
+#define NAME_STACK_BUFFER_SIZE 2048
+/** Maximum name stack result number */
+#define MAX_NAME_STACK_RESULT_NUM 256
 
 /** Minimum point size */
 #define MIN_POINT_SIZE 1.0
@@ -140,6 +144,9 @@
 
 /** For GL_EXT_texture_lod_bias (typically MAX_TEXTURE_LEVELS - 1) */
 #define MAX_TEXTURE_LOD_BIAS 14.0
+
+/** For GL_OVR_multiview, value is recommended in extension spec. */
+#define MAX_VIEWS_OVR 6
 
 /** For any program target/extension */
 /*@{*/

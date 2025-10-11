@@ -11,7 +11,10 @@
 #include "venus-protocol/vn_protocol_driver_info.h"
 
 #define VN_CS_ENCODER_BUFFER_INITIALIZER(storage)                            \
-   (struct vn_cs_encoder_buffer) { .base = storage, }
+   (struct vn_cs_encoder_buffer)                                             \
+   {                                                                         \
+      .base = storage,                                                       \
+   }
 
 /* note that buffers points to an unamed local variable */
 #define VN_CS_ENCODER_INITIALIZER_LOCAL(storage, size)                       \
@@ -54,7 +57,7 @@ struct vn_cs_encoder_buffer {
 };
 
 struct vn_cs_encoder {
-   struct vn_instance *instance; /* TODO shmem cache */
+   struct vn_instance *instance;
    enum vn_cs_encoder_storage_type storage_type;
    size_t min_buffer_size;
 
@@ -67,9 +70,6 @@ struct vn_cs_encoder {
 
    /* the current buffer is buffers[buffer_count - 1].shmem */
    size_t current_buffer_size;
-
-   /* TODO remove when blob_id_0 support gets required */
-   uint32_t current_buffer_roundtrip;
 
    /* cur is the write pointer.  When cur passes end, the slow path is
     * triggered.
@@ -191,6 +191,9 @@ vn_cs_encoder_write(struct vn_cs_encoder *enc,
 
 void
 vn_cs_encoder_commit(struct vn_cs_encoder *enc);
+
+bool
+vn_cs_encoder_needs_roundtrip(struct vn_cs_encoder *enc);
 
 static inline void
 vn_cs_decoder_init(struct vn_cs_decoder *dec, const void *data, size_t size)

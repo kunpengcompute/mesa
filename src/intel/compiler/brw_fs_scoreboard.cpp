@@ -21,7 +21,7 @@
  * IN THE SOFTWARE.
  */
 
-/** @file brw_fs_scoreboard.cpp
+/** @file
  *
  * Gfx12+ hardware lacks the register scoreboard logic that used to guarantee
  * data coherency between register reads and writes in previous generations.
@@ -55,6 +55,7 @@
  */
 
 #include "brw_fs.h"
+#include "brw_fs_builder.h"
 #include "brw_cfg.h"
 
 using namespace brw;
@@ -75,6 +76,7 @@ namespace {
    {
       if (devinfo->verx10 >= 125) {
          bool has_int_src = false, has_long_src = false;
+         const bool has_long_pipe = !devinfo->has_64bit_float_via_math_pipe;
 
          if (is_send(inst))
             return TGL_PIPE_NONE;
@@ -83,10 +85,20 @@ namespace {
             if (inst->src[i].file != BAD_FILE &&
                 !inst->is_control_source(i)) {
                const brw_reg_type t = inst->src[i].type;
-               has_int_src |= !brw_reg_type_is_floating_point(t);
-               has_long_src |= type_sz(t) >= 8;
+               has_int_src |= !brw_type_is_float(t);
+               has_long_src |= brw_type_size_bytes(t) >= 8;
             }
          }
+
+         /* Avoid the emitting (RegDist, SWSB) annotations for long
+          * instructions on platforms where they are unordered. It's not clear
+          * what the inferred sync pipe is for them or if we are even allowed
+          * to use these annotations in this case. Return NONE, which should
+          * prevent baked_{un,}ordered_dependency_mode functions from even
+          * trying to emit these annotations.
+          */
+         if (!has_long_pipe && has_long_src)
+            return TGL_PIPE_NONE;
 
          return has_long_src ? TGL_PIPE_LONG :
                 has_int_src ? TGL_PIPE_INT :
@@ -106,30 +118,38 @@ namespace {
    inferred_exec_pipe(const struct intel_device_info *devinfo, const fs_inst *inst)
    {
       const brw_reg_type t = get_exec_type(inst);
-      const bool is_dword_multiply = !brw_reg_type_is_floating_point(t) &&
+      const bool is_dword_multiply = !brw_type_is_float(t) &&
          ((inst->opcode == BRW_OPCODE_MUL &&
-           MIN2(type_sz(inst->src[0].type), type_sz(inst->src[1].type)) >= 4) ||
+           MIN2(brw_type_size_bytes(inst->src[0].type),
+                brw_type_size_bytes(inst->src[1].type)) >= 4) ||
           (inst->opcode == BRW_OPCODE_MAD &&
-           MIN2(type_sz(inst->src[1].type), type_sz(inst->src[2].type)) >= 4));
+           MIN2(brw_type_size_bytes(inst->src[1].type),
+                brw_type_size_bytes(inst->src[2].type)) >= 4));
 
-      if (is_unordered(inst))
+      if (is_unordered(devinfo, inst))
          return TGL_PIPE_NONE;
       else if (devinfo->verx10 < 125)
          return TGL_PIPE_FLOAT;
-      else if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT &&
-               type_sz(t) >= 8)
-         return TGL_PIPE_INT;
-      else if (inst->opcode == SHADER_OPCODE_BROADCAST &&
-               !devinfo->has_64bit_float && type_sz(t) >= 8)
+      else if (inst->is_math() && devinfo->ver >= 20)
+         return TGL_PIPE_MATH;
+      else if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT ||
+               inst->opcode == SHADER_OPCODE_BROADCAST ||
+               inst->opcode == SHADER_OPCODE_SHUFFLE)
          return TGL_PIPE_INT;
       else if (inst->opcode == FS_OPCODE_PACK_HALF_2x16_SPLIT)
          return TGL_PIPE_FLOAT;
-      else if (type_sz(inst->dst.type) >= 8 || type_sz(t) >= 8 ||
-               is_dword_multiply) {
+      else if (devinfo->ver >= 20 &&
+               brw_type_size_bytes(inst->dst.type) >= 8 &&
+               brw_type_is_float(inst->dst.type)) {
+         assert(devinfo->has_64bit_float);
+         return TGL_PIPE_LONG;
+      } else if (devinfo->ver < 20 &&
+                 (brw_type_size_bytes(inst->dst.type) >= 8 ||
+                  brw_type_size_bytes(t) >= 8 || is_dword_multiply)) {
          assert(devinfo->has_64bit_float || devinfo->has_64bit_int ||
                 devinfo->has_integer_dword_mul);
          return TGL_PIPE_LONG;
-      } else if (brw_reg_type_is_floating_point(inst->dst.type))
+      } else if (brw_type_is_float(inst->dst.type))
          return TGL_PIPE_FLOAT;
       else
          return TGL_PIPE_INT;
@@ -170,8 +190,9 @@ namespace {
           * (again) don't use virtual instructions if you want optimal
           * scheduling.
           */
-         if (!is_unordered(inst) && (p == IDX(inferred_exec_pipe(devinfo, inst)) ||
-                                     p == IDX(TGL_PIPE_ALL)))
+         if (!is_unordered(devinfo, inst) &&
+             (p == IDX(inferred_exec_pipe(devinfo, inst)) ||
+              p == IDX(TGL_PIPE_ALL)))
             return 1;
          else
             return 0;
@@ -232,7 +253,7 @@ namespace {
     * Return the number of instructions in the program.
     */
    unsigned
-   num_instructions(const backend_shader *shader)
+   num_instructions(const fs_visitor *shader)
    {
       return shader->cfg->blocks[shader->cfg->num_blocks - 1]->end_ip + 1;
    }
@@ -620,7 +641,7 @@ namespace {
    dependency_for_write(const struct intel_device_info *devinfo,
                         const fs_inst *inst, dependency dep)
    {
-      if (!is_unordered(inst) &&
+      if (!is_unordered(devinfo, inst) &&
           is_single_pipe(dep.jp, inferred_exec_pipe(devinfo, inst)))
          dep.ordered &= TGL_REGDIST_DST;
       return dep;
@@ -638,7 +659,7 @@ namespace {
        * Look up the most current data dependency for register \p r.
        */
       dependency
-      get(const fs_reg &r) const
+      get(const brw_reg &r) const
       {
          if (const dependency *p = const_cast<scoreboard *>(this)->dep(r))
             return *p;
@@ -650,7 +671,7 @@ namespace {
        * Specify the most current data dependency for register \p r.
        */
       void
-      set(const fs_reg &r, const dependency &d)
+      set(const brw_reg &r, const dependency &d)
       {
          if (dependency *p = dep(r))
             *p = d;
@@ -735,18 +756,17 @@ namespace {
       }
 
    private:
-      dependency grf_deps[BRW_MAX_GRF];
+      dependency grf_deps[XE2_MAX_GRF];
       dependency addr_dep;
       dependency accum_dep;
 
       dependency *
-      dep(const fs_reg &r)
+      dep(const brw_reg &r)
       {
          const unsigned reg = (r.file == VGRF ? r.nr + r.offset / REG_SIZE :
                                reg_offset(r) / REG_SIZE);
 
          return (r.file == VGRF || r.file == FIXED_GRF ? &grf_deps[reg] :
-                 r.file == MRF ? &grf_deps[GFX7_MRF_HACK_START + reg] :
                  r.file == ARF && reg >= BRW_ARF_ADDRESS &&
                                   reg < BRW_ARF_ACCUMULATOR ? &addr_dep :
                  r.file == ARF && reg >= BRW_ARF_ACCUMULATOR &&
@@ -939,7 +959,7 @@ namespace {
 
       if (find_unordered_dependency(deps, TGL_SBID_SET, exec_all))
          return find_unordered_dependency(deps, TGL_SBID_SET, exec_all);
-      else if (has_ordered && is_unordered(inst))
+      else if (has_ordered && is_unordered(devinfo, inst))
          return TGL_SBID_NULL;
       else if (find_unordered_dependency(deps, TGL_SBID_DST, exec_all) &&
                (!has_ordered || ordered_pipe == inferred_sync_pipe(devinfo, inst)))
@@ -974,7 +994,7 @@ namespace {
          return true;
       else
          return ordered_pipe == inferred_sync_pipe(devinfo, inst) &&
-                unordered_mode == (is_unordered(inst) ? TGL_SBID_SET :
+                unordered_mode == (is_unordered(devinfo, inst) ? TGL_SBID_SET :
                                    TGL_SBID_DST);
    }
 
@@ -998,6 +1018,12 @@ namespace {
       const tgl_pipe p = inferred_exec_pipe(devinfo, inst);
       const ordered_address jp = p ? ordered_address(p, jps[ip].jp[IDX(p)]) :
                                      ordered_address();
+      const bool is_ordered = ordered_unit(devinfo, inst, IDX(TGL_PIPE_ALL));
+      const bool is_unordered_math =
+         (inst->is_math() && devinfo->ver < 20) ||
+         (devinfo->has_64bit_float_via_math_pipe &&
+          (get_exec_type(inst) == BRW_TYPE_DF ||
+           inst->dst.type == BRW_TYPE_DF));
 
       /* Track any source registers that may be fetched asynchronously by this
        * instruction, otherwise clear the dependency in order to avoid
@@ -1006,13 +1032,13 @@ namespace {
       for (unsigned i = 0; i < inst->sources; i++) {
          const dependency rd_dep =
             (inst->is_payload(i) ||
-             inst->is_math()) ? dependency(TGL_SBID_SRC, ip, exec_all) :
-            ordered_unit(devinfo, inst, IDX(TGL_PIPE_ALL)) ?
-               dependency(TGL_REGDIST_SRC, jp, exec_all) :
+             inst->opcode == BRW_OPCODE_DPAS ||
+             is_unordered_math) ? dependency(TGL_SBID_SRC, ip, exec_all) :
+            is_ordered ? dependency(TGL_REGDIST_SRC, jp, exec_all) :
             dependency::done;
 
          for (unsigned j = 0; j < regs_read(inst, i); j++) {
-            const fs_reg r = byte_offset(inst->src[i], REG_SIZE * j);
+            const brw_reg r = byte_offset(inst->src[i], REG_SIZE * j);
             sb.set(r, shadow(sb.get(r), rd_dep));
          }
       }
@@ -1020,18 +1046,10 @@ namespace {
       if (inst->reads_accumulator_implicitly())
          sb.set(brw_acc_reg(8), dependency(TGL_REGDIST_SRC, jp, exec_all));
 
-      if (is_send(inst) && inst->base_mrf != -1) {
-         const dependency rd_dep = dependency(TGL_SBID_SRC, ip, exec_all);
-
-         for (unsigned j = 0; j < inst->mlen; j++)
-            sb.set(brw_uvec_mrf(8, inst->base_mrf + j, 0), rd_dep);
-      }
-
       /* Track any destination registers of this instruction. */
       const dependency wr_dep =
-         is_unordered(inst) ? dependency(TGL_SBID_DST, ip, exec_all) :
-         ordered_unit(devinfo, inst, IDX(TGL_PIPE_ALL)) ?
-            dependency(TGL_REGDIST_DST, jp, exec_all) :
+         is_unordered(devinfo, inst) ? dependency(TGL_SBID_DST, ip, exec_all) :
+         is_ordered ? dependency(TGL_REGDIST_DST, jp, exec_all) :
          dependency();
 
       if (inst->writes_accumulator_implicitly(devinfo))
@@ -1150,13 +1168,7 @@ namespace {
                add_dependency(ids, deps[ip], dep);
          }
 
-         if (is_send(inst) && inst->base_mrf != -1) {
-            for (unsigned j = 0; j < inst->mlen; j++)
-               add_dependency(ids, deps[ip], dependency_for_read(
-                  sb.get(brw_uvec_mrf(8, inst->base_mrf + j, 0))));
-         }
-
-         if (is_unordered(inst))
+         if (is_unordered(devinfo, inst) && !inst->eot)
             add_dependency(ids, deps[ip],
                            dependency(TGL_SBID_SET, ip, exec_all));
 
@@ -1180,12 +1192,6 @@ namespace {
                const dependency dep = sb.get(brw_acc_reg(8));
                if (dep.ordered && !is_single_pipe(dep.jp, p))
                   add_dependency(ids, deps[ip], dep);
-            }
-
-            if (is_send(inst) && inst->base_mrf != -1) {
-               for (unsigned j = 0; j < inst->implied_mrf_writes(); j++)
-                  add_dependency(ids, deps[ip], dependency_for_write(devinfo, inst,
-                     sb.get(brw_uvec_mrf(8, inst->base_mrf + j, 0))));
             }
          }
 
@@ -1211,7 +1217,10 @@ namespace {
    {
       /* XXX - Use bin-packing algorithm to assign hardware SBIDs optimally in
        *       shaders with a large number of SEND messages.
+       *
+       * XXX - Use 32 SBIDs on Xe2+ while in large GRF mode.
        */
+      const unsigned num_sbids = 16;
 
       /* Allocate an unordered dependency ID to hardware SBID translation
        * table with as many entries as instructions there are in the shader,
@@ -1230,7 +1239,7 @@ namespace {
             const dependency &dep = deps0[ip][i];
 
             if (dep.unordered && ids[dep.id] == ~0u)
-               ids[dep.id] = (next_id++) & 0xf;
+               ids[dep.id] = (next_id++) & (num_sbids - 1);
 
             add_dependency(ids, deps1[ip], dep);
          }
@@ -1283,8 +1292,7 @@ namespace {
                    */
                   const fs_builder ibld = fs_builder(shader, block, inst)
                                           .exec_all().group(1, 0);
-                  fs_inst *sync = ibld.emit(BRW_OPCODE_SYNC, ibld.null_reg_ud(),
-                                            brw_imm_ud(TGL_SYNC_NOP));
+                  fs_inst *sync = ibld.SYNC(TGL_SYNC_NOP);
                   sync->sched.sbid = dep.id;
                   sync->sched.mode = dep.unordered;
                   assert(!(sync->sched.mode & TGL_SBID_SET));
@@ -1307,8 +1315,7 @@ namespace {
                 */
                const fs_builder ibld = fs_builder(shader, block, inst)
                                        .exec_all().group(1, 0);
-               fs_inst *sync = ibld.emit(BRW_OPCODE_SYNC, ibld.null_reg_ud(),
-                                         brw_imm_ud(TGL_SYNC_NOP));
+               fs_inst *sync = ibld.SYNC(TGL_SYNC_NOP);
                sync->sched = ordered_dependency_swsb(deps[ip], jps[ip], true);
                break;
             }
@@ -1323,13 +1330,13 @@ namespace {
 }
 
 bool
-fs_visitor::lower_scoreboard()
+brw_fs_lower_scoreboard(fs_visitor &s)
 {
-   if (devinfo->ver >= 12) {
-      const ordered_address *jps = ordered_inst_addresses(this);
-      const dependency_list *deps0 = gather_inst_dependencies(this, jps);
-      const dependency_list *deps1 = allocate_inst_dependencies(this, deps0);
-      emit_inst_dependencies(this, jps, deps1);
+   if (s.devinfo->ver >= 12) {
+      const ordered_address *jps = ordered_inst_addresses(&s);
+      const dependency_list *deps0 = gather_inst_dependencies(&s, jps);
+      const dependency_list *deps1 = allocate_inst_dependencies(&s, deps0);
+      emit_inst_dependencies(&s, jps, deps1);
       delete[] deps1;
       delete[] deps0;
       delete[] jps;

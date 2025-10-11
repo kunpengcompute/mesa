@@ -35,7 +35,7 @@
 
 #include "pipe/p_context.h"
 #include "pipe/p_state.h"
-#include "pipe/p_format.h"
+#include "util/format/u_formats.h"
 
 struct cso_context;
 struct cso_velems_state;
@@ -47,10 +47,10 @@ struct u_vbuf_caps {
 
    /* Whether vertex fetches don't have to be 4-byte-aligned. */
    /* TRUE if hardware supports it. */
-   unsigned buffer_offset_unaligned:1;
-   unsigned buffer_stride_unaligned:1;
-   unsigned velem_src_offset_unaligned:1;
-   unsigned attrib_component_unaligned:1;
+   unsigned attrib_4byte_unaligned:1;
+   /* Whether vertex fetches don't have to be element-aligned. */
+   /* TRUE if hardware supports it. */
+   unsigned attrib_element_unaligned:1;
 
    /* Whether the driver supports user vertex buffers. */
    unsigned user_vertex_buffers:1;
@@ -81,14 +81,15 @@ void u_vbuf_set_vertex_elements(struct u_vbuf *mgr,
                                 const struct cso_velems_state *velems);
 void u_vbuf_unset_vertex_elements(struct u_vbuf *mgr);
 void u_vbuf_set_vertex_buffers(struct u_vbuf *mgr,
-                               unsigned start_slot, unsigned count,
-                               unsigned unbind_num_trailing_slots,
+                               unsigned count,
                                bool take_ownership,
                                const struct pipe_vertex_buffer *bufs);
-void u_vbuf_draw_vbo(struct u_vbuf *mgr, const struct pipe_draw_info *info,
+void u_vbuf_draw_vbo(struct pipe_context *pipe,
+                     const struct pipe_draw_info *info,
                      unsigned drawid_offset,
                      const struct pipe_draw_indirect_info *indirect,
-                     const struct pipe_draw_start_count_bias draw);
+                     const struct pipe_draw_start_count_bias *draws,
+                     unsigned num_draws);
 void u_vbuf_get_minmax_index(struct pipe_context *pipe,
                              const struct pipe_draw_info *info,
                              const struct pipe_draw_start_count_bias *draw,

@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2008-2009 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2008-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 
 #include "util/u_draw.h"
@@ -59,9 +41,9 @@ retry_draw_range_elements(struct svga_context *svga,
 
 static enum pipe_error
 retry_draw_arrays( struct svga_context *svga,
-                   enum pipe_prim_type prim, unsigned start, unsigned count,
+                   enum mesa_prim prim, unsigned start, unsigned count,
                    unsigned start_instance, unsigned instance_count,
-                   ubyte vertices_per_patch)
+                   uint8_t vertices_per_patch)
 {
    enum pipe_error ret;
 
@@ -88,11 +70,11 @@ retry_draw_auto(struct svga_context *svga,
    assert(indirect->count_from_stream_output);
    assert(info->instance_count == 1);
    /* SO drawing implies core profile and none of these prim types */
-   assert(info->mode != PIPE_PRIM_QUADS &&
-          info->mode != PIPE_PRIM_QUAD_STRIP &&
-          info->mode != PIPE_PRIM_POLYGON);
+   assert(info->mode != MESA_PRIM_QUADS &&
+          info->mode != MESA_PRIM_QUAD_STRIP &&
+          info->mode != MESA_PRIM_POLYGON);
 
-   if (info->mode == PIPE_PRIM_LINE_LOOP) {
+   if (info->mode == MESA_PRIM_LINE_LOOP) {
       /* XXX need to do a fallback */
       assert(!"draw auto fallback not supported yet");
       return PIPE_OK;
@@ -137,13 +119,13 @@ retry_draw_indirect(struct svga_context *svga,
    assert(svga_have_sm5(svga));
    assert(indirect && indirect->buffer);
    /* indirect drawing implies core profile and none of these prim types */
-   assert(info->mode != PIPE_PRIM_QUADS &&
-          info->mode != PIPE_PRIM_QUAD_STRIP &&
-          info->mode != PIPE_PRIM_POLYGON);
+   assert(info->mode != MESA_PRIM_QUADS &&
+          info->mode != MESA_PRIM_QUAD_STRIP &&
+          info->mode != MESA_PRIM_POLYGON);
 
-   if (info->mode == PIPE_PRIM_LINE_LOOP) {
+   if (info->mode == MESA_PRIM_LINE_LOOP) {
       /* need to do a fallback */
-      util_draw_indirect(&svga->pipe, info, indirect);
+      util_draw_indirect(&svga->pipe, info, 0, indirect);
       return PIPE_OK;
    }
    else {
@@ -180,16 +162,16 @@ retry_draw_indirect(struct svga_context *svga,
  * path which breaks the original primitive into sub-primitive at the
  * restart indexes.
  */
-static boolean
+static bool
 need_fallback_prim_restart(const struct svga_context *svga,
                            const struct pipe_draw_info *info)
 {
    if (info->primitive_restart && info->index_size) {
       if (!svga_have_vgpu10(svga))
-         return TRUE;
+         return true;
       else if (!svga->state.sw.need_swtnl) {
          if (info->index_size == 1)
-            return TRUE; /* no device support for 1-byte indexes */
+            return true; /* no device support for 1-byte indexes */
          else if (info->index_size == 2)
             return info->restart_index != 0xffff;
          else
@@ -197,7 +179,7 @@ need_fallback_prim_restart(const struct svga_context *svga,
       }
    }
 
-   return FALSE;
+   return false;
 }
 
 
@@ -232,27 +214,18 @@ svga_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
       return;
 
    struct svga_context *svga = svga_context(pipe);
-   enum pipe_prim_type reduced_prim = u_reduced_prim(info->mode);
+   enum mesa_prim reduced_prim = u_reduced_prim(info->mode);
    unsigned count = draws[0].count;
    enum pipe_error ret = 0;
-   boolean needed_swtnl;
+   bool needed_swtnl;
 
    SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_DRAWVBO);
 
    svga->hud.num_draw_calls++;  /* for SVGA_QUERY_NUM_DRAW_CALLS */
 
-   if (u_reduced_prim(info->mode) == PIPE_PRIM_TRIANGLES &&
+   if (u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES &&
        svga->curr.rast->templ.cull_face == PIPE_FACE_FRONT_AND_BACK)
       goto done;
-
-   /*
-    * Mark currently bound target surfaces as dirty
-    * doesn't really matter if it is done before drawing.
-    *
-    * TODO If we ever normaly return something other then
-    * true we should not mark it as dirty then.
-    */
-   svga_mark_surfaces_dirty(svga_context(pipe));
 
    if (svga->curr.reduced_prim != reduced_prim) {
       svga->curr.reduced_prim = reduced_prim;
@@ -372,6 +345,11 @@ svga_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
                                  svga->patch_vertices);
       }
    }
+
+   /*
+    * Mark currently bound target surfaces as dirty after draw is completed.
+    */
+   svga_mark_surfaces_dirty(svga_context(pipe));
 
    /* XXX: Silence warnings, do something sensible here? */
    (void)ret;

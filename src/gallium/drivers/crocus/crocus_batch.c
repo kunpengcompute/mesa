@@ -249,14 +249,13 @@ crocus_init_batch(struct crocus_context *ice,
    if (INTEL_DEBUG(DEBUG_BATCH)) {
 
       batch->state_sizes = _mesa_hash_table_u64_create(NULL);
-      const unsigned decode_flags =
-         INTEL_BATCH_DECODE_FULL |
-         (INTEL_DEBUG(DEBUG_COLOR) ? INTEL_BATCH_DECODE_IN_COLOR : 0) |
-         INTEL_BATCH_DECODE_OFFSETS | INTEL_BATCH_DECODE_FLOATS;
+      const unsigned decode_flags = INTEL_BATCH_DECODE_DEFAULT_FLAGS |
+         (INTEL_DEBUG(DEBUG_COLOR) ? INTEL_BATCH_DECODE_IN_COLOR : 0);
 
-      intel_batch_decode_ctx_init(&batch->decoder, &screen->devinfo, stderr,
-                                  decode_flags, NULL, decode_get_bo,
-                                  decode_get_state_size, batch);
+      intel_batch_decode_ctx_init_elk(&batch->decoder, &screen->compiler->isa,
+                                      &screen->devinfo, stderr,
+                                      decode_flags, NULL, decode_get_bo,
+                                      decode_get_state_size, batch);
       batch->decoder.max_vbo_decoded_lines = 32;
    }
 
@@ -1015,7 +1014,7 @@ _crocus_batch_flush(struct crocus_batch *batch, const char *file, int line)
    }
 
    if (ret < 0) {
-#ifdef DEBUG
+#if MESA_DEBUG
       const bool color = INTEL_DEBUG(DEBUG_COLOR);
       fprintf(stderr, "%scrocus: Failed to submit batchbuffer: %-80s%s\n",
               color ? "\e[1;41m" : "", strerror(-ret), color ? "\e[0m" : "");

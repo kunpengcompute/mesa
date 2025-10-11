@@ -1,27 +1,9 @@
-/**********************************************************
- * Copyright 2008-2013 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2008-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
 /**
  * @file svga_cmd_vgpu10.c
@@ -853,19 +835,12 @@ SVGA3D_vgpu10_DefineElementLayout(struct svga_winsys_context *swc,
                                   const SVGA3dInputElementDesc *elements)
 {
    SVGA3dCmdDXDefineElementLayout *cmd;
-   unsigned i;
 
    cmd = SVGA3D_FIFOReserve(swc, SVGA_3D_CMD_DX_DEFINE_ELEMENTLAYOUT,
                             sizeof(SVGA3dCmdDXDefineElementLayout) +
                             count * sizeof(SVGA3dInputElementDesc), 0);
    if (!cmd)
       return PIPE_ERROR_OUT_OF_MEMORY;
-
-   /* check that all offsets are multiples of four */
-   for (i = 0; i < count; i++) {
-      assert(elements[i].alignedByteOffset % 4 == 0);
-   }
-   (void) i; /* silence unused var in release build */
 
    cmd->elementLayoutId = elementLayoutId;
    memcpy(cmd + 1, elements, count * sizeof(SVGA3dInputElementDesc));
@@ -897,7 +872,7 @@ SVGA3D_vgpu10_DefineBlendState(struct svga_winsys_context *swc,
 
    SVGA3D_CREATE_COMMAND(DefineBlendState, DEFINE_BLEND_STATE);
 
-   for (i = 0; i < SVGA3D_MAX_RENDER_TARGETS; i++) {
+   for (i = 0; i < SVGA3D_DX_MAX_RENDER_TARGETS; i++) {
       /* At most, one of blend or logicop can be enabled */
       assert(perRT[i].blendEnable == 0 || perRT[i].logicOpEnable == 0);
    }
@@ -1194,8 +1169,6 @@ SVGA3D_vgpu10_SetVertexBuffers(struct svga_winsys_context *swc,
    for (i = 0; i < count; i++) {
       bufs[i].stride = bufferInfo[i].stride;
       bufs[i].offset = bufferInfo[i].offset;
-      assert(bufs[i].stride % 4 == 0);
-      assert(bufs[i].offset % 4 == 0);
       swc->surface_relocation(swc, &bufs[i].sid, NULL, surfaces[i],
                               SVGA_RELOC_READ);
    }
@@ -1231,8 +1204,6 @@ SVGA3D_vgpu10_SetVertexBuffersOffsetAndSize(struct svga_winsys_context *swc,
       bufs[i].stride = bufferInfo[i].stride;
       bufs[i].offset = bufferInfo[i].offset;
       bufs[i].sizeInBytes = bufferInfo[i].sizeInBytes;
-      assert(bufs[i].stride % 4 == 0);
-      assert(bufs[i].offset % 4 == 0);
    }
 
    swc->commit(swc);
@@ -1840,5 +1811,137 @@ SVGA3D_sm5_DefineRasterizerState_v2(struct svga_winsys_context *swc,
    cmd->forcedSampleCount = forcedSampleCount;
 
    swc->commit(swc);
+   return PIPE_OK;
+}
+
+enum pipe_error
+SVGA3D_DefineGBSurface_v2(struct svga_winsys_context *swc,
+                          uint32 sid,
+                          SVGA3dSurface1Flags surfaceFlags,
+                          SVGA3dSurfaceFormat format,
+                          uint32 numMipLevels,
+                          uint32 multisampleCount,
+                          SVGA3dTextureFilter autogenFilter,
+                          SVGA3dSize size,
+                          uint32 arraySize)
+{
+   SVGA3dCmdDefineGBSurface_v2 *cmd =
+      SVGA3D_FIFOReserve(swc,
+                         SVGA_3D_CMD_DEFINE_GB_SURFACE_V2,
+                         sizeof(*cmd),
+                         0);
+
+   if(!cmd)
+      return PIPE_ERROR_OUT_OF_MEMORY;
+
+   cmd->sid = sid;
+   cmd->surfaceFlags = surfaceFlags;
+   cmd->format = format;
+   cmd->numMipLevels = numMipLevels;
+   cmd->multisampleCount = multisampleCount;
+   cmd->autogenFilter = autogenFilter;
+   cmd->size = size;
+   cmd->arraySize = arraySize;
+
+   swc->commit(swc);
+
+   return PIPE_OK;
+}
+
+enum pipe_error
+SVGA3D_DefineGBSurface_v3(struct svga_winsys_context *swc,
+                          uint32 sid,
+                          SVGA3dSurfaceAllFlags surfaceFlags,
+                          SVGA3dSurfaceFormat format,
+                          uint32 numMipLevels,
+                          uint32 multisampleCount,
+                          SVGA3dMSPattern multisamplePattern,
+                          SVGA3dMSQualityLevel qualityLevel,
+                          SVGA3dTextureFilter autogenFilter,
+                          SVGA3dSize size,
+                          uint32 arraySize)
+{
+   SVGA3dCmdDefineGBSurface_v3 *cmd =
+      SVGA3D_FIFOReserve(swc,
+                         SVGA_3D_CMD_DEFINE_GB_SURFACE_V3,
+                         sizeof(*cmd),
+                         0);
+
+   if(!cmd)
+      return PIPE_ERROR_OUT_OF_MEMORY;
+
+   cmd->sid = sid;
+   cmd->surfaceFlags = surfaceFlags;
+   cmd->format = format;
+   cmd->numMipLevels = numMipLevels;
+   cmd->multisampleCount = multisampleCount;
+   cmd->multisamplePattern = multisamplePattern;
+   cmd->qualityLevel = qualityLevel;
+   cmd->autogenFilter = autogenFilter;
+   cmd->size = size;
+   cmd->arraySize = arraySize;
+
+   swc->commit(swc);
+
+   return PIPE_OK;
+}
+
+enum pipe_error
+SVGA3D_DefineGBSurface_v4(struct svga_winsys_context *swc,
+                          uint32 sid,
+                          SVGA3dSurfaceAllFlags surfaceFlags,
+                          SVGA3dSurfaceFormat format,
+                          uint32 numMipLevels,
+                          uint32 multisampleCount,
+                          SVGA3dMSPattern multisamplePattern,
+                          SVGA3dMSQualityLevel qualityLevel,
+                          SVGA3dTextureFilter autogenFilter,
+                          SVGA3dSize size,
+                          uint32 arraySize,
+                          uint32 bufferByteStride)
+{
+   SVGA3dCmdDefineGBSurface_v4 *cmd =
+      SVGA3D_FIFOReserve(swc,
+                         SVGA_3D_CMD_DEFINE_GB_SURFACE_V4,
+                         sizeof(*cmd),
+                         0);
+
+   if(!cmd)
+      return PIPE_ERROR_OUT_OF_MEMORY;
+
+   cmd->sid = sid;
+   cmd->surfaceFlags = surfaceFlags;
+   cmd->format = format;
+   cmd->numMipLevels = numMipLevels;
+   cmd->multisampleCount = multisampleCount;
+   cmd->multisamplePattern = multisamplePattern;
+   cmd->qualityLevel = qualityLevel;
+   cmd->autogenFilter = autogenFilter;
+   cmd->size = size;
+   cmd->arraySize = arraySize;
+   cmd->bufferByteStride = bufferByteStride;
+
+   swc->commit(swc);
+
+   return PIPE_OK;
+}
+
+enum pipe_error
+SVGA3D_DestroyGBSurface(struct svga_winsys_context *swc,
+                        uint32 sid)
+{
+   SVGA3dCmdDestroyGBSurface *cmd =
+      SVGA3D_FIFOReserve(swc,
+                         SVGA_3D_CMD_DESTROY_GB_SURFACE,
+                         sizeof(*cmd),
+                         0);
+
+   if(!cmd)
+      return PIPE_ERROR_OUT_OF_MEMORY;
+
+   cmd->sid = sid;
+
+   swc->commit(swc);
+
    return PIPE_OK;
 }

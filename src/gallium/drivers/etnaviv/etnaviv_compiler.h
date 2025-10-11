@@ -27,10 +27,11 @@
 #ifndef H_ETNAVIV_COMPILER
 #define H_ETNAVIV_COMPILER
 
+#include "etna_core_info.h"
 #include "etnaviv_context.h"
 #include "etnaviv_internal.h"
 #include "etnaviv_shader.h"
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 #include "pipe/p_shader_tokens.h"
 #include "compiler/shader_enums.h"
 #include "util/disk_cache.h"
@@ -52,6 +53,7 @@ struct etna_compiler {
    uint32_t shader_count;
    struct ra_regs *regs;
 
+   nir_shader_compiler_options options;
    struct disk_cache *disk_cache;
 };
 
@@ -118,7 +120,7 @@ struct etna_shader_variant {
    uint32_t vs_load_balancing;
 
    /* special outputs (ps only) */
-   int ps_color_out_reg; /* color output register */
+   int ps_color_out_reg[PIPE_MAX_COLOR_BUFS]; /* color output register */
    int ps_depth_out_reg; /* depth output register */
 
    /* unknown input property (XX_INPUT_COUNT, field UNK8) */
@@ -146,10 +148,13 @@ struct etna_shader_link_info {
 };
 
 struct etna_compiler *
-etna_compiler_create(const char *renderer);
+etna_compiler_create(const char *renderer, const struct etna_core_info *info);
 
 void
 etna_compiler_destroy(const struct etna_compiler *compiler);
+
+const nir_shader_compiler_options *
+etna_compiler_get_options(struct etna_compiler *compiler);
 
 bool
 etna_compile_shader(struct etna_shader_variant *shader);
@@ -157,7 +162,7 @@ etna_compile_shader(struct etna_shader_variant *shader);
 void
 etna_dump_shader(const struct etna_shader_variant *shader);
 
-bool
+void
 etna_link_shader(struct etna_shader_link_info *info,
                  const struct etna_shader_variant *vs,
                  const struct etna_shader_variant *fs);

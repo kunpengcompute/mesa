@@ -1,0 +1,5 @@
+[[deqp]]
+deqp = "/deqp/external/vulkancts/modules/vulkan/deqp-vk"
+caselists = ["/deqp/mustpass/vk-main.txt"]
+fraction = 12
+renderer_check = "JSL"

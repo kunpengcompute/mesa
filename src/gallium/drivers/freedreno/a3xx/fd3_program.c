@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2013 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -104,7 +86,7 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit, int nr,
    int constmode;
    int i, j;
 
-   debug_assert(nr <= ARRAY_SIZE(color_regid));
+   assert(nr <= ARRAY_SIZE(color_regid));
 
    vp = fd3_emit_get_vp(emit);
    fp = fd3_emit_get_fp(emit);
@@ -450,10 +432,12 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit, int nr,
 }
 
 static struct ir3_program_state *
-fd3_program_create(void *data, struct ir3_shader_variant *bs,
-                   struct ir3_shader_variant *vs, struct ir3_shader_variant *hs,
-                   struct ir3_shader_variant *ds, struct ir3_shader_variant *gs,
-                   struct ir3_shader_variant *fs,
+fd3_program_create(void *data, const struct ir3_shader_variant *bs,
+                   const struct ir3_shader_variant *vs, 
+                   const struct ir3_shader_variant *hs,
+                   const struct ir3_shader_variant *ds,
+                   const struct ir3_shader_variant *gs,
+                   const struct ir3_shader_variant *fs,
                    const struct ir3_cache_key *key) in_dt
 {
    struct fd_context *ctx = fd_context(data);

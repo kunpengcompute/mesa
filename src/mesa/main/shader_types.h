@@ -32,14 +32,23 @@
 #define SHADER_TYPES_H
 
 #include "main/config.h" /* for MAX_FEEDBACK_BUFFERS */
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "main/menums.h"
+#include "program/prog_parameter.h"
 #include "util/mesa-sha1.h"
+#include "util/mesa-blake3.h"
 #include "compiler/shader_info.h"
 #include "compiler/glsl/list.h"
-#include "compiler/glsl/ir_uniform.h"
 
 #include "pipe/p_state.h"
+
+/**
+ * Used by GL_ARB_explicit_uniform_location extension code in the linker
+ * and glUniform* functions to identify inactive explicit uniform locations.
+ */
+#define INACTIVE_UNIFORM_EXPLICIT_LOCATION ((struct gl_uniform_storage *) -1)
+
+struct nir_shader;
 
 /**
  * Shader information needed by both gl_shader and gl_linked shader.
@@ -90,12 +99,12 @@ struct gl_shader_info
        * GL_TRIANGLES_ADJACENCY, or PRIM_UNKNOWN if it's not set in this
        * shader.
        */
-      enum shader_prim InputType;
+      enum mesa_prim InputType;
        /**
         * GL_POINTS, GL_LINE_STRIP or GL_TRIANGLE_STRIP, or PRIM_UNKNOWN if
         * it's not set in this shader.
         */
-      enum shader_prim OutputType;
+      enum mesa_prim OutputType;
    } Geom;
 
    /**
@@ -151,17 +160,19 @@ struct gl_shader
    GLchar *Label;   /**< GL_KHR_debug */
    GLboolean DeletePending;
    bool IsES;              /**< True if this shader uses GLSL ES */
+   bool has_implicit_conversions;
+   bool has_implicit_int_to_uint_conversion;
 
    enum gl_compile_status CompileStatus;
 
    /** SHA1 of the pre-processed source used by the disk cache. */
    uint8_t disk_cache_sha1[SHA1_DIGEST_LENGTH];
-   /** SHA1 of the original source before replacement, set by glShaderSource. */
-   uint8_t source_sha1[SHA1_DIGEST_LENGTH];
-   /** SHA1 of FallbackSource (a copy of some original source before replacement). */
-   uint8_t fallback_source_sha1[SHA1_DIGEST_LENGTH];
-   /** SHA1 of the current compiled source, set by successful glCompileShader. */
-   uint8_t compiled_source_sha1[SHA1_DIGEST_LENGTH];
+   /** BLAKE3 of the original source before replacement, set by glShaderSource. */
+   blake3_hash source_blake3;
+   /** BLAKE3 of FallbackSource (a copy of some original source before replacement). */
+   blake3_hash fallback_source_blake3;
+   /** BLAKE3 of the current compiled source, set by successful glCompileShader. */
+   blake3_hash compiled_source_blake3;
 
    const GLchar *Source;  /**< Source code string */
    const GLchar *FallbackSource;  /**< Fallback string used by on-disk cache*/
@@ -175,6 +186,7 @@ struct gl_shader
     */
    GLbitfield BlendSupport;
 
+   struct nir_shader *nir;
    struct exec_list *ir;
    struct glsl_symbol_table *symbols;
 
@@ -185,8 +197,7 @@ struct gl_shader
    bool EarlyFragmentTests;
 
    bool ARB_fragment_coord_conventions_enable;
-   bool OES_geometry_point_size_enable;
-   bool OES_tessellation_point_size_enable;
+   bool KHR_shader_subgroup_basic_enable;
 
    bool redeclares_gl_fragcoord;
    bool uses_gl_fragcoord;
@@ -236,9 +247,6 @@ struct gl_linked_shader
 {
    gl_shader_stage Stage;
 
-   /** All gl_shader::compiled_source_sha1 combined. */
-   uint8_t linked_source_sha1[SHA1_DIGEST_LENGTH];
-
    struct gl_program *Program;  /**< Post-compile assembly code */
 
    /**
@@ -264,11 +272,6 @@ struct gl_linked_shader
     * sizes divided by sizeof(float), and num_uniform_compoennts.
     */
    unsigned num_combined_uniform_components;
-
-   struct exec_list *ir;
-   struct exec_list *packed_varyings;
-   struct exec_list *fragdata_arrays;
-   struct glsl_symbol_table *symbols;
 
    /**
     * ARB_gl_spirv related data.
@@ -347,8 +350,6 @@ struct gl_shader_program_data
    enum gl_link_status LinkStatus;   /**< GL_LINK_STATUS */
    GLchar *InfoLog;
 
-   unsigned Version;       /**< GLSL version used for linking */
-
    /* Mask of stages this program was linked against */
    unsigned linked_stages;
 
@@ -426,31 +427,6 @@ struct gl_shader_program
 
    struct gl_program *last_vert_prog;
 
-   /** Post-link gl_FragDepth layout for ARB_conservative_depth. */
-   enum gl_frag_depth_layout FragDepthLayout;
-
-   /**
-    * Geometry shader state - copied into gl_program by
-    * _mesa_copy_linked_program_data().
-    */
-   struct {
-      GLint VerticesIn;
-
-      bool UsesEndPrimitive;
-      unsigned ActiveStreamMask;
-   } Geom;
-
-   /**
-    * Compute shader state - copied into gl_program by
-    * _mesa_copy_linked_program_data().
-    */
-   struct {
-      /**
-       * Size of shared variables accessed by the compute shader.
-       */
-      unsigned SharedSize;
-   } Comp;
-
    /** Data shared by gl_program and gl_shader_program */
    struct gl_shader_program_data *data;
 
@@ -474,16 +450,6 @@ struct gl_shader_program
     */
    unsigned NumExplicitUniformLocations;
 
-   /**
-    * Map of active uniform names to locations
-    *
-    * Maps any active uniform that is not an array element to a location.
-    * Each active uniform, including individual structure members will appear
-    * in this map.  This roughly corresponds to the set of names that would be
-    * enumerated by \c glGetActiveUniform.
-    */
-   struct string_to_uint_map *UniformHash;
-
    GLboolean SamplersValidated; /**< Samplers validated against texture units? */
 
    bool IsES;              /**< True if this program uses GLSL ES */
@@ -497,11 +463,7 @@ struct gl_shader_program
     */
    struct gl_linked_shader *_LinkedShaders[MESA_SHADER_STAGES];
 
-   /**
-    * True if any of the fragment shaders attached to this program use:
-    * #extension ARB_fragment_coord_conventions: enable
-    */
-   GLboolean ARB_fragment_coord_conventions_enable;
+   unsigned GLSL_Version; /**< GLSL version used for linking */
 };
 
 /**
@@ -523,13 +485,12 @@ struct gl_program
    GLboolean _Used;        /**< Ever used for drawing? Used for debugging */
 
    struct nir_shader *nir;
+   void *base_serialized_nir;
+   size_t base_serialized_nir_size;
 
    /* Saved and restored with metadata. Freed with ralloc. */
    void *driver_cache_blob;
    size_t driver_cache_blob_size;
-
-   /** Is this program written to on disk shader cache */
-   bool program_written_to_cache;
 
    /** whether to skip VARYING_SLOT_PSIZ in st_translate_stream_output_info() */
    bool skip_pointsize_xfb;
@@ -567,14 +528,12 @@ struct gl_program
    GLubyte SamplerUnits[MAX_SAMPLERS];
 
    struct pipe_shader_state state;
-   struct glsl_to_tgsi_visitor* glsl_to_tgsi;
    struct ati_fragment_shader *ati_fs;
    uint64_t affected_states; /**< ST_NEW_* flags to mark dirty when binding */
 
    void *serialized_nir;
    unsigned serialized_nir_size;
 
-   /* used when bypassing glsl_to_tgsi: */
    struct gl_shader_program *shader_program;
 
    struct st_variant *variants;
@@ -619,16 +578,9 @@ struct gl_program
           */
          GLubyte ImageUnits[MAX_IMAGE_UNIFORMS];
 
-         /**
-          * Access qualifier specified in the shader for each image uniform
-          * index.  Either \c GL_READ_ONLY, \c GL_WRITE_ONLY, \c
-          * GL_READ_WRITE, or \c GL_NONE to indicate both read-only and
-          * write-only.
-          *
-          * It may be different, though only more strict than the value of
-          * \c gl_image_unit::Access for the corresponding image unit.
+         /** Access qualifier from linked shader
           */
-         GLenum16 ImageAccess[MAX_IMAGE_UNIFORMS];
+         enum gl_access_qualifier image_access[MAX_IMAGE_UNIFORMS];
 
          GLuint NumUniformBlocks;
          struct gl_uniform_block **UniformBlocks;
@@ -691,22 +643,14 @@ struct gl_program
          GLuint NumTexInstructions;
          GLuint NumTexIndirections;
          /*@}*/
-         /** Native, actual h/w counts */
-         /*@{*/
-         GLuint NumNativeInstructions;
-         GLuint NumNativeTemporaries;
-         GLuint NumNativeParameters;
-         GLuint NumNativeAttributes;
-         GLuint NumNativeAddressRegs;
-         GLuint NumNativeAluInstructions;
-         GLuint NumNativeTexInstructions;
-         GLuint NumNativeTexIndirections;
-         /*@}*/
 
          /** Used by ARB assembly-style programs. Can only be true for vertex
           * programs.
           */
          GLboolean IsPositionInvariant;
+
+         /** Used by ARB_fp programs, enum gl_fog_mode */
+         unsigned Fog;
       } arb;
    };
 };
@@ -719,10 +663,10 @@ struct gl_vertex_program
    struct gl_program Base;
 
    uint32_t vert_attrib_mask; /**< mask of sourced vertex attribs */
-   ubyte num_inputs;
+   uint8_t num_inputs;
 
    /** Maps VARYING_SLOT_x to slot */
-   ubyte result_to_output[VARYING_SLOT_MAX];
+   uint8_t result_to_output[VARYING_SLOT_MAX];
 };
 
 /**
@@ -743,6 +687,14 @@ struct gl_active_atomic_buffer
 
    /** Shader stages making use of it. */
    GLboolean StageReferences[MESA_SHADER_STAGES];
+};
+
+struct gl_resource_name
+{
+   char *string;
+   int length;              /* strlen(string) or 0 */
+   int last_square_bracket; /* (strrchr(name, '[') - name) or -1 */
+   bool suffix_is_zero_square_bracketed; /* suffix is [0] */
 };
 
 struct gl_transform_feedback_varying_info
@@ -776,6 +728,179 @@ struct gl_transform_feedback_output
    uint32_t ComponentOffset;
 };
 
+enum ENUM_PACKED gl_uniform_driver_format {
+   uniform_native = 0,          /**< Store data in the native format. */
+   uniform_int_float,           /**< Store integer data as floats. */
+};
+
+struct gl_uniform_driver_storage {
+   /**
+    * Number of bytes from one array element to the next.
+    */
+   uint8_t element_stride;
+
+   /**
+    * Number of bytes from one vector in a matrix to the next.
+    */
+   uint8_t vector_stride;
+
+   /**
+    * Base format of the stored data.
+    */
+   enum gl_uniform_driver_format format;
+
+   /**
+    * Pointer to the base of the data.
+    */
+   void *data;
+};
+
+struct gl_opaque_uniform_index {
+   /**
+    * Base opaque uniform index
+    *
+    * If \c gl_uniform_storage::base_type is an opaque type, this
+    * represents its uniform index.  If \c
+    * gl_uniform_storage::array_elements is not zero, the array will
+    * use opaque uniform indices \c index through \c index + \c
+    * gl_uniform_storage::array_elements - 1, inclusive.
+    *
+    * Note that the index may be different in each shader stage.
+    */
+   uint8_t index;
+
+   /**
+    * Whether this opaque uniform is used in this shader stage.
+    */
+   bool active;
+};
+
+struct gl_uniform_storage {
+   struct gl_resource_name name;
+
+   /** Type of this uniform data stored.
+    *
+    * In the case of an array, it's the type of a single array element.
+    */
+   const struct glsl_type *type;
+
+   /**
+    * The number of elements in this uniform.
+    *
+    * For non-arrays, this is always 0.  For arrays, the value is the size of
+    * the array.
+    */
+   unsigned array_elements;
+
+   struct gl_opaque_uniform_index opaque[MESA_SHADER_STAGES];
+
+   /**
+    * Mask of shader stages (1 << MESA_SHADER_xxx) where this uniform is used.
+    */
+   unsigned active_shader_mask;
+
+   /**
+    * Storage used by the driver for the uniform
+    */
+   unsigned num_driver_storage;
+   struct gl_uniform_driver_storage *driver_storage;
+
+   /**
+    * Storage used by Mesa for the uniform
+    *
+    * This form of the uniform is used by Mesa's implementation of \c
+    * glGetUniform.  It can also be used by drivers to obtain the value of the
+    * uniform if the \c ::driver_storage interface is not used.
+    */
+   union gl_constant_value *storage;
+
+   /** Fields for GL_ARB_uniform_buffer_object
+    * @{
+    */
+
+   /**
+    * GL_UNIFORM_BLOCK_INDEX: index of the uniform block containing
+    * the uniform, or -1 for the default uniform block.  Note that the
+    * index is into the linked program's UniformBlocks[] array, not
+    * the linked shader's.
+    */
+   int block_index;
+
+   /** GL_UNIFORM_OFFSET: byte offset within the uniform block, or -1. */
+   int offset;
+
+   /**
+    * GL_UNIFORM_MATRIX_STRIDE: byte stride between columns or rows of
+    * a matrix.  Set to 0 for non-matrices in UBOs, or -1 for uniforms
+    * in the default uniform block.
+    */
+   int matrix_stride;
+
+   /**
+    * GL_UNIFORM_ARRAY_STRIDE: byte stride between elements of the
+    * array.  Set to zero for non-arrays in UBOs, or -1 for uniforms
+    * in the default uniform block.
+    */
+   int array_stride;
+
+   /** GL_UNIFORM_ROW_MAJOR: true iff it's a row-major matrix in a UBO */
+   bool row_major;
+
+   /** @} */
+
+   /**
+    * This is a compiler-generated uniform that should not be advertised
+    * via the API.
+    */
+   bool hidden;
+
+   /**
+    * This is a built-in uniform that should not be modified through any gl API.
+    */
+   bool builtin;
+
+   /**
+    * This is a shader storage buffer variable, not an uniform.
+    */
+   bool is_shader_storage;
+
+   /**
+    * Index within gl_shader_program::AtomicBuffers[] of the atomic
+    * counter buffer this uniform is stored in, or -1 if this is not
+    * an atomic counter.
+    */
+   int atomic_buffer_index;
+
+   /**
+    * The 'base location' for this uniform in the uniform remap table. For
+    * arrays this is the first element in the array.
+    * for subroutines this is in shader subroutine uniform remap table.
+    */
+   unsigned remap_location;
+
+   /**
+    * The number of compatible subroutines with this subroutine uniform.
+    */
+   unsigned num_compatible_subroutines;
+
+   /**
+    * A single integer identifying the number of active array elements of
+    * the top-level shader storage block member (GL_TOP_LEVEL_ARRAY_SIZE).
+    */
+   unsigned top_level_array_size;
+
+   /**
+    * A single integer identifying the stride between array elements of the
+    * top-level shader storage block member. (GL_TOP_LEVEL_ARRAY_STRIDE).
+    */
+   unsigned top_level_array_stride;
+
+   /**
+    * Whether this uniform variable has the bindless_sampler or bindless_image
+    * layout qualifier as specified by ARB_bindless_texture.
+    */
+   bool is_bindless;
+};
 
 struct gl_transform_feedback_buffer
 {
@@ -939,10 +1064,9 @@ struct gl_bindless_image
    /** Whether this bindless image is bound to a unit. */
    GLboolean bound;
 
-   /** Access qualifier (GL_READ_WRITE, GL_READ_ONLY, GL_WRITE_ONLY, or
-    * GL_NONE to indicate both read-only and write-only)
+   /** Access qualifier from linked shader
     */
-   GLenum16 access;
+   enum gl_access_qualifier image_access;
 
    /** Pointer to the base of the data. */
    GLvoid *data;

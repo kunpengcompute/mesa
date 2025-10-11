@@ -381,8 +381,7 @@ crocus_hiz_exec(struct crocus_context *ice,
                 struct crocus_batch *batch,
                 struct crocus_resource *res,
                 unsigned int level, unsigned int start_layer,
-                unsigned int num_layers, enum isl_aux_op op,
-                bool update_clear_depth);
+                unsigned int num_layers, enum isl_aux_op op);
 
 /**
  * Prepare a miptree for access
@@ -503,16 +502,6 @@ void crocus_resource_prepare_texture(struct crocus_context *ice,
                                      uint32_t start_level, uint32_t num_levels,
                                      uint32_t start_layer, uint32_t num_layers);
 
-static inline bool
-crocus_resource_unfinished_aux_import(struct crocus_resource *res)
-{
-   return res->base.b.next != NULL && res->mod_info &&
-      res->mod_info->aux_usage != ISL_AUX_USAGE_NONE;
-}
-
-void crocus_resource_finish_aux_import(struct pipe_screen *pscreen,
-                                       struct crocus_resource *res);
-
 bool crocus_has_invalid_primary(const struct crocus_resource *res,
                                 unsigned start_level, unsigned num_levels,
                                 unsigned start_layer, unsigned num_layers);
@@ -526,6 +515,9 @@ bool crocus_has_color_unresolved(const struct crocus_resource *res,
                                  unsigned start_level, unsigned num_levels,
                                  unsigned start_layer, unsigned num_layers);
 
+bool crocus_render_formats_color_compatible(enum isl_format a,
+                                          enum isl_format b,
+                                          union isl_color_value color);
 enum isl_aux_usage crocus_resource_render_aux_usage(struct crocus_context *ice,
                                                     struct crocus_resource *res,
                                                     uint32_t level,

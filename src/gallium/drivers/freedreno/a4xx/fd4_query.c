@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -53,7 +35,7 @@ occlusion_get_sample(struct fd_batch *batch, struct fd_ringbuffer *ring)
    /* low bits of sample addr should be zero (since they are control
     * flags in RB_SAMPLE_COUNT_CONTROL):
     */
-   debug_assert((samp->offset & 0x3) == 0);
+   assert((samp->offset & 0x3) == 0);
 
    /* Set RB_SAMPLE_COUNT_ADDR to samp->offset plus value of
     * HW_QUERY_BASE_REG register:
@@ -114,11 +96,10 @@ time_elapsed_enable(struct fd_context *ctx,
     * just hard coded.  If we start exposing more countables than we
     * have counters, we will need to be more clever.
     */
-   struct fd_batch *batch = fd_context_batch_locked(ctx);
+   struct fd_batch *batch = fd_context_batch(ctx);
    fd_wfi(batch, ring);
    OUT_PKT0(ring, REG_A4XX_CP_PERFCTR_CP_SEL_0, 1);
    OUT_RING(ring, CP_ALWAYS_COUNT);
-   fd_batch_unlock_submit(batch);
    fd_batch_reference(&batch, NULL);
 }
 
@@ -135,7 +116,7 @@ time_elapsed_get_sample(struct fd_batch *batch,
    const int sample_off = 128;
    const int addr_off = sample_off + 8;
 
-   debug_assert(batch->ctx->screen->max_freq > 0);
+   assert(batch->ctx->screen->max_freq > 0);
 
    /* Basic issue is that we need to read counter value to a relative
     * destination (with per-tile offset) rather than absolute dest

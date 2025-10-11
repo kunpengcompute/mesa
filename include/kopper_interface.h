@@ -34,21 +34,12 @@
 #ifndef KOPPER_INTERFACE_H
 #define KOPPER_INTERFACE_H
 
-#include <GL/internal/dri_interface.h>
-#include <vulkan/vulkan.h>
-#ifdef VK_USE_PLATFORM_XCB_KHR
-#include <xcb/xcb.h>
-#include <vulkan/vulkan_xcb.h>
-#endif
-#ifdef VK_USE_PLATFORM_WAYLAND_KHR
-#include <vulkan/vulkan_wayland.h>
-#endif
-#ifdef VK_USE_PLATFORM_WIN32_KHR
-#include <vulkan/vulkan_win32.h>
-#endif
+#include "mesa_interface.h"
+#include <vulkan/vulkan_core.h>
 
 typedef struct __DRIkopperExtensionRec          __DRIkopperExtension;
 typedef struct __DRIkopperLoaderExtensionRec    __DRIkopperLoaderExtension;
+typedef struct __DRIkopperDrawableInfoRec    __DRIkopperDrawableInfo;
 
 /**
  * This extension defines the core GL-atop-VK functionality. This is used by the
@@ -56,9 +47,12 @@ typedef struct __DRIkopperLoaderExtensionRec    __DRIkopperLoaderExtension;
  * relying on a particular window system or DRI protocol.
  */
 #define __DRI_KOPPER "DRI_Kopper"
-#define __DRI_KOPPER_VERSION 1
+#define __DRI_KOPPER_VERSION 2
 
-struct kopper_surface;
+struct __DRIkopperDrawableInfoRec {
+   bool multiplanes_available;
+   int is_pixmap;
+};
 
 struct __DRIkopperExtensionRec {
     __DRIextension base;
@@ -69,32 +63,42 @@ struct __DRIkopperExtensionRec {
      * on-screen surfaces (eg X11 window) and trying to create a swapchain for
      * a pixmap is undefined.
      */
-    __DRIdrawable *(*createNewDrawable)(__DRIscreen *screen,
-                                        const __DRIconfig *config,
+    struct dri_drawable *(*createNewDrawable)(struct dri_screen *screen,
+                                        const struct dri_config *config,
                                         void *loaderPrivate,
-                                        int pixmap);
-    int64_t (*swapBuffers)(__DRIdrawable *draw);
-    void (*setSwapInterval)(__DRIdrawable *drawable, int interval);
+                                        __DRIkopperDrawableInfo *info);
+    /* flags is a set of __DRI2_FLUSH_* flags */
+    int64_t (*swapBuffers)(struct dri_drawable *draw, uint32_t flush_flags);
+    void (*setSwapInterval)(struct dri_drawable *drawable, int interval);
+    int (*queryBufferAge)(struct dri_drawable *drawable);
+    int64_t (*swapBuffersWithDamage)(struct dri_drawable *draw, uint32_t flush_flags, int nrects, const int *rects);
 };
 
 /**
  * Kopper loader extension.
  */
 
+/**
+ * struct for storage the union of all platform depdendent
+ * Vk*SurfaceCreateInfo* type, all platform Vk*SurfaceCreateInfo* contains
+ * uint32_t flags and at most two extra pointer besides bos header.
+ * For example:
+ * VkWin32SurfaceCreateInfoKHR contains flags, hinstance and hwnd besides bos header
+ */
+
+struct kopper_vk_surface_create_storage {
+   /* First two fields are copied from VkBaseOutStructure for easily access shared properties */
+   VkStructureType sType;
+   struct VkBaseOutStructure *pNext;
+   intptr_t padding[3];
+};
+
 struct kopper_loader_info {
-   union {
-      VkBaseOutStructure bos;
-#ifdef VK_USE_PLATFORM_XCB_KHR
-      VkXcbSurfaceCreateInfoKHR xcb;
-#endif
-#ifdef VK_USE_PLATFORM_WAYLAND_KHR
-      VkWaylandSurfaceCreateInfoKHR wl;
-#endif
-#ifdef VK_USE_PLATFORM_WIN32_KHR
-      VkWin32SurfaceCreateInfoKHR win32;
-#endif
-   };
+   struct kopper_vk_surface_create_storage bos;
    int has_alpha;
+   int initial_swap_interval;
+   bool present_opaque;
+   uint32_t compression;
 };
 
 #define __DRI_KOPPER_LOADER "DRI_KopperLoader"
@@ -105,7 +109,7 @@ struct __DRIkopperLoaderExtensionRec {
     /* Asks the loader to fill in VkWhateverSurfaceCreateInfo etc. */
     void (*SetSurfaceCreateInfo)(void *draw, struct kopper_loader_info *out);
     /* Asks the loader to fill in the drawable's width and height */
-    void (*GetDrawableInfo)(__DRIdrawable *draw, int *w, int *h,
+    void (*GetDrawableInfo)(struct dri_drawable *draw, int *w, int *h,
                             void *closure);
 };
 #endif /* KOPPER_INTERFACE_H */

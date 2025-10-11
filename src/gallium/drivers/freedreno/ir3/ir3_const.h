@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -66,6 +48,8 @@ emit_const_asserts(struct fd_ringbuffer *ring,
                    const struct ir3_shader_variant *v, uint32_t regid,
                    uint32_t sizedwords)
 {
+   assert((v->type == MESA_SHADER_VERTEX) ||
+          !v->compiler->load_shader_consts_via_preamble);
    assert((regid % 4) == 0);
    assert((sizedwords % 4) == 0);
    assert(regid + sizedwords <= v->constlen * 4);
@@ -93,7 +77,7 @@ ring_wfi(struct fd_batch *batch, struct fd_ringbuffer *ring) assert_dt
  * Returns size in dwords.
  */
 static inline void
-ir3_user_consts_size(struct ir3_ubo_analysis_state *state, unsigned *packets,
+ir3_user_consts_size(const struct ir3_ubo_analysis_state *state, unsigned *packets,
                      unsigned *size)
 {
    *packets = *size = 0;
@@ -111,8 +95,7 @@ ir3_user_consts_size(struct ir3_ubo_analysis_state *state, unsigned *packets,
  * constant buffer.
  */
 static inline void
-ir3_emit_constant_data(struct fd_screen *screen,
-                       const struct ir3_shader_variant *v,
+ir3_emit_constant_data(const struct ir3_shader_variant *v,
                        struct fd_ringbuffer *ring)
 {
    const struct ir3_const_state *const_state = ir3_const_state(v);
@@ -120,7 +103,7 @@ ir3_emit_constant_data(struct fd_screen *screen,
 
    for (unsigned i = 0; i < state->num_enabled; i++) {
       unsigned ubo = state->range[i].ubo.block;
-      if (ubo != const_state->constant_data_ubo)
+      if (ubo != const_state->consts_ubo.idx)
          continue;
 
       uint32_t size = state->range[i].end - state->range[i].start;
@@ -151,8 +134,7 @@ ir3_emit_constant_data(struct fd_screen *screen,
  * shader).
  */
 static inline void
-ir3_emit_user_consts(struct fd_screen *screen,
-                     const struct ir3_shader_variant *v,
+ir3_emit_user_consts(const struct ir3_shader_variant *v,
                      struct fd_ringbuffer *ring,
                      struct fd_constbuf_stateobj *constbuf)
 {
@@ -163,7 +145,7 @@ ir3_emit_user_consts(struct fd_screen *screen,
       assert(!state->range[i].ubo.bindless);
       unsigned ubo = state->range[i].ubo.block;
       if (!(constbuf->enabled_mask & (1 << ubo)) ||
-          ubo == const_state->constant_data_ubo) {
+          ubo == const_state->consts_ubo.idx) {
          continue;
       }
       struct pipe_constant_buffer *cb = &constbuf->cb[ubo];
@@ -186,13 +168,14 @@ ir3_emit_user_consts(struct fd_screen *screen,
          continue;
 
       /* things should be aligned to vec4: */
-      debug_assert((state->range[i].offset % 16) == 0);
-      debug_assert((size % 16) == 0);
-      debug_assert((offset % 16) == 0);
+      assert((state->range[i].offset % 16) == 0);
+      assert((size % 16) == 0);
+      assert((offset % 16) == 0);
 
       if (cb->user_buffer) {
-         emit_const_user(ring, v, state->range[i].offset / 4, size / 4,
-                         cb->user_buffer + state->range[i].start);
+         uint8_t *p = (uint8_t *)cb->user_buffer;
+         p += state->range[i].start;
+         emit_const_user(ring, v, state->range[i].offset / 4, size / 4, (uint32_t *)p);
       } else {
          emit_const_prsc(ring, v, state->range[i].offset / 4, offset, size / 4,
                          cb->buffer);
@@ -219,7 +202,7 @@ ir3_emit_ubos(struct fd_context *ctx, const struct ir3_shader_variant *v,
       struct fd_bo *bos[params];
 
       for (uint32_t i = 0; i < params; i++) {
-         if (i == const_state->constant_data_ubo) {
+         if (i == const_state->consts_ubo.idx) {
             bos[i] = v->bo;
             offsets[i] = v->info.constant_data_offset;
             continue;
@@ -308,8 +291,7 @@ ir3_emit_image_dims(struct fd_screen *screen,
 }
 
 static inline void
-ir3_emit_immediates(struct fd_screen *screen,
-                    const struct ir3_shader_variant *v,
+ir3_emit_immediates(const struct ir3_shader_variant *v,
                     struct fd_ringbuffer *ring)
 {
    const struct ir3_const_state *const_state = ir3_const_state(v);
@@ -331,30 +313,29 @@ ir3_emit_immediates(struct fd_screen *screen,
    /* NIR constant data has the same lifetime as immediates, so upload it
     * now, too.
     */
-   ir3_emit_constant_data(screen, v, ring);
+   ir3_emit_constant_data(v, ring);
 }
 
 static inline void
-ir3_emit_link_map(struct fd_screen *screen,
-                  const struct ir3_shader_variant *producer,
-                  const struct ir3_shader_variant *v,
+ir3_emit_link_map(const struct ir3_shader_variant *producer,
+                  const struct ir3_shader_variant *consumer,
                   struct fd_ringbuffer *ring)
 {
-   const struct ir3_const_state *const_state = ir3_const_state(v);
+   const struct ir3_const_state *const_state = ir3_const_state(consumer);
    uint32_t base = const_state->offsets.primitive_map;
-   int size = DIV_ROUND_UP(v->input_size, 4);
+   int size = DIV_ROUND_UP(consumer->input_size, 4);
 
    /* truncate size to avoid writing constants that shader
     * does not use:
     */
-   size = MIN2(size + base, v->constlen) - base;
+   size = MIN2(size + base, consumer->constlen) - base;
 
    /* convert out of vec4: */
    base *= 4;
    size *= 4;
 
    if (size > 0)
-      emit_const_user(ring, v, base, size, producer->output_loc);
+      emit_const_user(ring, consumer, base, size, producer->output_loc);
 }
 
 /* emit stream-out buffers: */
@@ -367,7 +348,7 @@ emit_tfbos(struct fd_context *ctx, const struct ir3_shader_variant *v,
    uint32_t offset = const_state->offsets.tfbo;
    if (v->constlen > offset) {
       struct fd_streamout_stateobj *so = &ctx->streamout;
-      struct ir3_stream_output_info *info = &v->shader->stream_output;
+      const struct ir3_stream_output_info *info = &v->stream_output;
       uint32_t params = 4;
       uint32_t offsets[params];
       struct fd_bo *bos[params];
@@ -409,7 +390,7 @@ emit_common_consts(const struct ir3_shader_variant *v,
     * different state-objects we could avoid this.
     */
    if (dirty && is_stateobj(ring))
-      dirty = ~0;
+      dirty = (enum fd_dirty_shader_state)~0;
 
    if (dirty & (FD_DIRTY_SHADER_PROG | FD_DIRTY_SHADER_CONST)) {
       struct fd_constbuf_stateobj *constbuf;
@@ -420,10 +401,10 @@ emit_common_consts(const struct ir3_shader_variant *v,
 
       ring_wfi(ctx->batch, ring);
 
-      ir3_emit_user_consts(ctx->screen, v, ring, constbuf);
+      ir3_emit_user_consts(v, ring, constbuf);
       ir3_emit_ubos(ctx, v, ring, constbuf);
       if (shader_dirty)
-         ir3_emit_immediates(ctx->screen, v, ring);
+         ir3_emit_immediates(v, ring);
    }
 
    if (dirty & (FD_DIRTY_SHADER_PROG | FD_DIRTY_SHADER_IMAGE)) {
@@ -444,38 +425,49 @@ emit_kernel_params(struct fd_context *ctx, const struct ir3_shader_variant *v,
    if (v->constlen > offset) {
       ring_wfi(ctx->batch, ring);
       emit_const_user(ring, v, offset * 4,
-                      align(v->shader->cs.req_input_mem, 4),
-                      info->input);
+                      align(v->cs.req_input_mem, 4),
+                      (uint32_t *)info->input);
    }
 }
 
+static inline struct ir3_driver_params_vs
+ir3_build_driver_params_vs(struct fd_context *ctx,
+                           const struct pipe_draw_info *info,
+                           const struct pipe_draw_start_count_bias *draw,
+                           uint32_t draw_id, bool needs_ucp)
+   assert_dt
+{
+   struct ir3_driver_params_vs vertex_params = {
+      .draw_id = draw_id, /* filled by hw (CP_DRAW_INDIRECT_MULTI) */
+      .vtxid_base = info->index_size ? draw->index_bias : draw->start,
+      .instid_base = info->start_instance,
+      .vtxcnt_max = ctx->streamout.max_tf_vtx,
+      .is_indexed_draw = info->index_size != 0 ? ~0 : 0,
+   };
+   if (needs_ucp) {
+      struct pipe_clip_state *ucp = &ctx->ucp;
+      for (unsigned i = 0; i < ARRAY_SIZE(vertex_params.ucp); i++) {
+         vertex_params.ucp[i].x = fui(ucp->ucp[i][0]);
+         vertex_params.ucp[i].y = fui(ucp->ucp[i][1]);
+         vertex_params.ucp[i].z = fui(ucp->ucp[i][2]);
+         vertex_params.ucp[i].w = fui(ucp->ucp[i][3]);
+      }
+   }
+   return vertex_params;
+}
+
 static inline void
-ir3_emit_vs_driver_params(const struct ir3_shader_variant *v,
-                          struct fd_ringbuffer *ring, struct fd_context *ctx,
-                          const struct pipe_draw_info *info,
-                          const struct pipe_draw_indirect_info *indirect,
-                          const struct pipe_draw_start_count_bias *draw) assert_dt
+ir3_emit_driver_params(const struct ir3_shader_variant *v,
+                       struct fd_ringbuffer *ring, struct fd_context *ctx,
+                       const struct pipe_draw_info *info,
+                       const struct pipe_draw_indirect_info *indirect,
+                       const struct ir3_driver_params_vs *vertex_params)
+   assert_dt
 {
    assert(v->need_driver_params);
 
    const struct ir3_const_state *const_state = ir3_const_state(v);
    uint32_t offset = const_state->offsets.driver_param;
-   uint32_t vertex_params[IR3_DP_VS_COUNT] = {
-      [IR3_DP_DRAWID] = 0, /* filled by hw (CP_DRAW_INDIRECT_MULTI) */
-      [IR3_DP_VTXID_BASE] = info->index_size ? draw->index_bias : draw->start,
-      [IR3_DP_INSTID_BASE] = info->start_instance,
-      [IR3_DP_VTXCNT_MAX] = ctx->streamout.max_tf_vtx,
-   };
-   if (v->key.ucp_enables) {
-      struct pipe_clip_state *ucp = &ctx->ucp;
-      unsigned pos = IR3_DP_UCP0_X;
-      for (unsigned i = 0; pos <= IR3_DP_UCP7_W; i++) {
-         for (unsigned j = 0; j < 4; j++) {
-            vertex_params[pos] = fui(ucp->ucp[i][j]);
-            pos++;
-         }
-      }
-   }
 
    /* Only emit as many params as needed, i.e. up to the highest enabled UCP
     * plane. However a binning pass may drop even some of these, so limit to
@@ -483,24 +475,19 @@ ir3_emit_vs_driver_params(const struct ir3_shader_variant *v,
     */
    const uint32_t vertex_params_size =
       MIN2(const_state->num_driver_params, (v->constlen - offset) * 4);
-   assert(vertex_params_size <= IR3_DP_VS_COUNT);
-
-   bool needs_vtxid_base =
-      ir3_find_sysval_regid(v, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) !=
-      regid(63, 0);
+   assert(vertex_params_size <= dword_sizeof(*vertex_params));
 
    /* for indirect draw, we need to copy VTXID_BASE from
     * indirect-draw parameters buffer.. which is annoying
     * and means we can't easily emit these consts in cmd
     * stream so need to copy them to bo.
     */
-   if (indirect && needs_vtxid_base) {
+   if (indirect && v->vtxid_base != INVALID_REG) {
       uint32_t vertex_params_area = align(vertex_params_size, 16);
       struct pipe_resource *vertex_params_rsc =
          pipe_buffer_create(&ctx->screen->base, PIPE_BIND_CONSTANT_BUFFER,
                             PIPE_USAGE_STREAM, vertex_params_area * 4);
       unsigned src_off = indirect->offset;
-      ;
       void *ptr;
 
       ptr = fd_bo_map(fd_resource(vertex_params_rsc)->bo);
@@ -523,14 +510,48 @@ ir3_emit_vs_driver_params(const struct ir3_shader_variant *v,
 
       pipe_resource_reference(&vertex_params_rsc, NULL);
    } else {
-      emit_const_user(ring, v, offset * 4, vertex_params_size, vertex_params);
+      emit_const_user(ring, v, offset * 4, vertex_params_size, (uint32_t *)vertex_params);
    }
 
    /* if needed, emit stream-out buffer addresses: */
-   if (vertex_params[IR3_DP_VTXCNT_MAX] > 0) {
+   if (vertex_params->vtxcnt_max > 0) {
       emit_tfbos(ctx, v, ring);
    }
 }
+
+static inline struct ir3_driver_params_tcs
+ir3_build_driver_params_tcs(struct fd_context *ctx)
+   assert_dt
+{
+   return (struct ir3_driver_params_tcs) {
+      .default_outer_level_x = fui(ctx->default_outer_level[0]),
+      .default_outer_level_y = fui(ctx->default_outer_level[1]),
+      .default_outer_level_z = fui(ctx->default_outer_level[2]),
+      .default_outer_level_w = fui(ctx->default_outer_level[3]),
+      .default_inner_level_x = fui(ctx->default_inner_level[0]),
+      .default_inner_level_y = fui(ctx->default_inner_level[1]),
+   };
+}
+
+static inline void
+ir3_emit_hs_driver_params(const struct ir3_shader_variant *v,
+                          struct fd_ringbuffer *ring,
+                          struct fd_context *ctx)
+   assert_dt
+{
+   assert(v->need_driver_params);
+
+   const struct ir3_const_state *const_state = ir3_const_state(v);
+   uint32_t offset = const_state->offsets.driver_param;
+   struct ir3_driver_params_tcs hs_params = ir3_build_driver_params_tcs(ctx);
+
+   const uint32_t hs_params_size =
+      MIN2(const_state->num_driver_params, (v->constlen - offset) * 4);
+   assert(hs_params_size <= dword_sizeof(hs_params));
+
+   emit_const_user(ring, v, offset * 4, hs_params_size, (uint32_t *)&hs_params);
+}
+
 
 static inline void
 ir3_emit_vs_consts(const struct ir3_shader_variant *v,
@@ -539,14 +560,18 @@ ir3_emit_vs_consts(const struct ir3_shader_variant *v,
                    const struct pipe_draw_indirect_info *indirect,
                    const struct pipe_draw_start_count_bias *draw) assert_dt
 {
-   debug_assert(v->type == MESA_SHADER_VERTEX);
+   assert(v->type == MESA_SHADER_VERTEX);
 
    emit_common_consts(v, ring, ctx, PIPE_SHADER_VERTEX);
 
    /* emit driver params every time: */
    if (info && v->need_driver_params) {
       ring_wfi(ctx->batch, ring);
-      ir3_emit_vs_driver_params(v, ring, ctx, info, indirect, draw);
+
+      struct ir3_driver_params_vs p =
+         ir3_build_driver_params_vs(ctx, info, draw, 0, v->key.ucp_enables);
+
+      ir3_emit_driver_params(v, ring, ctx, info, indirect, &p);
    }
 }
 
@@ -554,20 +579,40 @@ static inline void
 ir3_emit_fs_consts(const struct ir3_shader_variant *v,
                    struct fd_ringbuffer *ring, struct fd_context *ctx) assert_dt
 {
-   debug_assert(v->type == MESA_SHADER_FRAGMENT);
+   assert(v->type == MESA_SHADER_FRAGMENT);
 
    emit_common_consts(v, ring, ctx, PIPE_SHADER_FRAGMENT);
 }
 
-/* emit compute-shader consts: */
-static inline void
-ir3_emit_cs_consts(const struct ir3_shader_variant *v,
-                   struct fd_ringbuffer *ring, struct fd_context *ctx,
-                   const struct pipe_grid_info *info) assert_dt
+static inline struct ir3_driver_params_cs
+ir3_build_driver_params_cs(const struct ir3_shader_variant *v,
+                           const struct pipe_grid_info *info)
 {
-   debug_assert(gl_shader_stage_is_compute(v->type));
+   return (struct ir3_driver_params_cs) {
+      .num_work_groups_x = info->grid[0],
+      .num_work_groups_y = info->grid[1],
+      .num_work_groups_z = info->grid[2],
+      .work_dim = info->work_dim,
+      .base_group_x = info->grid_base[0],
+      .base_group_y = info->grid_base[1],
+      .base_group_z = info->grid_base[2],
+      .subgroup_size = v->info.subgroup_size,
+      .local_group_size_x = info->block[0],
+      .local_group_size_y = info->block[1],
+      .local_group_size_z = info->block[2],
+      .subgroup_id_shift = util_logbase2(v->info.subgroup_size),
+      .workgroup_id_x = 0, // TODO
+      .workgroup_id_y = 0, // TODO
+      .workgroup_id_z = 0, // TODO
+   };
+}
 
-   emit_common_consts(v, ring, ctx, PIPE_SHADER_COMPUTE);
+static inline void
+ir3_emit_cs_driver_params(const struct ir3_shader_variant *v,
+                          struct fd_ringbuffer *ring, struct fd_context *ctx,
+                          const struct pipe_grid_info *info)
+   assert_dt
+{
    emit_kernel_params(ctx, v, ring, info);
 
    /* a3xx/a4xx can inject these directly */
@@ -577,51 +622,50 @@ ir3_emit_cs_consts(const struct ir3_shader_variant *v,
    /* emit compute-shader driver-params: */
    const struct ir3_const_state *const_state = ir3_const_state(v);
    uint32_t offset = const_state->offsets.driver_param;
+   uint32_t size =
+      align(MIN2(const_state->num_driver_params, (v->constlen - offset) * 4), 16);
+
    if (v->constlen > offset) {
       ring_wfi(ctx->batch, ring);
 
+      struct ir3_driver_params_cs compute_params = ir3_build_driver_params_cs(v, info);
+
       if (info->indirect) {
-         struct pipe_resource *indirect = NULL;
-         unsigned indirect_offset;
+         struct pipe_resource *buffer = NULL;
+         unsigned buffer_offset;
 
-         /* This is a bit awkward, but CP_LOAD_STATE.EXT_SRC_ADDR needs
-          * to be aligned more strongly than 4 bytes.  So in this case
-          * we need a temporary buffer to copy NumWorkGroups.xyz to.
-          *
-          * TODO if previous compute job is writing to info->indirect,
-          * we might need a WFI.. but since we currently flush for each
-          * compute job, we are probably ok for now.
+         u_upload_data(ctx->base.const_uploader, 0, sizeof(compute_params),
+                       16, &compute_params,  &buffer_offset, &buffer);
+
+         /* Copy the indirect params into the driver param buffer.  The layout
+          * of the indirect buffer should match the first three fields of
+          * compute_params:
           */
-         if (info->indirect_offset & 0xf) {
-            indirect = pipe_buffer_create(&ctx->screen->base,
-                                          PIPE_BIND_COMMAND_ARGS_BUFFER,
-                                          PIPE_USAGE_STREAM, 0x1000);
-            indirect_offset = 0;
+         STATIC_ASSERT(offsetof(struct ir3_driver_params_cs, num_work_groups_x) == 0);
+         STATIC_ASSERT(offsetof(struct ir3_driver_params_cs, num_work_groups_y) == 4);
+         STATIC_ASSERT(offsetof(struct ir3_driver_params_cs, num_work_groups_z) == 8);
 
-            ctx->screen->mem_to_mem(ring, indirect, 0, info->indirect,
-                                    info->indirect_offset, 3);
-         } else {
-            pipe_resource_reference(&indirect, info->indirect);
-            indirect_offset = info->indirect_offset;
-         }
+         ctx->screen->mem_to_mem(ring, buffer, buffer_offset, info->indirect,
+                                 info->indirect_offset, 3);
 
-         emit_const_prsc(ring, v, offset * 4, indirect_offset, 16, indirect);
+         emit_const_prsc(ring, v, offset * 4, buffer_offset, size, buffer);
 
-         pipe_resource_reference(&indirect, NULL);
+         pipe_resource_reference(&buffer, NULL);
       } else {
-         uint32_t compute_params[IR3_DP_CS_COUNT] = {
-            [IR3_DP_NUM_WORK_GROUPS_X] = info->grid[0],
-            [IR3_DP_NUM_WORK_GROUPS_Y] = info->grid[1],
-            [IR3_DP_NUM_WORK_GROUPS_Z] = info->grid[2],
-            [IR3_DP_WORK_DIM]          = info->work_dim,
-            [IR3_DP_LOCAL_GROUP_SIZE_X] = info->block[0],
-            [IR3_DP_LOCAL_GROUP_SIZE_Y] = info->block[1],
-            [IR3_DP_LOCAL_GROUP_SIZE_Z] = info->block[2],
-         };
-         uint32_t size =
-            MIN2(const_state->num_driver_params, v->constlen * 4 - offset * 4);
-
-         emit_const_user(ring, v, offset * 4, size, compute_params);
+         emit_const_user(ring, v, offset * 4, size, (uint32_t *)&compute_params);
       }
    }
+}
+
+/* emit compute-shader consts: */
+static inline void
+ir3_emit_cs_consts(const struct ir3_shader_variant *v,
+                   struct fd_ringbuffer *ring, struct fd_context *ctx,
+                   const struct pipe_grid_info *info) assert_dt
+{
+   assert(gl_shader_stage_is_compute(v->type));
+
+   emit_common_consts(v, ring, ctx, PIPE_SHADER_COMPUTE);
+
+   ir3_emit_cs_driver_params(v, ring, ctx, info);
 }

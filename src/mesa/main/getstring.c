@@ -24,7 +24,7 @@
 
 
 #include <stdbool.h>
-#include "glheader.h"
+#include "util/glheader.h"
 #include "context.h"
 #include "debug_output.h"
 #include "get.h"
@@ -38,8 +38,6 @@
 
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
-
-#include <cutils/properties.h>
 
 /**
  * Return the string for a glGetString(GL_SHADING_LANGUAGE_VERSION) query.
@@ -148,12 +146,6 @@ _mesa_GetString( GLenum name )
          return (const GLubyte *) vendor;
       }
       case GL_RENDERER: {
-         // Read the GPU mock model from the environment variable
-         const char* rendererPropName = "ro.hardware.gpurenderer";
-         static char rendererProp[PROPERTY_VALUE_MAX];
-         if (property_get(rendererPropName, rendererProp, NULL) > 0) {
-            return (const GLubyte *) rendererProp;
-         }
          const GLubyte *str = (const GLubyte *)screen->get_name(screen);
          if (str)
             return str;
@@ -162,7 +154,7 @@ _mesa_GetString( GLenum name )
       case GL_VERSION:
          return (const GLubyte *) ctx->VersionString;
       case GL_EXTENSIONS:
-         if (ctx->API == API_OPENGL_CORE) {
+         if (_mesa_is_desktop_gl_core(ctx)) {
             _mesa_error(ctx, GL_INVALID_ENUM, "glGetString(GL_EXTENSIONS)");
             return (const GLubyte *) 0;
          }
@@ -170,11 +162,11 @@ _mesa_GetString( GLenum name )
             ctx->Extensions.String = _mesa_make_extension_string(ctx);
          return (const GLubyte *) ctx->Extensions.String;
       case GL_SHADING_LANGUAGE_VERSION:
-         if (ctx->API == API_OPENGLES)
+         if (_mesa_is_gles1(ctx))
             break;
 	 return shading_language_version(ctx);
       case GL_PROGRAM_ERROR_STRING_ARB:
-         if (ctx->API == API_OPENGL_COMPAT &&
+         if (_mesa_is_desktop_gl_compat(ctx) &&
              (ctx->Extensions.ARB_fragment_program ||
               ctx->Extensions.ARB_vertex_program)) {
             return (const GLubyte *) ctx->Program.ErrorString;

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <database xmlns="http://nouveau.freedesktop.org/"
 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
+xsi:schemaLocation="https://gitlab.freedesktop.org/freedreno/ rules-fd.xsd">
 <import file="freedreno_copyright.xml"/>
 <import file="adreno/adreno_common.xml"/>
 <import file="adreno/adreno_pm4.xml"/>
@@ -1374,7 +1374,9 @@ xsi:schemaLocation="http://nouveau.freedesktop.org/ rules-ng.xsd">
 	</doc>
 	<reg32 offset="0x22d5" name="SP_VS_OBJ_START_REG"/>
 	<reg32 offset="0x22d6" name="SP_VS_PVT_MEM_PARAM_REG">
-		<bitfield name="MEMSIZEPERITEM" low="0" high="7" type="uint"/>
+		<bitfield name="MEMSIZEPERITEM" low="0" high="7" shr="7">
+			<doc>The size of memory that ldp/stp can address, in 128 byte increments.</doc>
+		</bitfield>
 		<bitfield name="HWSTACKOFFSET" low="8" high="23" type="uint"/>
 		<bitfield name="HWSTACKSIZEPERTHREAD" low="24" high="31" type="uint"/>
 	</reg32>

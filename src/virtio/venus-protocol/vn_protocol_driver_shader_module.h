@@ -8,75 +8,8 @@
 #ifndef VN_PROTOCOL_DRIVER_SHADER_MODULE_H
 #define VN_PROTOCOL_DRIVER_SHADER_MODULE_H
 
-#include "vn_instance.h"
+#include "vn_ring.h"
 #include "vn_protocol_driver_structs.h"
-
-/* struct VkShaderModuleCreateInfo chain */
-
-static inline size_t
-vn_sizeof_VkShaderModuleCreateInfo_pnext(const void *val)
-{
-    /* no known/supported struct */
-    return vn_sizeof_simple_pointer(NULL);
-}
-
-static inline size_t
-vn_sizeof_VkShaderModuleCreateInfo_self(const VkShaderModuleCreateInfo *val)
-{
-    size_t size = 0;
-    /* skip val->{sType,pNext} */
-    size += vn_sizeof_VkFlags(&val->flags);
-    size += vn_sizeof_size_t(&val->codeSize);
-    if (val->pCode) {
-        size += vn_sizeof_array_size(val->codeSize / 4);
-        size += vn_sizeof_uint32_t_array(val->pCode, val->codeSize / 4);
-    } else {
-        size += vn_sizeof_array_size(0);
-    }
-    return size;
-}
-
-static inline size_t
-vn_sizeof_VkShaderModuleCreateInfo(const VkShaderModuleCreateInfo *val)
-{
-    size_t size = 0;
-
-    size += vn_sizeof_VkStructureType(&val->sType);
-    size += vn_sizeof_VkShaderModuleCreateInfo_pnext(val->pNext);
-    size += vn_sizeof_VkShaderModuleCreateInfo_self(val);
-
-    return size;
-}
-
-static inline void
-vn_encode_VkShaderModuleCreateInfo_pnext(struct vn_cs_encoder *enc, const void *val)
-{
-    /* no known/supported struct */
-    vn_encode_simple_pointer(enc, NULL);
-}
-
-static inline void
-vn_encode_VkShaderModuleCreateInfo_self(struct vn_cs_encoder *enc, const VkShaderModuleCreateInfo *val)
-{
-    /* skip val->{sType,pNext} */
-    vn_encode_VkFlags(enc, &val->flags);
-    vn_encode_size_t(enc, &val->codeSize);
-    if (val->pCode) {
-        vn_encode_array_size(enc, val->codeSize / 4);
-        vn_encode_uint32_t_array(enc, val->pCode, val->codeSize / 4);
-    } else {
-        vn_encode_array_size(enc, 0);
-    }
-}
-
-static inline void
-vn_encode_VkShaderModuleCreateInfo(struct vn_cs_encoder *enc, const VkShaderModuleCreateInfo *val)
-{
-    assert(val->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
-    vn_encode_VkStructureType(enc, &(VkStructureType){ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO });
-    vn_encode_VkShaderModuleCreateInfo_pnext(enc, val->pNext);
-    vn_encode_VkShaderModuleCreateInfo_self(enc, val);
-}
 
 static inline size_t vn_sizeof_vkCreateShaderModule(VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
 {
@@ -202,7 +135,7 @@ static inline void vn_decode_vkDestroyShaderModule_reply(struct vn_cs_decoder *d
     /* skip pAllocator */
 }
 
-static inline void vn_submit_vkCreateShaderModule(struct vn_instance *vn_instance, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule, struct vn_instance_submit_command *submit)
+static inline void vn_submit_vkCreateShaderModule(struct vn_ring *vn_ring, VkCommandFlagsEXT cmd_flags, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule, struct vn_ring_submit_command *submit)
 {
     uint8_t local_cmd_data[VN_SUBMIT_LOCAL_CMD_SIZE];
     void *cmd_data = local_cmd_data;
@@ -214,16 +147,16 @@ static inline void vn_submit_vkCreateShaderModule(struct vn_instance *vn_instanc
     }
     const size_t reply_size = cmd_flags & VK_COMMAND_GENERATE_REPLY_BIT_EXT ? vn_sizeof_vkCreateShaderModule_reply(device, pCreateInfo, pAllocator, pShaderModule) : 0;
 
-    struct vn_cs_encoder *enc = vn_instance_submit_command_init(vn_instance, submit, cmd_data, cmd_size, reply_size);
+    struct vn_cs_encoder *enc = vn_ring_submit_command_init(vn_ring, submit, cmd_data, cmd_size, reply_size);
     if (cmd_size) {
         vn_encode_vkCreateShaderModule(enc, cmd_flags, device, pCreateInfo, pAllocator, pShaderModule);
-        vn_instance_submit_command(vn_instance, submit);
+        vn_ring_submit_command(vn_ring, submit);
         if (cmd_data != local_cmd_data)
             free(cmd_data);
     }
 }
 
-static inline void vn_submit_vkDestroyShaderModule(struct vn_instance *vn_instance, VkCommandFlagsEXT cmd_flags, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator, struct vn_instance_submit_command *submit)
+static inline void vn_submit_vkDestroyShaderModule(struct vn_ring *vn_ring, VkCommandFlagsEXT cmd_flags, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator, struct vn_ring_submit_command *submit)
 {
     uint8_t local_cmd_data[VN_SUBMIT_LOCAL_CMD_SIZE];
     void *cmd_data = local_cmd_data;
@@ -235,54 +168,54 @@ static inline void vn_submit_vkDestroyShaderModule(struct vn_instance *vn_instan
     }
     const size_t reply_size = cmd_flags & VK_COMMAND_GENERATE_REPLY_BIT_EXT ? vn_sizeof_vkDestroyShaderModule_reply(device, shaderModule, pAllocator) : 0;
 
-    struct vn_cs_encoder *enc = vn_instance_submit_command_init(vn_instance, submit, cmd_data, cmd_size, reply_size);
+    struct vn_cs_encoder *enc = vn_ring_submit_command_init(vn_ring, submit, cmd_data, cmd_size, reply_size);
     if (cmd_size) {
         vn_encode_vkDestroyShaderModule(enc, cmd_flags, device, shaderModule, pAllocator);
-        vn_instance_submit_command(vn_instance, submit);
+        vn_ring_submit_command(vn_ring, submit);
         if (cmd_data != local_cmd_data)
             free(cmd_data);
     }
 }
 
-static inline VkResult vn_call_vkCreateShaderModule(struct vn_instance *vn_instance, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
+static inline VkResult vn_call_vkCreateShaderModule(struct vn_ring *vn_ring, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
 {
     VN_TRACE_FUNC();
 
-    struct vn_instance_submit_command submit;
-    vn_submit_vkCreateShaderModule(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, pCreateInfo, pAllocator, pShaderModule, &submit);
-    struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
+    struct vn_ring_submit_command submit;
+    vn_submit_vkCreateShaderModule(vn_ring, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, pCreateInfo, pAllocator, pShaderModule, &submit);
+    struct vn_cs_decoder *dec = vn_ring_get_command_reply(vn_ring, &submit);
     if (dec) {
         const VkResult ret = vn_decode_vkCreateShaderModule_reply(dec, device, pCreateInfo, pAllocator, pShaderModule);
-        vn_instance_free_command_reply(vn_instance, &submit);
+        vn_ring_free_command_reply(vn_ring, &submit);
         return ret;
     } else {
         return VK_ERROR_OUT_OF_HOST_MEMORY;
     }
 }
 
-static inline void vn_async_vkCreateShaderModule(struct vn_instance *vn_instance, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
+static inline void vn_async_vkCreateShaderModule(struct vn_ring *vn_ring, VkDevice device, const VkShaderModuleCreateInfo* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkShaderModule* pShaderModule)
 {
-    struct vn_instance_submit_command submit;
-    vn_submit_vkCreateShaderModule(vn_instance, 0, device, pCreateInfo, pAllocator, pShaderModule, &submit);
+    struct vn_ring_submit_command submit;
+    vn_submit_vkCreateShaderModule(vn_ring, 0, device, pCreateInfo, pAllocator, pShaderModule, &submit);
 }
 
-static inline void vn_call_vkDestroyShaderModule(struct vn_instance *vn_instance, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator)
+static inline void vn_call_vkDestroyShaderModule(struct vn_ring *vn_ring, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator)
 {
     VN_TRACE_FUNC();
 
-    struct vn_instance_submit_command submit;
-    vn_submit_vkDestroyShaderModule(vn_instance, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, shaderModule, pAllocator, &submit);
-    struct vn_cs_decoder *dec = vn_instance_get_command_reply(vn_instance, &submit);
+    struct vn_ring_submit_command submit;
+    vn_submit_vkDestroyShaderModule(vn_ring, VK_COMMAND_GENERATE_REPLY_BIT_EXT, device, shaderModule, pAllocator, &submit);
+    struct vn_cs_decoder *dec = vn_ring_get_command_reply(vn_ring, &submit);
     if (dec) {
         vn_decode_vkDestroyShaderModule_reply(dec, device, shaderModule, pAllocator);
-        vn_instance_free_command_reply(vn_instance, &submit);
+        vn_ring_free_command_reply(vn_ring, &submit);
     }
 }
 
-static inline void vn_async_vkDestroyShaderModule(struct vn_instance *vn_instance, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator)
+static inline void vn_async_vkDestroyShaderModule(struct vn_ring *vn_ring, VkDevice device, VkShaderModule shaderModule, const VkAllocationCallbacks* pAllocator)
 {
-    struct vn_instance_submit_command submit;
-    vn_submit_vkDestroyShaderModule(vn_instance, 0, device, shaderModule, pAllocator, &submit);
+    struct vn_ring_submit_command submit;
+    vn_submit_vkDestroyShaderModule(vn_ring, 0, device, shaderModule, pAllocator, &submit);
 }
 
 #endif /* VN_PROTOCOL_DRIVER_SHADER_MODULE_H */

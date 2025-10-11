@@ -97,7 +97,7 @@ vk_common_CreateRenderPass(VkDevice _device,
 
    const VkRenderPassMultiviewCreateInfo *multiview_info = NULL;
    const VkRenderPassInputAttachmentAspectCreateInfo *aspect_info = NULL;
-   vk_foreach_struct(ext, pCreateInfo->pNext) {
+   vk_foreach_struct_const(ext, pCreateInfo->pNext) {
       switch (ext->sType) {
       case VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO:
          aspect_info = (const VkRenderPassInputAttachmentAspectCreateInfo *)ext;
@@ -106,6 +106,10 @@ vk_common_CreateRenderPass(VkDevice _device,
 
       case VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO:
          multiview_info = (const VkRenderPassMultiviewCreateInfo*) ext;
+         break;
+
+      case VK_STRUCTURE_TYPE_RENDER_PASS_FRAGMENT_DENSITY_MAP_CREATE_INFO_EXT:
+         /* pass this through to CreateRenderPass2 */
          break;
 
       default:
@@ -344,10 +348,6 @@ vk_render_pass_attachment_init(struct vk_render_pass_attachment *att,
       .initial_stencil_layout = vk_att_desc_stencil_layout(desc, false),
       .final_stencil_layout   = vk_att_desc_stencil_layout(desc, true),
    };
-
-   if(desc->format == VK_FORMAT_D24_UNORM_S8_UINT) {
-      att->format = VK_FORMAT_D32_SFLOAT_S8_UINT;
-   }
 }
 
 static void
@@ -438,17 +438,19 @@ vk_common_CreateRenderPass2(VkDevice _device,
                            pCreateInfo->dependencyCount);
 
    uint32_t subpass_attachment_count = 0;
-   uint32_t subpass_color_format_count = 0;
+   uint32_t subpass_color_attachment_count = 0;
    for (uint32_t i = 0; i < pCreateInfo->subpassCount; i++) {
       subpass_attachment_count +=
          num_subpass_attachments2(&pCreateInfo->pSubpasses[i]);
-      subpass_color_format_count +=
+      subpass_color_attachment_count +=
          pCreateInfo->pSubpasses[i].colorAttachmentCount;
    }
    VK_MULTIALLOC_DECL(&ma, struct vk_subpass_attachment, subpass_attachments,
                       subpass_attachment_count);
    VK_MULTIALLOC_DECL(&ma, VkFormat, subpass_color_formats,
-                      subpass_color_format_count);
+                      subpass_color_attachment_count);
+   VK_MULTIALLOC_DECL(&ma, VkSampleCountFlagBits, subpass_color_samples,
+                      subpass_color_attachment_count);
 
    if (!vk_object_multizalloc(device, &ma, pAllocator,
                               VK_OBJECT_TYPE_RENDER_PASS))
@@ -468,12 +470,22 @@ vk_common_CreateRenderPass2(VkDevice _device,
 
    struct vk_subpass_attachment *next_subpass_attachment = subpass_attachments;
    VkFormat *next_subpass_color_format = subpass_color_formats;
+   VkSampleCountFlagBits *next_subpass_color_samples = subpass_color_samples;
    for (uint32_t s = 0; s < pCreateInfo->subpassCount; s++) {
       const VkSubpassDescription2 *desc = &pCreateInfo->pSubpasses[s];
       struct vk_subpass *subpass = &pass->subpasses[s];
+      const VkMultisampledRenderToSingleSampledInfoEXT *mrtss =
+            vk_find_struct_const(desc->pNext, MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_INFO_EXT);
+      if (mrtss && !mrtss->multisampledRenderToSingleSampledEnable)
+         mrtss = NULL;
 
       subpass->attachment_count = num_subpass_attachments2(desc);
       subpass->attachments = next_subpass_attachment;
+
+      if (device->enabled_features.legacyDithering) {
+         subpass->legacy_dithering_enabled =
+            desc->flags & VK_SUBPASS_DESCRIPTION_ENABLE_LEGACY_DITHERING_BIT_EXT;
+      }
 
       /* From the Vulkan 1.3.204 spec:
        *
@@ -492,11 +504,6 @@ vk_common_CreateRenderPass2(VkDevice _device,
       subpass->view_mask = desc->viewMask ? desc->viewMask : 1;
       pass->view_mask |= subpass->view_mask;
 
-      assert(desc->colorAttachmentCount <= 32);
-      uint32_t color_self_deps = 0;
-      bool has_depth_self_dep = false;
-      bool has_stencil_self_dep = false;
-
       subpass->input_count = desc->inputAttachmentCount;
       if (desc->inputAttachmentCount > 0) {
          subpass->input_attachments = next_subpass_attachment;
@@ -508,25 +515,6 @@ vk_common_CreateRenderPass2(VkDevice _device,
                                        &desc->pInputAttachments[a],
                                        pCreateInfo->pAttachments,
                                        VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
-
-            if (desc->pInputAttachments[a].attachment != VK_ATTACHMENT_UNUSED) {
-               for (uint32_t c = 0; c < desc->colorAttachmentCount; c++) {
-                  if (desc->pColorAttachments[c].attachment ==
-                      desc->pInputAttachments[a].attachment)
-                     color_self_deps |= (1u << c);
-               }
-
-               if (desc->pDepthStencilAttachment != NULL &&
-                   desc->pDepthStencilAttachment->attachment ==
-                      desc->pInputAttachments[a].attachment) {
-                  VkImageAspectFlags aspects =
-                     subpass->input_attachments[a].aspects;
-                  if (aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
-                     has_depth_self_dep = true;
-                  if (aspects & VK_IMAGE_ASPECT_STENCIL_BIT)
-                     has_stencil_self_dep = true;
-               }
-            }
          }
       }
 
@@ -576,32 +564,35 @@ vk_common_CreateRenderPass2(VkDevice _device,
          vk_find_struct_const(desc->pNext,
                               SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE);
 
-      if (ds_resolve && ds_resolve->pDepthStencilResolveAttachment &&
-          ds_resolve->pDepthStencilResolveAttachment->attachment != VK_ATTACHMENT_UNUSED) {
-         subpass->depth_stencil_resolve_attachment = next_subpass_attachment++;
+      if (ds_resolve) {
+         if (ds_resolve->pDepthStencilResolveAttachment &&
+             ds_resolve->pDepthStencilResolveAttachment->attachment != VK_ATTACHMENT_UNUSED) {
+            subpass->depth_stencil_resolve_attachment = next_subpass_attachment++;
 
-         vk_subpass_attachment_init(subpass->depth_stencil_resolve_attachment,
-                                    pass, s,
-                                    ds_resolve->pDepthStencilResolveAttachment,
-                                    pCreateInfo->pAttachments,
-                                    VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-         vk_subpass_attachment_link_resolve(subpass->depth_stencil_attachment,
-                                            subpass->depth_stencil_resolve_attachment,
-                                            pCreateInfo);
+            vk_subpass_attachment_init(subpass->depth_stencil_resolve_attachment,
+                                       pass, s,
+                                       ds_resolve->pDepthStencilResolveAttachment,
+                                       pCreateInfo->pAttachments,
+                                       VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            vk_subpass_attachment_link_resolve(subpass->depth_stencil_attachment,
+                                               subpass->depth_stencil_resolve_attachment,
+                                               pCreateInfo);
+         }
+         if (subpass->depth_stencil_resolve_attachment || mrtss) {
+            /* From the Vulkan 1.3.204 spec:
+             *
+             *    VUID-VkSubpassDescriptionDepthStencilResolve-pDepthStencilResolveAttachment-03178
+             *
+             *    "If pDepthStencilResolveAttachment is not NULL and does not
+             *    have the value VK_ATTACHMENT_UNUSED, depthResolveMode and
+             *    stencilResolveMode must not both be VK_RESOLVE_MODE_NONE"
+             */
+            assert(ds_resolve->depthResolveMode != VK_RESOLVE_MODE_NONE ||
+                   ds_resolve->stencilResolveMode != VK_RESOLVE_MODE_NONE);
 
-         /* From the Vulkan 1.3.204 spec:
-          *
-          *    VUID-VkSubpassDescriptionDepthStencilResolve-pDepthStencilResolveAttachment-03178
-          *
-          *    "If pDepthStencilResolveAttachment is not NULL and does not
-          *    have the value VK_ATTACHMENT_UNUSED, depthResolveMode and
-          *    stencilResolveMode must not both be VK_RESOLVE_MODE_NONE"
-          */
-         assert(ds_resolve->depthResolveMode != VK_RESOLVE_MODE_NONE ||
-                ds_resolve->stencilResolveMode != VK_RESOLVE_MODE_NONE);
-
-         subpass->depth_resolve_mode = ds_resolve->depthResolveMode;
-         subpass->stencil_resolve_mode = ds_resolve->stencilResolveMode;
+            subpass->depth_resolve_mode = ds_resolve->depthResolveMode;
+            subpass->stencil_resolve_mode = ds_resolve->stencilResolveMode;
+         }
       }
 
       const VkFragmentShadingRateAttachmentInfoKHR *fsr_att_info =
@@ -618,31 +609,80 @@ vk_common_CreateRenderPass2(VkDevice _device,
                                     VK_IMAGE_USAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR);
          subpass->fragment_shading_rate_attachment_texel_size =
             fsr_att_info->shadingRateAttachmentTexelSize;
+         subpass->pipeline_flags |=
+            VK_PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+      }
+
+      /* Figure out any self-dependencies */
+      assert(desc->colorAttachmentCount <= 32);
+      for (uint32_t a = 0; a < desc->inputAttachmentCount; a++) {
+         if (desc->pInputAttachments[a].attachment == VK_ATTACHMENT_UNUSED)
+            continue;
+
+         for (uint32_t c = 0; c < desc->colorAttachmentCount; c++) {
+            if (desc->pColorAttachments[c].attachment ==
+                desc->pInputAttachments[a].attachment) {
+               subpass->input_attachments[a].layout =
+                  VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
+               subpass->color_attachments[c].layout =
+                  VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
+               subpass->pipeline_flags |=
+                  VK_PIPELINE_CREATE_COLOR_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+            }
+         }
+
+         if (desc->pDepthStencilAttachment != NULL &&
+             desc->pDepthStencilAttachment->attachment ==
+                desc->pInputAttachments[a].attachment) {
+            VkImageAspectFlags aspects =
+               subpass->input_attachments[a].aspects;
+            if (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) {
+               subpass->input_attachments[a].layout =
+                  VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
+               subpass->depth_stencil_attachment->layout =
+                  VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
+               subpass->pipeline_flags |=
+                  VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+            }
+            if (aspects & VK_IMAGE_ASPECT_STENCIL_BIT) {
+               subpass->input_attachments[a].stencil_layout =
+                  VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
+               subpass->depth_stencil_attachment->stencil_layout =
+                  VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT;
+               subpass->pipeline_flags |=
+                  VK_PIPELINE_CREATE_DEPTH_STENCIL_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT;
+            }
+         }
       }
 
       VkFormat *color_formats = NULL;
+      VkSampleCountFlagBits *color_samples = NULL;
       VkSampleCountFlagBits samples = 0;
       if (desc->colorAttachmentCount > 0) {
          color_formats = next_subpass_color_format;
+         color_samples = next_subpass_color_samples;
          for (uint32_t a = 0; a < desc->colorAttachmentCount; a++) {
             const VkAttachmentReference2 *ref = &desc->pColorAttachments[a];
             if (ref->attachment >= pCreateInfo->attachmentCount) {
                color_formats[a] = VK_FORMAT_UNDEFINED;
+               color_samples[a] = VK_SAMPLE_COUNT_1_BIT;
             } else {
                const VkAttachmentDescription2 *att =
                   &pCreateInfo->pAttachments[ref->attachment];
 
                color_formats[a] = att->format;
+               color_samples[a] = att->samples;
 
-               assert(samples == 0 || samples == att->samples);
                samples |= att->samples;
             }
          }
          next_subpass_color_format += desc->colorAttachmentCount;
+         next_subpass_color_samples += desc->colorAttachmentCount;
       }
 
       VkFormat depth_format = VK_FORMAT_UNDEFINED;
       VkFormat stencil_format = VK_FORMAT_UNDEFINED;
+      VkSampleCountFlagBits depth_stencil_samples = VK_SAMPLE_COUNT_1_BIT;
       if (desc->pDepthStencilAttachment != NULL) {
          const VkAttachmentReference2 *ref = desc->pDepthStencilAttachment;
          if (ref->attachment < pCreateInfo->attachmentCount) {
@@ -654,21 +694,23 @@ vk_common_CreateRenderPass2(VkDevice _device,
             if (vk_format_has_stencil(att->format))
                stencil_format = att->format;
 
-            assert(samples == 0 || samples == att->samples);
+            depth_stencil_samples = att->samples;
+
             samples |= att->samples;
          }
       }
 
-      subpass->self_dep_info = (VkRenderingSelfDependencyInfoMESA) {
-         .sType = VK_STRUCTURE_TYPE_RENDERING_SELF_DEPENDENCY_INFO_MESA,
-         .colorSelfDependencies = color_self_deps,
-         .depthSelfDependency = has_depth_self_dep,
-         .stencilSelfDependency = has_stencil_self_dep,
+      subpass->sample_count_info_amd = (VkAttachmentSampleCountInfoAMD) {
+         .sType = VK_STRUCTURE_TYPE_ATTACHMENT_SAMPLE_COUNT_INFO_AMD,
+         .pNext = NULL,
+         .colorAttachmentCount = desc->colorAttachmentCount,
+         .pColorAttachmentSamples = color_samples,
+         .depthStencilAttachmentSamples = depth_stencil_samples,
       };
 
       subpass->pipeline_info = (VkPipelineRenderingCreateInfo) {
          .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-         .pNext = &subpass->self_dep_info,
+         .pNext = &subpass->sample_count_info_amd,
          .viewMask = desc->viewMask,
          .colorAttachmentCount = desc->colorAttachmentCount,
          .pColorAttachmentFormats = color_formats,
@@ -678,7 +720,7 @@ vk_common_CreateRenderPass2(VkDevice _device,
 
       subpass->inheritance_info = (VkCommandBufferInheritanceRenderingInfo) {
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_RENDERING_INFO,
-         .pNext = &subpass->self_dep_info,
+         .pNext = &subpass->sample_count_info_amd,
          /* If we're inheriting, the contents are clearly in secondaries */
          .flags = VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT,
          .viewMask = desc->viewMask,
@@ -688,11 +730,22 @@ vk_common_CreateRenderPass2(VkDevice _device,
          .stencilAttachmentFormat = stencil_format,
          .rasterizationSamples = samples,
       };
+
+      if (mrtss) {
+         assert(mrtss->multisampledRenderToSingleSampledEnable);
+         subpass->mrtss = (VkMultisampledRenderToSingleSampledInfoEXT) {
+            .sType = VK_STRUCTURE_TYPE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_INFO_EXT,
+            .multisampledRenderToSingleSampledEnable = VK_TRUE,
+            .rasterizationSamples = mrtss->rasterizationSamples,
+         };
+      }
    }
    assert(next_subpass_attachment ==
           subpass_attachments + subpass_attachment_count);
    assert(next_subpass_color_format ==
-          subpass_color_formats + subpass_color_format_count);
+          subpass_color_formats + subpass_color_attachment_count);
+   assert(next_subpass_color_samples ==
+          subpass_color_samples + subpass_color_attachment_count);
 
    /* Walk backwards over the subpasses to compute view masks and
     * last_subpass masks for all attachments.
@@ -763,6 +816,16 @@ vk_common_CreateRenderPass2(VkDevice _device,
       }
    }
 
+   const VkRenderPassFragmentDensityMapCreateInfoEXT *fdm_info =
+      vk_find_struct_const(pCreateInfo->pNext,
+                           RENDER_PASS_FRAGMENT_DENSITY_MAP_CREATE_INFO_EXT);
+   if (fdm_info) {
+      pass->fragment_density_map = fdm_info->fragmentDensityMapAttachment;
+   } else {
+      pass->fragment_density_map.attachment = VK_ATTACHMENT_UNUSED;
+      pass->fragment_density_map.layout = VK_IMAGE_LAYOUT_UNDEFINED;
+   }
+
    *pRenderPass = vk_render_pass_to_handle(pass);
 
    return VK_SUCCESS;
@@ -778,6 +841,34 @@ vk_get_pipeline_rendering_create_info(const VkGraphicsPipelineCreateInfo *info)
    }
 
    return vk_find_struct_const(info->pNext, PIPELINE_RENDERING_CREATE_INFO);
+}
+
+VkPipelineCreateFlags2KHR
+vk_get_pipeline_rendering_flags(const VkGraphicsPipelineCreateInfo *info)
+{
+   VkPipelineCreateFlags2KHR rendering_flags = 0;
+
+   VK_FROM_HANDLE(vk_render_pass, render_pass, info->renderPass);
+   if (render_pass != NULL) {
+      rendering_flags |= render_pass->subpasses[info->subpass].pipeline_flags;
+      if (render_pass->fragment_density_map.attachment != VK_ATTACHMENT_UNUSED)
+         rendering_flags |=
+            VK_PIPELINE_CREATE_RENDERING_FRAGMENT_DENSITY_MAP_ATTACHMENT_BIT_EXT;
+   }
+
+   return rendering_flags;
+}
+
+const VkAttachmentSampleCountInfoAMD *
+vk_get_pipeline_sample_count_info_amd(const VkGraphicsPipelineCreateInfo *info)
+{
+   VK_FROM_HANDLE(vk_render_pass, render_pass, info->renderPass);
+   if (render_pass != NULL) {
+      assert(info->subpass < render_pass->subpass_count);
+      return &render_pass->subpasses[info->subpass].sample_count_info_amd;
+   }
+
+   return vk_find_struct_const(info->pNext, ATTACHMENT_SAMPLE_COUNT_INFO_AMD);
 }
 
 const VkCommandBufferInheritanceRenderingInfo *
@@ -824,6 +915,181 @@ vk_get_command_buffer_inheritance_rendering_info(
                                COMMAND_BUFFER_INHERITANCE_RENDERING_INFO);
 }
 
+const VkRenderingInfo *
+vk_get_command_buffer_inheritance_as_rendering_resume(
+   VkCommandBufferLevel level,
+   const VkCommandBufferBeginInfo *pBeginInfo,
+   void *stack_data)
+{
+   struct vk_gcbiarr_data *data = stack_data;
+
+   /* From the Vulkan 1.3.204 spec:
+    *
+    *    "VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT specifies that a
+    *    secondary command buffer is considered to be entirely inside a render
+    *    pass. If this is a primary command buffer, then this bit is ignored."
+    *
+    * Since we're only concerned with the continue case here, we can ignore
+    * any primary command buffers.
+    */
+   if (level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+      return NULL;
+
+   if (!(pBeginInfo->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
+      return NULL;
+
+   const VkCommandBufferInheritanceInfo *inheritance =
+      pBeginInfo->pInheritanceInfo;
+
+   VK_FROM_HANDLE(vk_render_pass, pass, inheritance->renderPass);
+   if (pass == NULL)
+      return NULL;
+
+   assert(inheritance->subpass < pass->subpass_count);
+   const struct vk_subpass *subpass = &pass->subpasses[inheritance->subpass];
+
+   VK_FROM_HANDLE(vk_framebuffer, fb, inheritance->framebuffer);
+   if (fb == NULL || (fb->flags & VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT))
+      return NULL;
+
+   data->rendering = (VkRenderingInfo) {
+      .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .flags = VK_RENDERING_RESUMING_BIT,
+      .renderArea = {
+         .offset = { 0, 0 },
+         .extent = { fb->width, fb->height },
+      },
+      .layerCount = fb->layers,
+      .viewMask = pass->is_multiview ? subpass->view_mask : 0,
+   };
+
+   VkRenderingAttachmentInfo *attachments = data->attachments;
+
+   for (unsigned i = 0; i < subpass->color_count; i++) {
+      const struct vk_subpass_attachment *sp_att =
+         &subpass->color_attachments[i];
+      if (sp_att->attachment == VK_ATTACHMENT_UNUSED) {
+         attachments[i] = (VkRenderingAttachmentInfo) {
+            .imageView = VK_NULL_HANDLE,
+         };
+         continue;
+      }
+
+      assert(sp_att->attachment < pass->attachment_count);
+      attachments[i] = (VkRenderingAttachmentInfo) {
+         .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+         .imageView = fb->attachments[sp_att->attachment],
+         .imageLayout = sp_att->layout,
+         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      };
+   }
+   data->rendering.colorAttachmentCount = subpass->color_count;
+   data->rendering.pColorAttachments = attachments;
+   attachments += subpass->color_count;
+
+   if (subpass->depth_stencil_attachment) {
+      const struct vk_subpass_attachment *sp_att =
+         subpass->depth_stencil_attachment;
+      assert(sp_att->attachment < pass->attachment_count);
+
+      VK_FROM_HANDLE(vk_image_view, iview, fb->attachments[sp_att->attachment]);
+      if (iview->image->aspects & VK_IMAGE_ASPECT_DEPTH_BIT) {
+         *attachments = (VkRenderingAttachmentInfo) {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = vk_image_view_to_handle(iview),
+            .imageLayout = sp_att->layout,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+         };
+         data->rendering.pDepthAttachment = attachments++;
+      }
+
+      if (iview->image->aspects & VK_IMAGE_ASPECT_STENCIL_BIT) {
+         *attachments = (VkRenderingAttachmentInfo) {
+            .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+            .imageView = vk_image_view_to_handle(iview),
+            .imageLayout = sp_att->stencil_layout,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+         };
+         data->rendering.pStencilAttachment = attachments++;
+      }
+   }
+
+   if (subpass->fragment_shading_rate_attachment) {
+      const struct vk_subpass_attachment *sp_att =
+         subpass->fragment_shading_rate_attachment;
+      assert(sp_att->attachment < pass->attachment_count);
+
+      data->fsr_att = (VkRenderingFragmentShadingRateAttachmentInfoKHR) {
+         .sType = VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR,
+         .imageView = fb->attachments[sp_att->attachment],
+         .imageLayout = sp_att->layout,
+         .shadingRateAttachmentTexelSize =
+            subpass->fragment_shading_rate_attachment_texel_size,
+      };
+      __vk_append_struct(&data->rendering, &data->fsr_att);
+   }
+
+   /* Append this one last because it lives in the subpass and we don't want
+    * to be changed by appending other structures later.
+    */
+   if (subpass->mrtss.multisampledRenderToSingleSampledEnable)
+      __vk_append_struct(&data->rendering, (void *)&subpass->mrtss);
+
+   return &data->rendering;
+}
+
+const VkRenderingAttachmentLocationInfoKHR *
+vk_get_command_buffer_rendering_attachment_location_info(
+   VkCommandBufferLevel level,
+   const VkCommandBufferBeginInfo *pBeginInfo)
+{
+   /* From the Vulkan 1.3.295 spec:
+    *
+    *    "VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT specifies that a
+    *    secondary command buffer is considered to be entirely inside a render
+    *    pass. If this is a primary command buffer, then this bit is ignored."
+    *
+    * Since we're only concerned with the continue case here, we can ignore
+    * any primary command buffers.
+    */
+   if (level == VK_COMMAND_BUFFER_LEVEL_PRIMARY)
+      return NULL;
+
+   /* From the Vulkan 1.3.295 spec:
+    *
+    *    "This structure can be included in the pNext chain of a
+    *    VkCommandBufferInheritanceInfo structure to specify inherited state
+    *    from the primary command buffer. If
+    *    VkCommandBufferInheritanceInfo::renderPass is not VK_NULL_HANDLE, or
+    *    VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT is not specified in
+    *    VkCommandBufferBeginInfo::flags, members of this structure are
+    *    ignored."
+    *
+    * For the case where a render pass is provided and we're emulating it on
+    * behalf of the driver, the default NULL behavior is sufficient:
+    *
+    *    "If this structure is not included in the pNext chain of
+    *    VkCommandBufferInheritanceInfo, it is equivalent to specifying this
+    *    structure with the following properties:
+    *
+    *     - colorAttachmentCount set to
+    *       VkCommandBufferInheritanceRenderingInfo::colorAttachmentCount.
+    *
+    *     - pColorAttachmentLocations set to NULL."
+    */
+   if (!(pBeginInfo->flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT))
+      return NULL;
+
+   if (pBeginInfo->pInheritanceInfo->renderPass != VK_NULL_HANDLE)
+      return NULL;
+
+   return vk_find_struct_const(pBeginInfo,
+                               RENDERING_ATTACHMENT_LOCATION_INFO_KHR);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 vk_common_DestroyRenderPass(VkDevice _device,
                             VkRenderPass renderPass,
@@ -843,7 +1109,112 @@ vk_common_GetRenderAreaGranularity(VkDevice device,
                                    VkRenderPass renderPass,
                                    VkExtent2D *pGranularity)
 {
+   *pGranularity = (VkExtent2D){1, 1};
+}
+
+VKAPI_ATTR void VKAPI_CALL
+vk_common_GetRenderingAreaGranularityKHR(
+   VkDevice _device, const VkRenderingAreaInfoKHR *pRenderingAreaInfo,
+   VkExtent2D *pGranularity)
+{
    *pGranularity = (VkExtent2D) { 1, 1 };
+}
+
+static VkRenderPassSampleLocationsBeginInfoEXT *
+clone_rp_sample_locations(const VkRenderPassSampleLocationsBeginInfoEXT *loc)
+{
+   uint32_t sl_count = 0;
+
+   for (uint32_t i = 0; i < loc->attachmentInitialSampleLocationsCount; i++) {
+      const VkAttachmentSampleLocationsEXT *att_sl_in =
+         &loc->pAttachmentInitialSampleLocations[i];
+      sl_count += att_sl_in->sampleLocationsInfo.sampleLocationsCount;
+   }
+   for (uint32_t i = 0; i < loc->postSubpassSampleLocationsCount; i++) {
+      const VkSubpassSampleLocationsEXT *sp_sl_in =
+         &loc->pPostSubpassSampleLocations[i];
+      sl_count += sp_sl_in->sampleLocationsInfo.sampleLocationsCount;
+   }
+
+   VK_MULTIALLOC(ma);
+   VK_MULTIALLOC_DECL(&ma, VkRenderPassSampleLocationsBeginInfoEXT, new_loc, 1);
+   VK_MULTIALLOC_DECL(&ma, VkAttachmentSampleLocationsEXT, new_att_sl,
+                      loc->attachmentInitialSampleLocationsCount);
+   VK_MULTIALLOC_DECL(&ma, VkSubpassSampleLocationsEXT, new_sp_sl,
+                      loc->postSubpassSampleLocationsCount);
+   VK_MULTIALLOC_DECL(&ma, VkSampleLocationEXT, sl, sl_count);
+   if (!vk_multialloc_alloc(&ma, vk_default_allocator(),
+                            VK_SYSTEM_ALLOCATION_SCOPE_OBJECT))
+      return NULL;
+
+   VkSampleLocationEXT *next_sl = sl;
+   for (uint32_t i = 0; i < loc->attachmentInitialSampleLocationsCount; i++) {
+      const VkAttachmentSampleLocationsEXT *att_sl_in =
+         &loc->pAttachmentInitialSampleLocations[i];
+      const VkSampleLocationsInfoEXT *sli_in = &att_sl_in->sampleLocationsInfo;
+
+      typed_memcpy(next_sl, sli_in->pSampleLocations,
+                   sli_in->sampleLocationsCount);
+
+      new_att_sl[i] = (VkAttachmentSampleLocationsEXT) {
+         .attachmentIndex = att_sl_in->attachmentIndex,
+         .sampleLocationsInfo = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLE_LOCATIONS_INFO_EXT,
+            .sampleLocationsPerPixel = sli_in->sampleLocationsPerPixel,
+            .sampleLocationGridSize = sli_in->sampleLocationGridSize,
+            .sampleLocationsCount = sli_in->sampleLocationsCount,
+            .pSampleLocations = next_sl,
+         },
+      };
+
+      next_sl += sli_in->sampleLocationsCount;
+   }
+
+   for (uint32_t i = 0; i < loc->postSubpassSampleLocationsCount; i++) {
+      const VkSubpassSampleLocationsEXT *sp_sl_in =
+         &loc->pPostSubpassSampleLocations[i];
+      const VkSampleLocationsInfoEXT *sli_in = &sp_sl_in->sampleLocationsInfo;
+
+      typed_memcpy(next_sl, sli_in->pSampleLocations,
+                   sli_in->sampleLocationsCount);
+
+      new_sp_sl[i] = (VkSubpassSampleLocationsEXT) {
+         .subpassIndex = sp_sl_in->subpassIndex,
+         .sampleLocationsInfo = {
+            .sType = VK_STRUCTURE_TYPE_SAMPLE_LOCATIONS_INFO_EXT,
+            .sampleLocationsPerPixel = sli_in->sampleLocationsPerPixel,
+            .sampleLocationGridSize = sli_in->sampleLocationGridSize,
+            .sampleLocationsCount = sli_in->sampleLocationsCount,
+            .pSampleLocations = next_sl,
+         },
+      };
+
+      next_sl += sli_in->sampleLocationsCount;
+   }
+
+   assert(next_sl == sl + sl_count);
+
+   *new_loc = (VkRenderPassSampleLocationsBeginInfoEXT) {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_SAMPLE_LOCATIONS_BEGIN_INFO_EXT,
+      .attachmentInitialSampleLocationsCount = loc->attachmentInitialSampleLocationsCount,
+      .pAttachmentInitialSampleLocations = new_att_sl,
+      .postSubpassSampleLocationsCount = loc->postSubpassSampleLocationsCount,
+      .pPostSubpassSampleLocations = new_sp_sl,
+   };
+
+   return new_loc;
+}
+
+static const VkSampleLocationsInfoEXT *
+get_subpass_sample_locations(const VkRenderPassSampleLocationsBeginInfoEXT *loc,
+                             uint32_t subpass_idx)
+{
+   for (uint32_t i = 0; i < loc->postSubpassSampleLocationsCount; i++) {
+      if (loc->pPostSubpassSampleLocations[i].subpassIndex == subpass_idx)
+         return &loc->pPostSubpassSampleLocations[i].sampleLocationsInfo;
+   }
+
+   return NULL;
 }
 
 static bool
@@ -858,6 +1229,7 @@ vk_image_layout_supports_input_attachment(VkImageLayout layout)
    case VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL:
    case VK_IMAGE_LAYOUT_STENCIL_READ_ONLY_OPTIMAL:
    case VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR:
+   case VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT:
       return true;
    default:
       return false;
@@ -900,7 +1272,7 @@ stage_access_for_layout(VkImageLayout layout, VkImageAspectFlags aspects)
          access |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
          /* It might be a resolve attachment */
-         stages |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+         stages |= VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
          access |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
       }
    } else {
@@ -912,7 +1284,7 @@ stage_access_for_layout(VkImageLayout layout, VkImageAspectFlags aspects)
                    VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
 
          /* It might be a resolve attachment */
-         stages |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+         stages |= VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
          access |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
       }
    }
@@ -930,6 +1302,7 @@ transition_image_range(const struct vk_image_view *image_view,
                        VkImageLayout new_layout,
                        VkImageLayout old_stencil_layout,
                        VkImageLayout new_stencil_layout,
+                       const VkSampleLocationsInfoEXT *sample_locations,
                        uint32_t *barrier_count,
                        uint32_t max_barrier_count,
                        VkImageMemoryBarrier2 *barriers)
@@ -969,6 +1342,7 @@ transition_image_range(const struct vk_image_view *image_view,
          assert(*barrier_count < max_barrier_count);
          barriers[(*barrier_count)++] = (VkImageMemoryBarrier2) {
             .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+            .pNext = sample_locations,
             .srcStageMask = src_sa.stages,
             .srcAccessMask = src_sa.access,
             .dstStageMask = dst_sa.stages,
@@ -1072,13 +1446,40 @@ can_use_attachment_initial_layout(struct vk_command_buffer *cmd_buffer,
    return true;
 }
 
-static void
-set_attachment_layout(struct vk_command_buffer *cmd_buffer,
-                      uint32_t att_idx,
-                      uint32_t view_mask,
-                      VkImageLayout layout,
-                      VkImageLayout stencil_layout)
+uint32_t
+vk_command_buffer_get_attachment_layout(const struct vk_command_buffer *cmd_buffer,
+                                        const struct vk_image *image,
+                                        VkImageLayout *out_layout,
+                                        VkImageLayout *out_stencil_layout)
 {
+   const struct vk_render_pass *render_pass = cmd_buffer->render_pass;
+   assert(render_pass != NULL);
+
+   const struct vk_subpass *subpass =
+      &render_pass->subpasses[cmd_buffer->subpass_idx];
+   int first_view = ffs(subpass->view_mask) - 1;
+
+   for (uint32_t a = 0; a < render_pass->attachment_count; a++) {
+      if (cmd_buffer->attachments[a].image_view->image == image) {
+         *out_layout = cmd_buffer->attachments[a].views[first_view].layout;
+         *out_stencil_layout =
+            cmd_buffer->attachments[a].views[first_view].stencil_layout;
+         return a;
+      }
+   }
+   unreachable("Image not found in attachments");
+}
+
+void
+vk_command_buffer_set_attachment_layout(struct vk_command_buffer *cmd_buffer,
+                                        uint32_t att_idx,
+                                        VkImageLayout layout,
+                                        VkImageLayout stencil_layout)
+{
+   const struct vk_render_pass *render_pass = cmd_buffer->render_pass;
+   const struct vk_subpass *subpass =
+      &render_pass->subpasses[cmd_buffer->subpass_idx];
+   uint32_t view_mask = subpass->view_mask;
    struct vk_attachment_state *att_state = &cmd_buffer->attachments[att_idx];
 
    u_foreach_bit(view, view_mask) {
@@ -1178,6 +1579,7 @@ transition_attachment(struct vk_command_buffer *cmd_buffer,
       transition_image_range(image_view, range,
                              att_view_state->layout, layout,
                              att_view_state->stencil_layout, stencil_layout,
+                             att_view_state->sample_locations,
                              barrier_count, max_barrier_count, barriers);
 
       att_view_state->layout = layout;
@@ -1238,6 +1640,7 @@ load_attachment(struct vk_command_buffer *cmd_buffer,
 
    VkRenderingInfo render = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .flags = VK_RENDERING_INPUT_ATTACHMENT_NO_CONCURRENT_WRITES_BIT_MESA,
       .renderArea = cmd_buffer->render_area,
       .layerCount = pass->is_multiview ? 1 : framebuffer->layers,
       .viewMask = pass->is_multiview ? view_mask : 0,
@@ -1329,9 +1732,10 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
             };
             __vk_append_struct(color_attachment, color_initial_layout);
 
-            set_attachment_layout(cmd_buffer, sp_att->attachment,
-                                  subpass->view_mask,
-                                  sp_att->layout, VK_IMAGE_LAYOUT_UNDEFINED);
+            vk_command_buffer_set_attachment_layout(cmd_buffer,
+                                                    sp_att->attachment,
+                                                    sp_att->layout,
+                                                    VK_IMAGE_LAYOUT_UNDEFINED);
          }
       } else {
          /* We've seen at least one of the views of this attachment before so
@@ -1373,6 +1777,12 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
          color_attachment->resolveImageView =
             vk_image_view_to_handle(res_att_state->image_view);
          color_attachment->resolveImageLayout = sp_att->resolve->layout;
+      } else if (subpass->mrtss.multisampledRenderToSingleSampledEnable &&
+                 rp_att->samples == VK_SAMPLE_COUNT_1_BIT) {
+         if (vk_format_is_int(att_state->image_view->format))
+            color_attachment->resolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+         else
+            color_attachment->resolveMode = VK_RESOLVE_MODE_AVERAGE_BIT;
       }
    }
 
@@ -1389,6 +1799,7 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
       .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INITIAL_LAYOUT_INFO_MESA,
    };
 
+   const VkSampleLocationsInfoEXT *sample_locations = NULL;
    if (subpass->depth_stencil_attachment != NULL) {
       const struct vk_subpass_attachment *sp_att =
          subpass->depth_stencil_attachment;
@@ -1442,9 +1853,10 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
                                   &stencil_initial_layout);
             }
 
-            set_attachment_layout(cmd_buffer, sp_att->attachment,
-                                  subpass->view_mask,
-                                  sp_att->layout, sp_att->stencil_layout);
+            vk_command_buffer_set_attachment_layout(cmd_buffer,
+                                                    sp_att->attachment,
+                                                    sp_att->layout,
+                                                    sp_att->stencil_layout);
          }
       } else {
          /* We've seen at least one of the views of this attachment before so
@@ -1470,8 +1882,41 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
          stencil_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
       }
 
-      if (sp_att->resolve != NULL) {
-         const struct vk_subpass_attachment *res_sp_att = sp_att->resolve;
+      /* From the Vulkan 1.3.212 spec:
+       *
+       *    "If the current render pass does not use the attachment as a
+       *    depth/stencil attachment in any subpass that happens-before, the
+       *    automatic layout transition uses the sample locations state
+       *    specified in the sampleLocationsInfo member of the element of the
+       *    VkRenderPassSampleLocationsBeginInfoEXT::pAttachmentInitialSampleLocations
+       *    array for which the attachmentIndex member equals the attachment
+       *    index of the attachment, if one is specified. Otherwise, the
+       *    automatic layout transition uses the sample locations state
+       *    specified in the sampleLocationsInfo member of the element of the
+       *    VkRenderPassSampleLocationsBeginInfoEXT::pPostSubpassSampleLocations
+       *    array for which the subpassIndex member equals the index of the
+       *    subpass that last used the attachment as a depth/stencil
+       *    attachment, if one is specified."
+       *
+       * Unfortunately, this says nothing whatsoever about multiview.
+       * However, since multiview render passes are described as a single-view
+       * render pass repeated per-view, we assume this is per-view.
+       */
+      if (cmd_buffer->pass_sample_locations != NULL &&
+          (att_state->image_view->image->create_flags &
+           VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT)) {
+         sample_locations =
+            get_subpass_sample_locations(cmd_buffer->pass_sample_locations,
+                                         subpass_idx);
+
+         u_foreach_bit(view, subpass->view_mask)
+            att_state->views[view].sample_locations = sample_locations;
+      }
+
+      if (sp_att->resolve != NULL ||
+          (subpass->mrtss.multisampledRenderToSingleSampledEnable &&
+           rp_att->samples == VK_SAMPLE_COUNT_1_BIT)) {
+         const struct vk_subpass_attachment *res_sp_att = sp_att->resolve ? sp_att->resolve : sp_att;
          assert(res_sp_att->attachment < pass->attachment_count);
          const struct vk_render_pass_attachment *res_rp_att =
             &pass->attachments[res_sp_att->attachment];
@@ -1492,11 +1937,11 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
           * that, if we resolve to the wrong aspect, we will still consider
           * it bound and clear it if requested.
           */
-         VkResolveModeFlagBitsKHR depth_resolve_mode = VK_RESOLVE_MODE_NONE;
+         VkResolveModeFlagBits depth_resolve_mode = VK_RESOLVE_MODE_NONE;
          if (res_rp_att->aspects & VK_IMAGE_ASPECT_DEPTH_BIT)
             depth_resolve_mode = subpass->depth_resolve_mode;
 
-         VkResolveModeFlagBitsKHR stencil_resolve_mode = VK_RESOLVE_MODE_NONE;
+         VkResolveModeFlagBits stencil_resolve_mode = VK_RESOLVE_MODE_NONE;
          if (res_rp_att->aspects & VK_IMAGE_ASPECT_STENCIL_BIT)
             stencil_resolve_mode = subpass->stencil_resolve_mode;
 
@@ -1504,25 +1949,29 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
 
          if (depth_resolve_mode != VK_RESOLVE_MODE_NONE) {
             depth_attachment.resolveMode = depth_resolve_mode;
-            depth_attachment.resolveImageView =
-               vk_image_view_to_handle(res_att_state->image_view);
-            depth_attachment.resolveImageLayout =
-               sp_att->resolve->layout;
+            if (sp_att->resolve) {
+               depth_attachment.resolveImageView =
+                  vk_image_view_to_handle(res_att_state->image_view);
+               depth_attachment.resolveImageLayout =
+                  sp_att->resolve->layout;
+            }
 
             resolved_aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
          }
 
          if (stencil_resolve_mode != VK_RESOLVE_MODE_NONE) {
             stencil_attachment.resolveMode = stencil_resolve_mode;
-            stencil_attachment.resolveImageView =
-               vk_image_view_to_handle(res_att_state->image_view);
-            stencil_attachment.resolveImageLayout =
-               sp_att->resolve->stencil_layout;
+            if (sp_att->resolve) {
+               stencil_attachment.resolveImageView =
+                  vk_image_view_to_handle(res_att_state->image_view);
+               stencil_attachment.resolveImageLayout =
+                  sp_att->resolve->stencil_layout;
+            }
 
             resolved_aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
          }
 
-         if (resolved_aspects == rp_att->aspects) {
+         if (sp_att->resolve && resolved_aspects == rp_att->aspects) {
             /* The resolve attachment is entirely overwritten by the
              * resolve operation so the load op really doesn't matter.
              * We can consider the resolve as being the load.
@@ -1588,6 +2037,47 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
       mem_barrier.dstAccessMask |= dep->dst_access_mask;
    }
 
+   if (subpass_idx == 0) {
+      /* From the Vulkan 1.3.232 spec:
+       *
+       *    "If there is no subpass dependency from VK_SUBPASS_EXTERNAL to the
+       *    first subpass that uses an attachment, then an implicit subpass
+       *    dependency exists from VK_SUBPASS_EXTERNAL to the first subpass it
+       *    is used in. The implicit subpass dependency only exists if there
+       *    exists an automatic layout transition away from initialLayout. The
+       *    subpass dependency operates as if defined with the following
+       *    parameters:
+       *
+       *    VkSubpassDependency implicitDependency = {
+       *        .srcSubpass = VK_SUBPASS_EXTERNAL;
+       *        .dstSubpass = firstSubpass; // First subpass attachment is used in
+       *        .srcStageMask = VK_PIPELINE_STAGE_NONE;
+       *        .dstStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+       *        .srcAccessMask = 0;
+       *        .dstAccessMask = VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+       *                         VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+       *                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+       *                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+       *                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+       *        .dependencyFlags = 0;
+       *    };"
+       *
+       * We could track individual subpasses and attachments and views to make
+       * sure we only insert this barrier when it's absolutely necessary.
+       * However, this is only going to happen for the first subpass and
+       * you're probably going to take a stall in BeginRenderPass() anyway.
+       * If this is ever a perf problem, we can re-evaluate and do something
+       * more intellegent at that time.
+       */
+      needs_mem_barrier = true;
+      mem_barrier.dstStageMask |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+      mem_barrier.dstAccessMask |= VK_ACCESS_INPUT_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+   }
+
    uint32_t max_image_barrier_count = 0;
    for (uint32_t a = 0; a < subpass->attachment_count; a++) {
       const struct vk_subpass_attachment *sp_att = &subpass->attachments[a];
@@ -1601,6 +2091,8 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
       max_image_barrier_count += util_bitcount(subpass->view_mask) *
                                  util_bitcount(rp_att->aspects);
    }
+   if (pass->fragment_density_map.attachment != VK_ATTACHMENT_UNUSED)
+      max_image_barrier_count += util_bitcount(subpass->view_mask);
    STACK_ARRAY(VkImageMemoryBarrier2, image_barriers, max_image_barrier_count);
    uint32_t image_barrier_count = 0;
 
@@ -1619,6 +2111,15 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
                             max_image_barrier_count,
                             image_barriers);
    }
+   if (pass->fragment_density_map.attachment != VK_ATTACHMENT_UNUSED) {
+      transition_attachment(cmd_buffer, pass->fragment_density_map.attachment,
+                            subpass->view_mask,
+                            pass->fragment_density_map.layout,
+                            VK_IMAGE_LAYOUT_UNDEFINED,
+                            &image_barrier_count,
+                            max_image_barrier_count,
+                            image_barriers);
+   }
    assert(image_barrier_count <= max_image_barrier_count);
 
    if (needs_mem_barrier || image_barrier_count > 0) {
@@ -1631,8 +2132,10 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
          .pImageMemoryBarriers = image_barrier_count > 0 ?
                                  image_barriers : NULL,
       };
+      cmd_buffer->runtime_rp_barrier = true;
       disp->CmdPipelineBarrier2(vk_command_buffer_to_handle(cmd_buffer),
                                 &dependency_info);
+      cmd_buffer->runtime_rp_barrier = false;
    }
 
    STACK_ARRAY_FINISH(image_barriers);
@@ -1659,7 +2162,7 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
 
    VkRenderingInfo rendering = {
       .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-      .pNext = &subpass->self_dep_info,
+      .flags = VK_RENDERING_INPUT_ATTACHMENT_NO_CONCURRENT_WRITES_BIT_MESA,
       .renderArea = cmd_buffer->render_area,
       .layerCount = pass->is_multiview ? 1 : framebuffer->layers,
       .viewMask = pass->is_multiview ? subpass->view_mask : 0,
@@ -1668,6 +2171,9 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
       .pDepthAttachment = &depth_attachment,
       .pStencilAttachment = &stencil_attachment,
    };
+
+   if (subpass->legacy_dithering_enabled)
+      rendering.flags |= VK_RENDERING_ENABLE_LEGACY_DITHERING_BIT_EXT;
 
    VkRenderingFragmentShadingRateAttachmentInfoKHR fsr_attachment;
    if (subpass->fragment_shading_rate_attachment) {
@@ -1694,6 +2200,44 @@ begin_subpass(struct vk_command_buffer *cmd_buffer,
       __vk_append_struct(&rendering, &fsr_attachment);
    }
 
+   VkRenderingFragmentDensityMapAttachmentInfoEXT fdm_attachment;
+   if (pass->fragment_density_map.attachment != VK_ATTACHMENT_UNUSED) {
+      assert(pass->fragment_density_map.attachment < pass->attachment_count);
+      struct vk_attachment_state *att_state =
+         &cmd_buffer->attachments[pass->fragment_density_map.attachment];
+
+      /* From the Vulkan 1.3.125 spec:
+       *
+       *    VUID-VkRenderPassFragmentDensityMapCreateInfoEXT-fragmentDensityMapAttachment-02550
+       *
+       *    If fragmentDensityMapAttachment is not VK_ATTACHMENT_UNUSED,
+       *    fragmentDensityMapAttachment must reference an attachment with a
+       *    loadOp equal to VK_ATTACHMENT_LOAD_OP_LOAD or
+       *    VK_ATTACHMENT_LOAD_OP_DONT_CARE
+       *
+       * This means we don't have to implement the load op.
+       */
+
+      fdm_attachment = (VkRenderingFragmentDensityMapAttachmentInfoEXT) {
+         .sType = VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_DENSITY_MAP_ATTACHMENT_INFO_EXT,
+         .imageView = vk_image_view_to_handle(att_state->image_view),
+         .imageLayout = pass->fragment_density_map.layout,
+      };
+      __vk_append_struct(&rendering, &fdm_attachment);
+   }
+
+   VkSampleLocationsInfoEXT sample_locations_tmp;
+   if (sample_locations) {
+      sample_locations_tmp = *sample_locations;
+      __vk_append_struct(&rendering, &sample_locations_tmp);
+   }
+
+   /* Append this one last because it lives in the subpass and we don't want
+    * to be changed by appending other structures later.
+    */
+   if (subpass->mrtss.multisampledRenderToSingleSampledEnable)
+      __vk_append_struct(&rendering, (void *)&subpass->mrtss);
+
    disp->CmdBeginRendering(vk_command_buffer_to_handle(cmd_buffer),
                            &rendering);
 
@@ -1705,9 +2249,79 @@ static void
 end_subpass(struct vk_command_buffer *cmd_buffer,
             const VkSubpassEndInfo *end_info)
 {
+   const struct vk_render_pass *pass = cmd_buffer->render_pass;
+   const uint32_t subpass_idx = cmd_buffer->subpass_idx;
    struct vk_device_dispatch_table *disp =
       &cmd_buffer->base.device->dispatch_table;
+
    disp->CmdEndRendering(vk_command_buffer_to_handle(cmd_buffer));
+
+   bool needs_mem_barrier = false;
+   VkMemoryBarrier2 mem_barrier = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+   };
+   for (uint32_t d = 0; d < pass->dependency_count; d++) {
+      const struct vk_subpass_dependency *dep = &pass->dependencies[d];
+      if (dep->src_subpass != subpass_idx)
+         continue;
+
+      if (dep->dst_subpass != VK_SUBPASS_EXTERNAL)
+         continue;
+
+      needs_mem_barrier = true;
+      mem_barrier.srcStageMask |= dep->src_stage_mask;
+      mem_barrier.srcAccessMask |= dep->src_access_mask;
+      mem_barrier.dstStageMask |= dep->dst_stage_mask;
+      mem_barrier.dstAccessMask |= dep->dst_access_mask;
+   }
+
+   if (subpass_idx == pass->subpass_count - 1) {
+      /* From the Vulkan 1.3.232 spec:
+       *
+       *    "Similarly, if there is no subpass dependency from the last
+       *    subpass that uses an attachment to VK_SUBPASS_EXTERNAL, then an
+       *    implicit subpass dependency exists from the last subpass it is
+       *    used in to VK_SUBPASS_EXTERNAL. The implicit subpass dependency
+       *    only exists if there exists an automatic layout transition into
+       *    finalLayout. The subpass dependency operates as if defined with
+       *    the following parameters:
+       *
+       *    VkSubpassDependency implicitDependency = {
+       *        .srcSubpass = lastSubpass; // Last subpass attachment is used in
+       *        .dstSubpass = VK_SUBPASS_EXTERNAL;
+       *        .srcStageMask = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+       *        .dstStageMask = VK_PIPELINE_STAGE_NONE;
+       *        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+       *                         VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+       *        .dstAccessMask = 0;
+       *        .dependencyFlags = 0;
+       *    };"
+       *
+       * We could track individual subpasses and attachments and views to make
+       * sure we only insert this barrier when it's absolutely necessary.
+       * However, this is only going to happen for the last subpass and
+       * you're probably going to take a stall in EndRenderPass() anyway.
+       * If this is ever a perf problem, we can re-evaluate and do something
+       * more intellegent at that time.
+       */
+      needs_mem_barrier = true;
+      mem_barrier.srcStageMask |= VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+      mem_barrier.srcAccessMask |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+   }
+
+   if (needs_mem_barrier) {
+      const VkDependencyInfo dependency_info = {
+         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+         .dependencyFlags = 0,
+         .memoryBarrierCount = 1,
+         .pMemoryBarriers = &mem_barrier,
+      };
+      cmd_buffer->runtime_rp_barrier = true;
+      disp->CmdPipelineBarrier2(vk_command_buffer_to_handle(cmd_buffer),
+                                &dependency_info);
+      cmd_buffer->runtime_rp_barrier = false;
+   }
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1835,6 +2449,33 @@ vk_common_CmdBeginRenderPass2(VkCommandBuffer commandBuffer,
          att_state->clear_value = pRenderPassBeginInfo->pClearValues[a];
    }
 
+   const VkRenderPassSampleLocationsBeginInfoEXT *rp_sl_info =
+      vk_find_struct_const(pRenderPassBeginInfo->pNext,
+                           RENDER_PASS_SAMPLE_LOCATIONS_BEGIN_INFO_EXT);
+   if (rp_sl_info) {
+      cmd_buffer->pass_sample_locations = clone_rp_sample_locations(rp_sl_info);
+      assert(cmd_buffer->pass_sample_locations);
+
+      for (uint32_t i = 0; i < rp_sl_info->attachmentInitialSampleLocationsCount; i++) {
+         const VkAttachmentSampleLocationsEXT *att_sl =
+            &rp_sl_info->pAttachmentInitialSampleLocations[i];
+
+         assert(att_sl->attachmentIndex < pass->attachment_count);
+         struct vk_attachment_state *att_state =
+            &cmd_buffer->attachments[att_sl->attachmentIndex];
+
+         /* Sample locations only matter for depth/stencil images created with
+          * VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT
+          */
+         if (vk_format_is_depth_or_stencil(att_state->image_view->format) &&
+             (att_state->image_view->image->create_flags &
+              VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT)) {
+            for (uint32_t v = 0; v < MESA_VK_MAX_MULTIVIEW_VIEW_COUNT; v++)
+               att_state->views[v].sample_locations = &att_sl->sampleLocationsInfo;
+         }
+      }
+   }
+
    begin_subpass(cmd_buffer, pSubpassBeginInfo);
 }
 
@@ -1847,6 +2488,9 @@ vk_command_buffer_reset_render_pass(struct vk_command_buffer *cmd_buffer)
    if (cmd_buffer->attachments != cmd_buffer->_attachments)
       free(cmd_buffer->attachments);
    cmd_buffer->attachments = NULL;
+   if (cmd_buffer->pass_sample_locations != NULL)
+      vk_free(vk_default_allocator(), cmd_buffer->pass_sample_locations);
+   cmd_buffer->pass_sample_locations = NULL;
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -1903,8 +2547,10 @@ vk_common_CmdEndRenderPass2(VkCommandBuffer commandBuffer,
          .imageMemoryBarrierCount = image_barrier_count,
          .pImageMemoryBarriers = image_barriers,
       };
+      cmd_buffer->runtime_rp_barrier = true;
       disp->CmdPipelineBarrier2(vk_command_buffer_to_handle(cmd_buffer),
                                 &dependency_info);
+      cmd_buffer->runtime_rp_barrier = false;
    }
 
    STACK_ARRAY_FINISH(image_barriers);

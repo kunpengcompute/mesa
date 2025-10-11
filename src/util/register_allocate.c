@@ -544,7 +544,7 @@ ra_realloc_interference_graph(struct ra_graph *g, unsigned int alloc)
     * easier to memset the top of the growing bitsets.
     */
    assert(g->alloc % BITSET_WORDBITS == 0);
-   alloc = align64(alloc, BITSET_WORDBITS);
+   alloc = align(alloc, BITSET_WORDBITS);
    g->nodes = rerzalloc(g, g->nodes, struct ra_node, g->alloc, alloc);
    g->adjacency = rerzalloc(g, g->adjacency, BITSET_WORD,
                             BITSET_WORDS(ra_get_num_adjacency_bits(g->alloc)),
@@ -1031,6 +1031,12 @@ ra_get_spill_benefit(struct ra_graph *g, unsigned int n)
    return benefit;
 }
 
+float
+ra_debug_get_spill_benefit(struct ra_graph *g, unsigned int n)
+{
+   return ra_get_spill_benefit(g, n);
+}
+
 /**
  * Returns a node number to be spilled according to the cost/benefit using
  * the pq test, or -1 if there are no spillable nodes.
@@ -1076,4 +1082,10 @@ void
 ra_set_node_spill_cost(struct ra_graph *g, unsigned int n, float cost)
 {
    g->nodes[n].spill_cost = cost;
+}
+
+float
+ra_debug_get_node_spill_cost(struct ra_graph *g, unsigned int n)
+{
+   return g->nodes[n].spill_cost;
 }

@@ -69,12 +69,12 @@ llvmpipe_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
       return;
 
    if (indirect && indirect->buffer) {
-      util_draw_indirect(pipe, info, indirect);
+      util_draw_indirect(pipe, info, drawid_offset, indirect);
       return;
    }
 
    if (lp->dirty)
-      llvmpipe_update_derived( lp );
+      llvmpipe_update_derived(lp);
 
    /*
     * Map vertex buffers
@@ -102,7 +102,7 @@ llvmpipe_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info,
          available_space = info->index.resource->width0;
       }
       draw_set_indexes(draw,
-                       (ubyte *) mapped_indices,
+                       (uint8_t *) mapped_indices,
                        info->index_size, available_space);
    }
 

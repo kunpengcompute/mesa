@@ -36,6 +36,7 @@ struct test {
    uint32_t hardware;
 };
 
+/* clang-format off */
 #define RGBA(key, value) \
    .rgb_ ## key = value, \
    .alpha_ ## key = value
@@ -61,10 +62,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xF,
 
-         RGBA(func, BLEND_FUNC_ADD),
-         RGBA(src_factor, BLEND_FACTOR_SRC_ALPHA),
-         RGBA(dst_factor, BLEND_FACTOR_SRC_ALPHA),
-         RGBA(invert_dst_factor, true),
+         RGBA(func, PIPE_BLEND_ADD),
+         RGBA(src_factor, PIPE_BLENDFACTOR_SRC_ALPHA),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_INV_SRC_ALPHA),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -80,11 +80,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xF,
 
-         RGBA(func, BLEND_FUNC_ADD),
-         RGBA(src_factor, BLEND_FACTOR_ZERO),
-         RGBA(dst_factor, BLEND_FACTOR_ZERO),
-         RGBA(invert_src_factor, true),
-         RGBA(invert_dst_factor, true),
+         RGBA(func, PIPE_BLEND_ADD),
+         RGBA(src_factor, PIPE_BLENDFACTOR_ONE),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_ONE),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -100,10 +98,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xF,
 
-         RGBA(func, BLEND_FUNC_ADD),
-         RGBA(src_factor, BLEND_FACTOR_SRC_ALPHA),
-         RGBA(dst_factor, BLEND_FACTOR_ZERO),
-         RGBA(invert_dst_factor, true),
+         RGBA(func, PIPE_BLEND_ADD),
+         RGBA(src_factor, PIPE_BLENDFACTOR_SRC_ALPHA),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_ONE),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -119,11 +116,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xF,
 
-         RGBA(func, BLEND_FUNC_SUBTRACT),
-         RGBA(src_factor, BLEND_FACTOR_ZERO),
-         RGBA(dst_factor, BLEND_FACTOR_ZERO),
-         RGBA(invert_src_factor, true),
-         RGBA(invert_dst_factor, true),
+         RGBA(func, PIPE_BLEND_SUBTRACT),
+         RGBA(src_factor, PIPE_BLENDFACTOR_ONE),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_ONE),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -139,10 +134,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xF,
 
-         RGBA(func, BLEND_FUNC_SUBTRACT),
-         RGBA(src_factor, BLEND_FACTOR_SRC_ALPHA),
-         RGBA(dst_factor, BLEND_FACTOR_ZERO),
-         RGBA(invert_dst_factor, true),
+         RGBA(func, PIPE_BLEND_SUBTRACT),
+         RGBA(src_factor, PIPE_BLENDFACTOR_SRC_ALPHA),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_ONE),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -158,9 +152,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xF,
 
-         RGBA(func, BLEND_FUNC_ADD),
-         RGBA(src_factor, BLEND_FACTOR_ZERO),
-         RGBA(dst_factor, BLEND_FACTOR_SRC_COLOR),
+         RGBA(func, PIPE_BLEND_ADD),
+         RGBA(src_factor, PIPE_BLENDFACTOR_ZERO),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_SRC_COLOR),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -190,9 +184,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xA,
 
-         RGBA(func, BLEND_FUNC_ADD),
-         RGBA(src_factor, BLEND_FACTOR_ZERO),
-         RGBA(dst_factor, BLEND_FACTOR_SRC_COLOR),
+         RGBA(func, PIPE_BLEND_ADD),
+         RGBA(src_factor, PIPE_BLENDFACTOR_ZERO),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_SRC_COLOR),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -208,9 +202,9 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xF,
 
-         RGBA(func, BLEND_FUNC_ADD),
-         RGBA(src_factor, BLEND_FACTOR_DST_COLOR),
-         RGBA(dst_factor, BLEND_FACTOR_SRC_COLOR),
+         RGBA(func, PIPE_BLEND_ADD),
+         RGBA(src_factor, PIPE_BLENDFACTOR_DST_COLOR),
+         RGBA(dst_factor, PIPE_BLENDFACTOR_SRC_COLOR),
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -226,14 +220,13 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xC,
 
-         .rgb_func = BLEND_FUNC_ADD,
-         .rgb_src_factor = BLEND_FACTOR_ZERO,
-         .rgb_invert_src_factor = true,
-         .rgb_dst_factor= BLEND_FACTOR_ZERO,
+         .rgb_func = PIPE_BLEND_ADD,
+         .rgb_src_factor = PIPE_BLENDFACTOR_ONE,
+         .rgb_dst_factor= PIPE_BLENDFACTOR_ZERO,
 
-         .alpha_func = BLEND_FUNC_ADD,
-         .alpha_src_factor = BLEND_FACTOR_DST_COLOR,
-         .alpha_dst_factor= BLEND_FACTOR_SRC_COLOR,
+         .alpha_func = PIPE_BLEND_ADD,
+         .alpha_src_factor = PIPE_BLENDFACTOR_DST_COLOR,
+         .alpha_dst_factor= PIPE_BLENDFACTOR_SRC_COLOR,
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -249,14 +242,13 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xC,
 
-         .rgb_func = BLEND_FUNC_ADD,
-         .rgb_src_factor = BLEND_FACTOR_ZERO,
-         .rgb_invert_src_factor = true,
-         .rgb_dst_factor= BLEND_FACTOR_ZERO,
+         .rgb_func = PIPE_BLEND_ADD,
+         .rgb_src_factor = PIPE_BLENDFACTOR_ONE,
+         .rgb_dst_factor = PIPE_BLENDFACTOR_ZERO,
 
-         .alpha_func = BLEND_FUNC_ADD,
-         .alpha_src_factor = BLEND_FACTOR_DST_ALPHA,
-         .alpha_dst_factor= BLEND_FACTOR_SRC_COLOR,
+         .alpha_func = PIPE_BLEND_ADD,
+         .alpha_src_factor = PIPE_BLENDFACTOR_DST_ALPHA,
+         .alpha_dst_factor= PIPE_BLENDFACTOR_SRC_COLOR,
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -272,14 +264,13 @@ static const struct test blend_tests[] = {
          .blend_enable = true,
          .color_mask = 0xC,
 
-         .rgb_func = BLEND_FUNC_ADD,
-         .rgb_src_factor = BLEND_FACTOR_ZERO,
-         .rgb_invert_src_factor = true,
-         .rgb_dst_factor= BLEND_FACTOR_ZERO,
+         .rgb_func = PIPE_BLEND_ADD,
+         .rgb_src_factor = PIPE_BLENDFACTOR_ONE,
+         .rgb_dst_factor = PIPE_BLENDFACTOR_ZERO,
 
-         .alpha_func = BLEND_FUNC_ADD,
-         .alpha_src_factor = BLEND_FACTOR_DST_ALPHA,
-         .alpha_dst_factor= BLEND_FACTOR_SRC_ALPHA,
+         .alpha_func = PIPE_BLEND_ADD,
+         .alpha_src_factor = PIPE_BLENDFACTOR_DST_ALPHA,
+         .alpha_dst_factor= PIPE_BLENDFACTOR_SRC_ALPHA,
       },
       .constant_mask = 0x0,
       .reads_dest = true,
@@ -290,18 +281,21 @@ static const struct test blend_tests[] = {
       .hardware = 0xC0431132 /* 0 + dest * (2*src); equivalent 0xC0431122 */
    }
 };
+/* clang-format on */
 
-#define ASSERT_EQ(x, y) do { \
-   if (x == y) { \
-      nr_pass++; \
-   } else { \
-      nr_fail++; \
-      fprintf(stderr, "%s: Assertion failed %s (%x) != %s (%x)\n", \
-            T.label, #x, x, #y, y); \
-   } \
-} while(0)
+#define ASSERT_EQ(x, y)                                                        \
+   do {                                                                        \
+      if (x == y) {                                                            \
+         nr_pass++;                                                            \
+      } else {                                                                 \
+         nr_fail++;                                                            \
+         fprintf(stderr, "%s: Assertion failed %s (%x) != %s (%x)\n", T.label, \
+                 #x, x, #y, y);                                                \
+      }                                                                        \
+   } while (0)
 
-int main(int argc, const char **argv)
+int
+main(int argc, const char **argv)
 {
    unsigned nr_pass = 0, nr_fail = 0;
 

@@ -31,18 +31,19 @@
 
 struct dd_function_table;
 
-extern void
-st_init_eglimage_functions(struct dd_function_table *functions,
-                           bool has_egl_image_validate);
+bool
+st_validate_egl_image(struct gl_context *ctx, GLeglImageOES image_handle);
 
-void st_egl_image_target_texture_2d(struct gl_context *ctx, GLenum target,
-                                    struct gl_texture_object *texObj,
-                                    struct gl_texture_image *texImage,
-                                    GLeglImageOES image_handle);
-void st_egl_image_target_tex_storage(struct gl_context *ctx, GLenum target,
-                                     struct gl_texture_object *texObj,
-                                     struct gl_texture_image *texImage,
-                                     GLeglImageOES image_handle);
+bool st_get_egl_image(struct gl_context *ctx, GLeglImageOES image_handle,
+                      unsigned usage, bool tex_compression, const char *error,
+                      struct st_egl_image *out, bool *native_supported);
+void st_bind_egl_image(struct gl_context *ctx,
+                       struct gl_texture_object *texObj,
+                       struct gl_texture_image *texImage,
+                       struct st_egl_image *stimg,
+                       bool tex_storage,
+                       bool native_supported);
+
 void st_egl_image_target_renderbuffer_storage(struct gl_context *ctx,
                                               struct gl_renderbuffer *rb,
                                               GLeglImageOES image_handle);

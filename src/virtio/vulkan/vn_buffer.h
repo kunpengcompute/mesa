@@ -18,21 +18,30 @@ struct vn_buffer_memory_requirements {
    VkMemoryDedicatedRequirements dedicated;
 };
 
-struct vn_buffer_cache_entry {
-   const VkBufferCreateInfo *create_info;
-
+struct vn_buffer_reqs_cache_entry {
    struct vn_buffer_memory_requirements requirements;
+   atomic_bool valid;
 };
 
-struct vn_buffer_cache {
+struct vn_buffer_reqs_cache {
+   uint64_t max_buffer_size;
+   uint32_t queue_family_count;
+
    /* cache memory type requirement for AHB backed VkBuffer */
    uint32_t ahb_mem_type_bits;
+   atomic_bool ahb_mem_type_bits_valid;
 
-   uint64_t max_buffer_size;
+   /* lazily cache memory requirements for native buffer infos */
+   struct util_sparse_array entries;
 
-   /* cache memory requirements for common native buffer infos */
-   struct vn_buffer_cache_entry *entries;
-   uint32_t entry_count;
+   /* protect both entries and ahb_mem_type_bits */
+   simple_mtx_t mutex;
+
+   struct {
+      uint32_t cache_skip_count;
+      uint32_t cache_hit_count;
+      uint32_t cache_miss_count;
+   } debug;
 };
 
 struct vn_buffer {
@@ -59,10 +68,10 @@ vn_buffer_create(struct vn_device *dev,
                  const VkAllocationCallbacks *alloc,
                  struct vn_buffer **out_buf);
 
-VkResult
-vn_buffer_cache_init(struct vn_device *dev);
+void
+vn_buffer_reqs_cache_init(struct vn_device *dev);
 
 void
-vn_buffer_cache_fini(struct vn_device *dev);
+vn_buffer_reqs_cache_fini(struct vn_device *dev);
 
 #endif /* VN_BUFFER_H */

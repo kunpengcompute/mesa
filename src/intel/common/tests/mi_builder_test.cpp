@@ -24,10 +24,15 @@
 #include <fcntl.h>
 #include <string.h>
 #include <xf86drm.h>
+#include <sys/mman.h>
 
 #include <gtest/gtest.h>
 
+#include "c99_compat.h"
+#include "common/intel_gem.h"
 #include "dev/intel_device_info.h"
+#include "intel_gem.h"
+#include "isl/isl.h"
 #include "drm-uapi/i915_drm.h"
 #include "genxml/gen_macros.h"
 #include "util/macros.h"
@@ -47,6 +52,7 @@ uint64_t __gen_combine_address(mi_builder_test *test, void *location,
 void * __gen_get_batch_dwords(mi_builder_test *test, unsigned num_dwords);
 struct address __gen_get_batch_address(mi_builder_test *test,
                                        void *location);
+bool *__gen_get_write_fencing_status(mi_builder_test *test);
 
 struct address
 __gen_address_offset(address addr, uint64_t offset)
@@ -63,6 +69,8 @@ __gen_address_offset(address addr, uint64_t offset)
 #define MI_BUILDER_NUM_ALLOC_GPRS 15
 #define INPUT_DATA_OFFSET 0
 #define OUTPUT_DATA_OFFSET 2048
+
+#define MI_BUILDER_CAN_WRITE_BATCH GFX_VER >= 8
 
 #define __genxml_cmd_length(cmd) cmd ## _length
 #define __genxml_cmd_length_bias(cmd) cmd ## _length_bias
@@ -127,7 +135,7 @@ public:
    }
 
    int fd;
-   int ctx_id;
+   uint32_t ctx_id;
    intel_device_info devinfo;
 
    uint32_t batch_bo_handle;
@@ -149,6 +157,8 @@ public:
    char *input;
    char *output;
    uint64_t canary;
+
+   bool write_fence_status;
 
    mi_builder b;
 };
@@ -187,13 +197,10 @@ mi_builder_test::SetUp()
           * --device option with it.
           */
          int device_id;
-         drm_i915_getparam getparam = drm_i915_getparam();
-         getparam.param = I915_PARAM_CHIPSET_ID;
-         getparam.value = &device_id;
-         ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GETPARAM,
-                            (void *)&getparam), 0) << strerror(errno);
+         ASSERT_TRUE(intel_gem_get_param(fd, I915_PARAM_CHIPSET_ID, &device_id))
+               << strerror(errno);
 
-         ASSERT_TRUE(intel_get_device_info_from_pci_id(device_id, &devinfo));
+         ASSERT_TRUE(intel_get_device_info_from_fd(fd, &devinfo, -1, -1));
          if (devinfo.ver != GFX_VER ||
              (devinfo.platform == INTEL_PLATFORM_HSW) != (GFX_VERx10 == 75)) {
             close(fd);
@@ -208,19 +215,13 @@ mi_builder_test::SetUp()
    }
    ASSERT_TRUE(i < max_devices) << "Failed to find a DRM device";
 
-   drm_i915_gem_context_create ctx_create = drm_i915_gem_context_create();
-   ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_CONTEXT_CREATE,
-                      (void *)&ctx_create), 0) << strerror(errno);
-   ctx_id = ctx_create.ctx_id;
+   ASSERT_TRUE(intel_gem_create_context(fd, &ctx_id)) << strerror(errno);
 
    if (GFX_VER >= 8) {
       /* On gfx8+, we require softpin */
       int has_softpin;
-      drm_i915_getparam getparam = drm_i915_getparam();
-      getparam.param = I915_PARAM_HAS_EXEC_SOFTPIN;
-      getparam.value = &has_softpin;
-      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GETPARAM,
-                         (void *)&getparam), 0) << strerror(errno);
+      ASSERT_TRUE(intel_gem_get_param(fd, I915_PARAM_HAS_EXEC_SOFTPIN, &has_softpin))
+            << strerror(errno);
       ASSERT_TRUE(has_softpin);
    }
 
@@ -234,20 +235,36 @@ mi_builder_test::SetUp()
    batch_bo_addr = 0xffffffffdff70000ULL;
 #endif
 
-   drm_i915_gem_caching gem_caching = drm_i915_gem_caching();
-   gem_caching.handle = batch_bo_handle;
-   gem_caching.caching = I915_CACHING_CACHED;
-   ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_SET_CACHING,
-                      (void *)&gem_caching), 0) << strerror(errno);
+   if (devinfo.has_caching_uapi) {
+      drm_i915_gem_caching gem_caching = drm_i915_gem_caching();
+      gem_caching.handle = batch_bo_handle;
+      gem_caching.caching = I915_CACHING_CACHED;
+      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_SET_CACHING,
+                         (void *)&gem_caching), 0) << strerror(errno);
+   }
 
-   drm_i915_gem_mmap gem_mmap = drm_i915_gem_mmap();
-   gem_mmap.handle = batch_bo_handle;
-   gem_mmap.offset = 0;
-   gem_mmap.size = BATCH_BO_SIZE;
-   gem_mmap.flags = 0;
-   ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_MMAP,
+   if (devinfo.has_mmap_offset) {
+      drm_i915_gem_mmap_offset gem_mmap_offset = drm_i915_gem_mmap_offset();
+      gem_mmap_offset.handle = batch_bo_handle;
+      gem_mmap_offset.flags = devinfo.has_local_mem ?
+                              I915_MMAP_OFFSET_FIXED :
+                              I915_MMAP_OFFSET_WC;
+      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET,
+                         &gem_mmap_offset), 0) << strerror(errno);
+
+      batch_map = mmap(NULL, BATCH_BO_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+                       fd, gem_mmap_offset.offset);
+      ASSERT_NE(batch_map, MAP_FAILED) << strerror(errno);
+   } else {
+      drm_i915_gem_mmap gem_mmap = drm_i915_gem_mmap();
+      gem_mmap.handle = batch_bo_handle;
+      gem_mmap.offset = 0;
+      gem_mmap.size = BATCH_BO_SIZE;
+      gem_mmap.flags = 0;
+      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_MMAP,
                       (void *)&gem_mmap), 0) << strerror(errno);
-   batch_map = (void *)(uintptr_t)gem_mmap.addr_ptr;
+      batch_map = (void *)(uintptr_t)gem_mmap.addr_ptr;
+   }
 
    // Start the batch at zero
    batch_offset = 0;
@@ -262,20 +279,37 @@ mi_builder_test::SetUp()
    data_bo_addr = 0xffffffffefff0000ULL;
 #endif
 
-   gem_caching = drm_i915_gem_caching();
-   gem_caching.handle = data_bo_handle;
-   gem_caching.caching = I915_CACHING_CACHED;
-   ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_SET_CACHING,
-                      (void *)&gem_caching), 0) << strerror(errno);
+   if (devinfo.has_caching_uapi) {
+      drm_i915_gem_caching gem_caching = drm_i915_gem_caching();
+      gem_caching.handle = data_bo_handle;
+      gem_caching.caching = I915_CACHING_CACHED;
+      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_SET_CACHING,
+                         (void *)&gem_caching), 0) << strerror(errno);
+   }
 
-   gem_mmap = drm_i915_gem_mmap();
-   gem_mmap.handle = data_bo_handle;
-   gem_mmap.offset = 0;
-   gem_mmap.size = DATA_BO_SIZE;
-   gem_mmap.flags = 0;
-   ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_MMAP,
-                      (void *)&gem_mmap), 0) << strerror(errno);
-   data_map = (void *)(uintptr_t)gem_mmap.addr_ptr;
+   if (devinfo.has_mmap_offset) {
+      drm_i915_gem_mmap_offset gem_mmap_offset = drm_i915_gem_mmap_offset();
+      gem_mmap_offset.handle = data_bo_handle;
+      gem_mmap_offset.flags = devinfo.has_local_mem ?
+                              I915_MMAP_OFFSET_FIXED :
+                              I915_MMAP_OFFSET_WC;
+      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_MMAP_OFFSET,
+                         &gem_mmap_offset), 0) << strerror(errno);
+
+      data_map = mmap(NULL, DATA_BO_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED,
+                      fd, gem_mmap_offset.offset);
+      ASSERT_NE(data_map, MAP_FAILED) << strerror(errno);
+   } else {
+      drm_i915_gem_mmap gem_mmap = drm_i915_gem_mmap();
+      gem_mmap.handle = data_bo_handle;
+      gem_mmap.offset = 0;
+      gem_mmap.size = DATA_BO_SIZE;
+      gem_mmap.flags = 0;
+      ASSERT_EQ(drmIoctl(fd, DRM_IOCTL_I915_GEM_MMAP,
+                         (void *)&gem_mmap), 0) << strerror(errno);
+      data_map = (void *)(uintptr_t)gem_mmap.addr_ptr;
+   }
+
    input = (char *)data_map + INPUT_DATA_OFFSET;
    output = (char *)data_map + OUTPUT_DATA_OFFSET;
 
@@ -283,7 +317,13 @@ mi_builder_test::SetUp()
    memset(data_map, 139, DATA_BO_SIZE);
    memset(&canary, 139, sizeof(canary));
 
+   write_fence_status = false;
+
+   struct isl_device isl_dev;
+   isl_device_init(&isl_dev, &devinfo);
    mi_builder_init(&b, &devinfo, this);
+   const uint32_t mocs = isl_mocs(&isl_dev, 0, false);
+   mi_builder_set_mocs(&b, mocs);
 }
 
 void *
@@ -370,6 +410,12 @@ __gen_combine_address(mi_builder_test *test, void *location,
 
    return reloc.delta;
 #endif
+}
+
+bool *
+__gen_get_write_fencing_status(mi_builder_test *test)
+{
+   return &test->write_fence_status;
 }
 
 void *
@@ -602,7 +648,7 @@ TEST_F(mi_builder_test, add_imm)
    mi_store(&b, out_mem64(88),
                 mi_iadd(&b, mi_inot(&b, mi_imm(add)), in_mem64(0)));
 
-   // And som add_imm just for good measure
+   // And some add_imm just for good measure
    mi_store(&b, out_mem64(96), mi_iadd_imm(&b, in_mem64(0), 0));
    mi_store(&b, out_mem64(104), mi_iadd_imm(&b, in_mem64(0), add));
 
@@ -708,6 +754,58 @@ TEST_F(mi_builder_test, iand)
    EXPECT_EQ_IMM(*(uint64_t *)output, mi_iand(&b, mi_imm(values[0]),
                                                   mi_imm(values[1])));
 }
+
+#if GFX_VER >= 8
+TEST_F(mi_builder_test, imm_mem_relocated)
+{
+   const uint64_t value = 0x0123456789abcdef;
+
+   struct mi_reloc_imm_token r0 = mi_store_relocated_imm(&b, out_mem64(0));
+   struct mi_reloc_imm_token r1 = mi_store_relocated_imm(&b, out_mem32(8));
+
+   mi_relocate_store_imm(r0, value);
+   mi_relocate_store_imm(r1, value);
+
+   submit_batch();
+
+   // 64 -> 64
+   EXPECT_EQ(*(uint64_t *)(output + 0),  value);
+
+   // 64 -> 32
+   EXPECT_EQ(*(uint32_t *)(output + 8),  (uint32_t)value);
+   EXPECT_EQ(*(uint32_t *)(output + 12), (uint32_t)canary);
+}
+
+TEST_F(mi_builder_test, imm_reg_relocated)
+{
+   const uint64_t value = 0x0123456789abcdef;
+
+   struct mi_reloc_imm_token r0, r1;
+
+   r0 = mi_store_relocated_imm(&b, mi_reg64(RSVD_TEMP_REG));
+   r1 = mi_store_relocated_imm(&b, mi_reg64(RSVD_TEMP_REG));
+   mi_store(&b, out_mem64(0), mi_reg64(RSVD_TEMP_REG));
+
+   mi_relocate_store_imm(r0, canary);
+   mi_relocate_store_imm(r1, value);
+
+   r0 = mi_store_relocated_imm(&b, mi_reg64(RSVD_TEMP_REG));
+   r1 = mi_store_relocated_imm(&b, mi_reg32(RSVD_TEMP_REG));
+   mi_store(&b, out_mem64(8), mi_reg64(RSVD_TEMP_REG));
+
+   mi_relocate_store_imm(r0, canary);
+   mi_relocate_store_imm(r1, value);
+
+   submit_batch();
+
+   // 64 -> 64
+   EXPECT_EQ(*(uint64_t *)(output + 0),  value);
+
+   // 64 -> 32
+   EXPECT_EQ(*(uint32_t *)(output + 8),  (uint32_t)value);
+   EXPECT_EQ(*(uint32_t *)(output + 12), (uint32_t)canary);
+}
+#endif // GFX_VER >= 8
 
 #if GFX_VERx10 >= 125
 TEST_F(mi_builder_test, ishl)
@@ -1018,8 +1116,12 @@ TEST_F(mi_builder_test, store_mem64_offset)
       EXPECT_EQ(*(uint64_t *)(output + offsets[i]), values[i]);
 }
 
+#endif /* GFX_VERx10 >= 125 */
+
+#if GFX_VER >= 9
+
 /*
- * Control-flow tests.  Only available on XE_HP+
+ * Control-flow tests.  Only available on Gfx9+
  */
 
 TEST_F(mi_builder_test, goto)
@@ -1181,4 +1283,4 @@ TEST_F(mi_builder_test, loop_continue_if)
    EXPECT_EQ(*(uint64_t *)(output + 0), loop_count);
    EXPECT_EQ(*(uint64_t *)(output + 8), 10);
 }
-#endif /* GFX_VERx10 >= 125 */
+#endif /* GFX_VER >= 9 */

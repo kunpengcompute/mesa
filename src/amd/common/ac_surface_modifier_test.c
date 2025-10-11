@@ -66,9 +66,9 @@ block_count(unsigned w, unsigned h, unsigned elem_bits, unsigned block_bits,
 
 
 static ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT
-get_addr_from_coord_base(ADDR_HANDLE addrlib, const struct radeon_surf *surf,
-                         unsigned w, unsigned h, enum pipe_format format,
-                         bool rb_aligned, bool pipe_aligned)
+gfx9_get_addr_from_coord_base(ADDR_HANDLE addrlib, const struct radeon_surf *surf,
+                              unsigned w, unsigned h, enum pipe_format format,
+                              bool rb_aligned, bool pipe_aligned)
 {
    ADDR2_COMPUTE_DCCINFO_INPUT din = {0};
    ADDR2_COMPUTE_DCCINFO_OUTPUT dout = {0};
@@ -111,10 +111,9 @@ get_addr_from_coord_base(ADDR_HANDLE addrlib, const struct radeon_surf *surf,
    return dcc_input;
 }
 
-static
-void generate_hash(struct ac_addrlib *ac_addrlib,
-                   struct test_entry *entry,
-                   const struct radeon_surf *surf)
+static void gfx9_generate_hash(struct ac_addrlib *ac_addrlib,
+                               struct test_entry *entry,
+                               const struct radeon_surf *surf)
 {
    ADDR_HANDLE addrlib = ac_addrlib_get_handle(ac_addrlib);
 
@@ -143,17 +142,17 @@ void generate_hash(struct ac_addrlib *ac_addrlib,
 
    ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT dcc_input = {0};
    if (surf->meta_offset) {
-      dcc_input = get_addr_from_coord_base(addrlib, surf, entry->w,
-                                           entry->h, entry->format,
-                                           surf->u.gfx9.color.dcc.rb_aligned,
-                                           surf->u.gfx9.color.dcc.pipe_aligned);
+      dcc_input = gfx9_get_addr_from_coord_base(addrlib, surf, entry->w,
+                                                entry->h, entry->format,
+                                                surf->u.gfx9.color.dcc.rb_aligned,
+                                                surf->u.gfx9.color.dcc.pipe_aligned);
    }
 
    ADDR2_COMPUTE_DCC_ADDRFROMCOORD_INPUT display_dcc_input = {0};
    if (surf->display_dcc_offset) {
-      display_dcc_input = get_addr_from_coord_base(addrlib, surf, entry->w,
-                                                   entry->h, entry->format,
-                                                   false, false);
+      display_dcc_input = gfx9_get_addr_from_coord_base(addrlib, surf, entry->w,
+                                                        entry->h, entry->format,
+                                                        false, false);
    }
 
    for (unsigned i = 0; i < 1000; ++i) {
@@ -202,11 +201,62 @@ void generate_hash(struct ac_addrlib *ac_addrlib,
    _mesa_sha1_final(&ctx, entry->hash);
 }
 
+static void gfx12_generate_hash(struct ac_addrlib *ac_addrlib,
+                                struct test_entry *entry,
+                                const struct radeon_surf *surf)
+{
+   ADDR_HANDLE addrlib = ac_addrlib_get_handle(ac_addrlib);
+
+   srandom(53);
+   struct mesa_sha1 ctx;
+   _mesa_sha1_init(&ctx);
+
+   _mesa_sha1_update(&ctx, &surf->total_size, sizeof(surf->total_size));
+   /* We need to hash these even though they are not used by gfx12. */
+   _mesa_sha1_update(&ctx, &surf->meta_offset, sizeof(surf->meta_offset));
+   _mesa_sha1_update(&ctx, &surf->display_dcc_offset, sizeof(surf->display_dcc_offset));
+   _mesa_sha1_update(&ctx, &surf->u.gfx9.color.display_dcc_pitch_max,
+                     sizeof(surf->u.gfx9.color.display_dcc_pitch_max));
+
+   ADDR3_COMPUTE_SURFACE_ADDRFROMCOORD_INPUT input = {0};
+   input.size = sizeof(input);
+   input.swizzleMode = surf->u.gfx9.swizzle_mode;
+   input.flags.color = 1;
+   input.flags.texture = 1;
+   input.resourceType = ADDR_RSRC_TEX_2D;
+   input.bpp = util_format_get_blocksizebits(entry->format);
+   input.unAlignedDims.width = entry->w;
+   input.unAlignedDims.height = entry->h;
+   input.unAlignedDims.depth = 1;
+   input.numMipLevels = 1;
+   input.numSamples = 1;
+   input.pitchInElement = surf->u.gfx9.surf_pitch;
+
+   for (unsigned i = 0; i < 1000; ++i) {
+      int32_t x, y;
+      x = random();
+      y = random();
+
+      input.x = (x & INT_MAX) % entry->w;
+      input.y = (y & INT_MAX) % entry->h;
+
+      ADDR3_COMPUTE_SURFACE_ADDRFROMCOORD_OUTPUT output = {0};
+      output.size = sizeof(output);
+
+      ADDR_E_RETURNCODE ret = Addr3ComputeSurfaceAddrFromCoord(addrlib, &input, &output);
+      assert(ret == ADDR_OK);
+
+      _mesa_sha1_update(&ctx, &output.addr, sizeof(output.addr));
+   }
+
+   _mesa_sha1_final(&ctx, entry->hash);
+}
+
 static void test_modifier(const struct radeon_info *info,
-           const char *name,
+                          const char *name,
                           struct ac_addrlib *addrlib,
                           uint64_t modifier,
-           enum pipe_format format,
+                          enum pipe_format format,
                           struct u_vector *test_entries)
 {
    unsigned elem_bits = util_logbase2(util_format_get_blocksize(format));
@@ -241,7 +291,7 @@ static void test_modifier(const struct radeon_info *info,
          .rb = G_0098F8_NUM_RB_PER_SE(info->gb_addr_config) +
                G_0098F8_NUM_SHADER_ENGINES_GFX9(info->gb_addr_config),
          .se = G_0098F8_NUM_SHADER_ENGINES_GFX9(info->gb_addr_config),
-         .banks_or_pkrs = info->chip_class >= GFX10 ?
+         .banks_or_pkrs = info->gfx_level >= GFX10 ?
             G_0098F8_NUM_PKRS(info->gb_addr_config) : G_0098F8_NUM_BANKS(info->gb_addr_config)
       };
 
@@ -261,15 +311,26 @@ static void test_modifier(const struct radeon_info *info,
       uint64_t surf_size;
       unsigned aligned_pitch, aligned_height;
       if (modifier != DRM_FORMAT_MOD_LINEAR) {
-         surf_size = block_count(dims[i][0], dims[i][1],
-                  elem_bits, 16, &aligned_pitch,
-                  &aligned_height) << 16;
-      } else {
-         aligned_pitch = align(dims[i][0], 256 / util_format_get_blocksize(format));
-         aligned_height = dims[i][1];
-         surf_size = align(dims[i][0] * util_format_get_blocksize(format), 256) * dims[i][1];
-      }
+         unsigned block_size_bits;
 
+         if (info->gfx_level >= GFX12) {
+            assert(surf.u.gfx9.swizzle_mode == ADDR3_64KB_2D ||
+                   surf.u.gfx9.swizzle_mode == ADDR3_256B_2D);
+            block_size_bits = (surf.u.gfx9.swizzle_mode == ADDR3_256B_2D) ? 8 : 16;
+         } else {
+            block_size_bits = surf.u.gfx9.swizzle_mode >= ADDR_SW_256KB_Z_X ? 18 : 16;
+         }
+
+         surf_size = block_count(dims[i][0], dims[i][1],
+                  elem_bits, block_size_bits, &aligned_pitch,
+                  &aligned_height) << block_size_bits;
+      } else {
+         unsigned alignment = 256;
+
+         aligned_pitch = align(dims[i][0], alignment / util_format_get_blocksize(format));
+         aligned_height = dims[i][1];
+         surf_size = align(dims[i][0] * util_format_get_blocksize(format), alignment) * dims[i][1];
+      }
 
       assert(surf.u.gfx9.surf_pitch == aligned_pitch);
       assert(surf.u.gfx9.surf_height == aligned_height);
@@ -277,7 +338,7 @@ static void test_modifier(const struct radeon_info *info,
       uint64_t expected_offset = surf_size;
 
       if (ac_modifier_has_dcc_retile(modifier)) {
-         unsigned dcc_align = info->chip_class >= GFX10 ? 4096 : 65536;
+         unsigned dcc_align = info->gfx_level >= GFX10 ? 4096 : 65536;
          unsigned dcc_pitch;
          uint64_t dcc_size = block_count(dims[i][0], dims[i][1],
                      elem_bits, 20, &dcc_pitch,
@@ -291,12 +352,12 @@ static void test_modifier(const struct radeon_info *info,
       } else
          assert(!surf.display_dcc_offset);
 
-      if (ac_modifier_has_dcc(modifier)) {
+      if (info->gfx_level < GFX12 && ac_modifier_has_dcc(modifier)) {
          uint64_t dcc_align = 1;
          unsigned block_bits;
-         if (info->chip_class >= GFX10) {
+         if (info->gfx_level >= GFX10) {
             unsigned num_pipes = G_0098F8_NUM_PIPES(info->gb_addr_config);
-            if (info->chip_class == GFX10_3 &&
+            if (info->gfx_level >= GFX10_3 &&
                 G_0098F8_NUM_PKRS(info->gb_addr_config) == num_pipes && num_pipes > 1)
                ++num_pipes;
             block_bits = 16 +
@@ -329,10 +390,13 @@ static void test_modifier(const struct radeon_info *info,
 
       assert(surf.total_size == expected_offset);
 
-      generate_hash(addrlib, &entry, &surf);
+      if (info->gfx_level >= GFX12)
+         gfx12_generate_hash(addrlib, &entry, &surf);
+      else
+         gfx9_generate_hash(addrlib, &entry, &surf);
+
       *(struct test_entry*)u_vector_add(test_entries) = entry;
    }
-
 }
 
 static void run_modifier_test(struct u_vector *test_entries, const char *name,
@@ -388,8 +452,8 @@ static bool test_entry_value_equal(const struct test_entry *a, const struct test
 
 static void print_test_entry(const struct test_entry *e)
 {
-   printf("%.16" PRIx64 " %.4d %.4d %.2d %s %d %d %d %d\n", e->modifier, e->w, e->h,
-          util_format_get_blocksize(e->format), e->name, e->pipes, e->rb, e->se, e->banks_or_pkrs);
+   fprintf(stderr, "%.16" PRIx64 " %.4d %.4d %.2d %s %d %d %d %d\n", e->modifier, e->w, e->h,
+           util_format_get_blocksize(e->format), e->name, e->pipes, e->rb, e->se, e->banks_or_pkrs);
 }
 
 int main()

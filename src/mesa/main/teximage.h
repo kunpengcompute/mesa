@@ -139,7 +139,10 @@ _mesa_init_teximage_fields_ms(struct gl_context *ctx,
                               GLuint numSamples,
                               GLboolean fixedSampleLocations);
 
-
+void
+_mesa_update_teximage_format_swizzle(struct gl_context *ctx,
+                                     struct gl_texture_image *img,
+                                     GLenum depth_mode);
 extern mesa_format
 _mesa_choose_texture_format(struct gl_context *ctx,
                             struct gl_texture_object *texObj,
@@ -171,10 +174,11 @@ _mesa_get_texbuffer_format(const struct gl_context *ctx, GLenum internalFormat);
 /**
  * Return the base-level texture image for the given texture object.
  */
-static inline const struct gl_texture_image *
+static inline struct gl_texture_image *
 _mesa_base_tex_image(const struct gl_texture_object *texObj)
 {
-   return texObj->Image[0][texObj->Attrib.BaseLevel];
+   int base_level = MIN2(texObj->Attrib.BaseLevel, MAX_TEXTURE_LEVELS - 1);
+   return texObj->Image[0][base_level];
 }
 
 

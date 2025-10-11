@@ -1,27 +1,7 @@
 /*
  * Copyright © 2014 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining
- * a copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
- * OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDERS, AUTHORS
- * AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
- * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "radeon_drm_winsys.h"
@@ -50,14 +30,14 @@ static void set_micro_tile_mode(struct radeon_surf *surf,
 {
    uint32_t tile_mode;
 
-   if (info->chip_class < GFX6) {
+   if (info->gfx_level < GFX6) {
       surf->micro_tile_mode = 0;
       return;
    }
 
    tile_mode = info->si_tile_mode_array[surf->u.legacy.tiling_index[0]];
 
-   if (info->chip_class >= GFX7)
+   if (info->gfx_level >= GFX7)
       surf->micro_tile_mode = G_009910_MICRO_TILE_MODE_NEW(tile_mode);
    else
       surf->micro_tile_mode = G_009910_MICRO_TILE_MODE(tile_mode);
@@ -231,7 +211,7 @@ static void si_compute_cmask(const struct radeon_info *info,
    if (surf->flags & RADEON_SURF_Z_OR_SBUFFER)
       return;
 
-   assert(info->chip_class <= GFX8);
+   assert(info->gfx_level <= GFX8);
 
    switch (num_pipes) {
    case 2:
@@ -293,10 +273,6 @@ static void si_compute_htile(const struct radeon_info *info,
        surf->flags & RADEON_SURF_NO_HTILE)
       return;
 
-   if (surf->u.legacy.level[0].mode == RADEON_SURF_MODE_1D &&
-       !info->htile_cmask_support_1d_tiling)
-      return;
-
    /* Overalign HTILE on P2 configs to work around GPU hangs in
      * piglit/depthstencil-render-miplevels 585.
      *
@@ -304,7 +280,7 @@ static void si_compute_htile(const struct radeon_info *info,
      * are always reproducible. I think I have seen the test hang
      * on Carrizo too, though it was very rare there.
      */
-   if (info->chip_class >= GFX7 && num_pipes < 4)
+   if (info->gfx_level >= GFX7 && num_pipes < 4)
       num_pipes = 4;
 
    switch (num_pipes) {
@@ -347,6 +323,7 @@ static void si_compute_htile(const struct radeon_info *info,
 }
 
 static int radeon_winsys_surface_init(struct radeon_winsys *rws,
+                                      const struct radeon_info *info,
                                       const struct pipe_resource *tex,
                                       uint64_t flags, unsigned bpe,
                                       enum radeon_surf_mode mode,
@@ -395,7 +372,7 @@ static int radeon_winsys_surface_init(struct radeon_winsys *rws,
          return -1;
       }
 
-      if (radeon_winsys_surface_init(rws, &templ, fmask_flags, bpe,
+      if (radeon_winsys_surface_init(rws, info, &templ, fmask_flags, bpe,
                                      RADEON_SURF_MODE_2D, &fmask)) {
          fprintf(stderr, "Got error in surface_init while allocating FMASK.\n");
          return -1;
@@ -428,6 +405,9 @@ static int radeon_winsys_surface_init(struct radeon_winsys *rws,
       config.info.array_size = tex->array_size;
       config.is_3d = !!(tex->target == PIPE_TEXTURE_3D);
       config.is_cube = !!(tex->target == PIPE_TEXTURE_CUBE);
+      config.is_array = tex->target == PIPE_TEXTURE_1D_ARRAY ||
+                        tex->target == PIPE_TEXTURE_2D_ARRAY ||
+                        tex->target == PIPE_TEXTURE_CUBE_ARRAY;
 
       si_compute_cmask(&ws->info, &config, surf_ws);
    }

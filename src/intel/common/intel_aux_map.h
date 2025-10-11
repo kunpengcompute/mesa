@@ -43,18 +43,51 @@ extern "C" {
 struct intel_aux_map_context;
 struct intel_device_info;
 
-#define INTEL_AUX_MAP_ADDRESS_MASK       0x0000ffffffffff00ull
-#define INTEL_AUX_MAP_FORMAT_BITS_MASK   0xfff0000000000000ull
 #define INTEL_AUX_MAP_ENTRY_VALID_BIT    0x1ull
-#define INTEL_AUX_MAP_GFX12_CCS_SCALE    256
-#define INTEL_AUX_MAP_MAIN_PAGE_SIZE     (64 * 1024)
-#define INTEL_AUX_MAP_AUX_PAGE_SIZE \
-   (INTEL_AUX_MAP_MAIN_PAGE_SIZE / INTEL_AUX_MAP_GFX12_CCS_SCALE)
+
+/**
+ * The ratio between the granularity of main surface pitch and AUX data pitch
+ * (when viewed as a surface).
+ *
+ * In agreement with Bspec 44930, the kernel expects that every 512B of the
+ * main surface pitch maps to 64B of the AUX data pitch. This is not
+ * documented in drm_fourcc.h.
+ */
+#define INTEL_AUX_MAP_MAIN_PITCH_SCALEDOWN (512 / 64)
+
+/**
+ * The ratio between the granularity of main surface and AUX data.
+ *
+ * The value is from Bspec 47709, MCS/CCS Buffers for Render Target(s):
+ *
+ *    "CCS is a linear buffer created for storing meta-data (AUX data) for
+ *    lossless compression. This buffer related information is mentioned in
+ *    Render Surface State. CCS buffer's size is based on the padded main
+ *    surface (after following Halign and Valign requirements mentioned in the
+ *    Render Surface State). CCS_Buffer_Size = Padded_Main_Surface_Size/256"
+ *
+ * The aux-map only exists on Xe, so this is equivalent to
+ * ISL_MAIN_TO_CCS_SIZE_RATIO_XE.
+ */
+#define INTEL_AUX_MAP_MAIN_SIZE_SCALEDOWN 256
+
+/**
+ * The alignment at which the AUX data virtual addresses should start.
+ *
+ * The diagram in Bspec 44930 shows that the CCS is indexed in 256B chunks for
+ * TGL, 4K chunks for MTL. However, when modifiers are in use, the 4K
+ * alignment requirement of the PLANE_AUX_DIST::Auxiliary Surface Distance
+ * field must be considered (Bspec 50379). Keep things simple and just use 4K.
+ */
+#define INTEL_AUX_MAP_META_ALIGNMENT_B 4096
 
 struct intel_aux_map_context *
 intel_aux_map_init(void *driver_ctx,
                    struct intel_mapped_pinned_buffer_alloc *buffer_alloc,
                    const struct intel_device_info *devinfo);
+
+uint32_t
+intel_aux_map_get_alignment(struct intel_aux_map_context *ctx);
 
 void
 intel_aux_map_finish(struct intel_aux_map_context *ctx);
@@ -62,7 +95,8 @@ intel_aux_map_finish(struct intel_aux_map_context *ctx);
 uint32_t
 intel_aux_map_get_state_num(struct intel_aux_map_context *ctx);
 
-/** Returns the current number of buffers used by the aux-map tables
+/**
+ * Returns the current number of buffers used by the aux-map tables
  *
  * When preparing to execute a new batch, use this function to determine how
  * many buffers will be required. More buffers may be added by concurrent
@@ -72,7 +106,24 @@ intel_aux_map_get_state_num(struct intel_aux_map_context *ctx);
 uint32_t
 intel_aux_map_get_num_buffers(struct intel_aux_map_context *ctx);
 
-/** Fill an array of exec_object2 with aux-map buffer handles
+/**
+ * Returns the mask of meta data address in L1 entry
+ *
+ * The mask value is effected by page size of meta data specific to a platform.
+ */
+uint64_t
+intel_aux_get_meta_address_mask(struct intel_aux_map_context *ctx);
+
+/**
+ * Takes a relative offset in the main surface and returns a relative offset
+ * in the aux surface that maps to the main offset.
+ */
+uint64_t
+intel_aux_main_to_aux_offset(struct intel_aux_map_context *ctx,
+                             uint64_t main_offset);
+
+/**
+ * Fill an array of exec_object2 with aux-map buffer handles
  *
  * The intel_aux_map_get_num_buffers call should be made, then the driver can
  * make sure the `obj` array is large enough before calling this function.
@@ -93,16 +144,29 @@ intel_aux_map_format_bits_for_isl_surf(const struct isl_surf *isl_surf);
 
 uint64_t *
 intel_aux_map_get_entry(struct intel_aux_map_context *ctx,
-                        uint64_t address,
-                        uint64_t *entry_address);
+                        uint64_t main_address,
+                        uint64_t *aux_entry_address);
 
-void
-intel_aux_map_add_mapping(struct intel_aux_map_context *ctx, uint64_t address,
+/* Fails if a mapping is attempted that would conflict with an existing one.
+ * This increase the refcount of the mapped region if already mapped, sets it
+ * to 1 otherwise.
+ */
+bool
+intel_aux_map_add_mapping(struct intel_aux_map_context *ctx, uint64_t main_address,
                           uint64_t aux_address, uint64_t main_size_B,
                           uint64_t format_bits);
 
+/* Decrease the refcount of a mapped region. When the refcount reaches 0, the
+ * region is unmapped.
+ */
 void
-intel_aux_map_unmap_range(struct intel_aux_map_context *ctx, uint64_t address,
+intel_aux_map_del_mapping(struct intel_aux_map_context *ctx, uint64_t main_address,
+                          uint64_t size);
+
+/* Unmaps a region, refcount is reset to 0.
+ */
+void
+intel_aux_map_unmap_range(struct intel_aux_map_context *ctx, uint64_t main_address,
                           uint64_t size);
 
 #ifdef __cplusplus

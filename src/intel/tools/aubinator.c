@@ -38,6 +38,8 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 
+#include "intel/compiler/brw_isa_info.h"
+#include "intel/compiler/elk/elk_isa_info.h"
 #include "util/macros.h"
 
 #include "aub_read.h"
@@ -59,17 +61,23 @@ static enum { COLOR_AUTO, COLOR_ALWAYS, COLOR_NEVER } option_color;
 uint16_t pci_id = 0;
 char *input_file = NULL, *xml_path = NULL;
 struct intel_device_info devinfo;
+struct brw_isa_info brw;
+struct elk_isa_info elk;
 struct intel_batch_decode_ctx batch_ctx;
 struct aub_mem mem;
 
 FILE *outfile;
 
-struct brw_instruction;
-
 static void
 aubinator_error(void *user_data, const void *aub_data, const char *msg)
 {
    fprintf(stderr, "%s", msg);
+}
+
+static void
+aubinator_comment(void *user_data, const char *str)
+{
+   fprintf(outfile, "%s\n", str);
 }
 
 static void
@@ -91,8 +99,15 @@ aubinator_init(void *user_data, int aub_pci_id, const char *app_name)
       batch_flags |= INTEL_BATCH_DECODE_OFFSETS;
    batch_flags |= INTEL_BATCH_DECODE_FLOATS;
 
-   intel_batch_decode_ctx_init(&batch_ctx, &devinfo, outfile, batch_flags,
-                               xml_path, NULL, NULL, NULL);
+   if (devinfo.ver >= 9) {
+      brw_init_isa_info(&brw, &devinfo);
+      intel_batch_decode_ctx_init_brw(&batch_ctx, &brw, &devinfo, outfile,
+                                      batch_flags, xml_path, NULL, NULL, NULL);
+   } else {
+      elk_init_isa_info(&elk, &devinfo);
+      intel_batch_decode_ctx_init_elk(&batch_ctx, &elk, &devinfo, outfile,
+                                      batch_flags, xml_path, NULL, NULL, NULL);
+   }
 
    /* Check for valid spec instance, if wrong xml_path is passed then spec
     * instance is not initialized properly
@@ -138,7 +153,7 @@ get_bo(void *user_data, bool ppgtt, uint64_t addr)
 }
 
 static void
-handle_execlist_write(void *user_data, enum drm_i915_gem_engine_class engine, uint64_t context_descriptor)
+handle_execlist_write(void *user_data, enum intel_engine_class engine, uint64_t context_descriptor)
 {
    const uint32_t pphwsp_size = 4096;
    uint32_t pphwsp_addr = context_descriptor & 0xfffff000;
@@ -176,7 +191,7 @@ get_legacy_bo(void *user_data, bool ppgtt, uint64_t addr)
 }
 
 static void
-handle_ring_write(void *user_data, enum drm_i915_gem_engine_class engine,
+handle_ring_write(void *user_data, enum intel_engine_class engine,
                   const void *data, uint32_t data_len)
 {
    batch_ctx.user_data = &mem;
@@ -310,9 +325,10 @@ int main(int argc, char *argv[])
       case 'g': {
          const int id = intel_device_name_to_pci_device_id(optarg);
          if (id < 0) {
-            fprintf(stderr, "can't parse gen: '%s', expected brw, g4x, ilk, "
+            fprintf(stderr, "can't parse gen: '%s', expected lpt, brw, g4x, ilk, "
                             "snb, ivb, hsw, byt, bdw, chv, skl, bxt, kbl, "
-                            "aml, glk, cfl, whl, cnl, icl", optarg);
+                            "aml, glk, cfl, whl, cml, icl, ehl, jsl, tgl, "
+                            "rkl, dg1, adl, sg1, rpl, dg2\n", optarg);
             exit(EXIT_FAILURE);
          } else {
             pci_id = id;
@@ -373,6 +389,7 @@ int main(int argc, char *argv[])
       .user_data = &mem,
       .error = aubinator_error,
       .info = aubinator_init,
+      .comment = aubinator_comment,
 
       .local_write = aub_mem_local_write,
       .phys_write = aub_mem_phys_write,

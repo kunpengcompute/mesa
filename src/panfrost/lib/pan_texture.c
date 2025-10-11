@@ -25,358 +25,52 @@
  *
  */
 
+#include "pan_texture.h"
 #include "util/macros.h"
 #include "util/u_math.h"
-#include "pan_texture.h"
-
-#ifndef PAN_ARCH
-
-/* Generates a texture descriptor. Ideally, descriptors are immutable after the
- * texture is created, so we can keep these hanging around in GPU memory in a
- * dedicated BO and not have to worry. In practice there are some minor gotchas
- * with this (the driver sometimes will change the format of a texture on the
- * fly for compression) but it's fast enough to just regenerate the descriptor
- * in those cases, rather than monkeypatching at drawtime. A texture descriptor
- * consists of a 32-byte header followed by pointers. 
- */
-
-/* List of supported modifiers, in descending order of preference. AFBC is
- * faster than u-interleaved tiling which is faster than linear. Within AFBC,
- * enabling the YUV-like transform is typically a win where possible. */
-
-uint64_t pan_best_modifiers[PAN_MODIFIER_COUNT] = {
-        DRM_FORMAT_MOD_ARM_AFBC(
-                AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
-                AFBC_FORMAT_MOD_SPARSE |
-                AFBC_FORMAT_MOD_YTR),
-
-        DRM_FORMAT_MOD_ARM_AFBC(
-                AFBC_FORMAT_MOD_BLOCK_SIZE_16x16 |
-                AFBC_FORMAT_MOD_SPARSE),
-
-        DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED,
-        DRM_FORMAT_MOD_LINEAR
-};
-
-/* If not explicitly, line stride is calculated for block-based formats as
- * (ceil(width / block_width) * block_size). As a special case, this is left
- * zero if there is only a single block vertically. So, we have a helper to
- * extract the dimensions of a block-based format and use that to calculate the
- * line stride as such.
- */
-
-unsigned
-panfrost_block_dim(uint64_t modifier, bool width, unsigned plane)
-{
-        if (!drm_is_afbc(modifier)) {
-                assert(modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED);
-                return 16;
-        }
-
-        switch (modifier & AFBC_FORMAT_MOD_BLOCK_SIZE_MASK) {
-        case AFBC_FORMAT_MOD_BLOCK_SIZE_16x16:
-                return 16;
-        case AFBC_FORMAT_MOD_BLOCK_SIZE_32x8:
-                return width ? 32 : 8;
-        case AFBC_FORMAT_MOD_BLOCK_SIZE_64x4:
-                return width ? 64 : 4;
-        case AFBC_FORMAT_MOD_BLOCK_SIZE_32x8_64x4:
-                return plane ? (width ? 64 : 4) : (width ? 32 : 8);
-        default:
-                unreachable("Invalid AFBC block size");
-        }
-}
-
-/* Computes sizes for checksumming, which is 8 bytes per 16x16 tile.
- * Checksumming is believed to be a CRC variant (CRC64 based on the size?).
- * This feature is also known as "transaction elimination". */
-
-#define CHECKSUM_TILE_WIDTH 16
-#define CHECKSUM_TILE_HEIGHT 16
-#define CHECKSUM_BYTES_PER_TILE 8
-
-unsigned
-panfrost_compute_checksum_size(
-        struct pan_image_slice_layout *slice,
-        unsigned width,
-        unsigned height)
-{
-        unsigned tile_count_x = DIV_ROUND_UP(width, CHECKSUM_TILE_WIDTH);
-        unsigned tile_count_y = DIV_ROUND_UP(height, CHECKSUM_TILE_HEIGHT);
-
-        slice->crc.stride = tile_count_x * CHECKSUM_BYTES_PER_TILE;
-
-        return slice->crc.stride * tile_count_y;
-}
-
-unsigned
-panfrost_get_layer_stride(const struct pan_image_layout *layout,
-                          unsigned level)
-{
-        if (layout->dim != MALI_TEXTURE_DIMENSION_3D)
-                return layout->array_stride;
-        else if (drm_is_afbc(layout->modifier))
-                return layout->slices[level].afbc.surface_stride;
-        else
-                return layout->slices[level].surface_stride;
-}
-
-/* Computes the offset into a texture at a particular level/face. Add to
- * the base address of a texture to get the address to that level/face */
-
-unsigned
-panfrost_texture_offset(const struct pan_image_layout *layout,
-                        unsigned level, unsigned array_idx,
-                        unsigned surface_idx)
-{
-        return layout->slices[level].offset +
-               (array_idx * layout->array_stride) +
-               (surface_idx * layout->slices[level].surface_stride);
-}
-
-bool
-pan_image_layout_init(const struct panfrost_device *dev,
-                      struct pan_image_layout *layout,
-                      uint64_t modifier,
-                      enum pipe_format format,
-                      enum mali_texture_dimension dim,
-                      unsigned width, unsigned height, unsigned depth,
-                      unsigned array_size, unsigned nr_samples,
-                      unsigned nr_slices, enum pan_image_crc_mode crc_mode,
-                      const struct pan_image_explicit_layout *explicit_layout)
-{
-        /* Explicit stride only work with non-mipmap, non-array; single-sample
-         * 2D image, and in-band CRC can't be used.
-         */
-        if (explicit_layout &&
-	    (depth > 1 || nr_samples > 1 || array_size > 1 ||
-             dim != MALI_TEXTURE_DIMENSION_2D || nr_slices > 1 ||
-             crc_mode == PAN_IMAGE_CRC_INBAND))
-                return false;
-
-        /* Mandate 64 byte alignement */
-        if (explicit_layout && (explicit_layout->offset & 63))
-                return false;
-
-        layout->crc_mode = crc_mode;
-        layout->modifier = modifier;
-        layout->format = format;
-        layout->dim = dim;
-        layout->width = width;
-        layout->height = height;
-        layout->depth = depth;
-        layout->array_size = array_size;
-        layout->nr_samples = nr_samples;
-        layout->nr_slices = nr_slices;
-
-        unsigned bytes_per_pixel = util_format_get_blocksize(format);
-
-        /* MSAA is implemented as a 3D texture with z corresponding to the
-         * sample #, horrifyingly enough */
-
-        assert(depth == 1 || nr_samples == 1);
-
-        bool afbc = drm_is_afbc(layout->modifier);
-        bool tiled = layout->modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED;
-        bool linear = layout->modifier == DRM_FORMAT_MOD_LINEAR;
-        bool should_align = tiled || afbc;
-        bool is_3d = layout->dim == MALI_TEXTURE_DIMENSION_3D;
-
-        unsigned oob_crc_offset = 0;
-        unsigned offset = explicit_layout ? explicit_layout->offset : 0;
-        unsigned tile_h = 1, tile_w = 1, tile_shift = 0;
-
-        if (tiled || afbc) {
-                tile_w = panfrost_block_dim(layout->modifier, true, 0);
-                tile_h = panfrost_block_dim(layout->modifier, false, 0);
-                if (util_format_is_compressed(format))
-                        tile_shift = 2;
-        }
-
-        for (unsigned l = 0; l < nr_slices; ++l) {
-                struct pan_image_slice_layout *slice = &layout->slices[l];
-
-                unsigned effective_width = width;
-                unsigned effective_height = height;
-                unsigned effective_depth = depth;
-
-                if (should_align) {
-                        effective_width = ALIGN_POT(effective_width, tile_w) >> tile_shift;
-                        effective_height = ALIGN_POT(effective_height, tile_h) >> tile_shift;
-
-                        /* We don't need to align depth */
-                }
-
-                /* Align levels to cache-line as a performance improvement for
-                 * linear/tiled and as a requirement for AFBC */
-
-                offset = ALIGN_POT(offset, 64);
-
-                slice->offset = offset;
-
-                /* Compute the would-be stride */
-                unsigned stride = bytes_per_pixel * effective_width;
-
-                if (explicit_layout) {
-                        /* Make sure the explicit stride is valid */
-                        if (explicit_layout->line_stride < stride)
-                                return false;
-
-                        stride = explicit_layout->line_stride;
-                } else if (linear) {
-                        /* Keep lines alignment on 64 byte for performance */
-                        stride = ALIGN_POT(stride, 64);
-                }
-
-                slice->line_stride = stride;
-                slice->row_stride = stride * (tile_h >> tile_shift);
-
-                unsigned slice_one_size = slice->line_stride * effective_height;
-
-                /* Compute AFBC sizes if necessary */
-                if (afbc) {
-                        slice->afbc.header_size =
-                                panfrost_afbc_header_size(width, height);
-
-                        /* Stride between two rows of AFBC headers */
-                        slice->afbc.row_stride =
-                                (effective_width / tile_w) *
-                                AFBC_HEADER_BYTES_PER_TILE;
-
-                        /* AFBC body size */
-                        slice->afbc.body_size = slice_one_size;
-
-                        /* 3D AFBC resources have all headers placed at the
-                         * beginning instead of having them split per depth
-                         * level
-                         */
-                        if (is_3d) {
-                                slice->afbc.surface_stride =
-                                        slice->afbc.header_size;
-                                slice->afbc.header_size *= effective_depth;
-                                slice->afbc.body_size *= effective_depth;
-                                offset += slice->afbc.header_size;
-                        } else {
-                                slice_one_size += slice->afbc.header_size;
-                                slice->afbc.surface_stride = slice_one_size;
-                        }
-                }
-
-                unsigned slice_full_size =
-                        slice_one_size * effective_depth * nr_samples;
-
-                slice->surface_stride = slice_one_size;
-
-                /* Compute AFBC sizes if necessary */
-
-                offset += slice_full_size;
-                slice->size = slice_full_size;
-
-                /* Add a checksum region if necessary */
-                if (crc_mode != PAN_IMAGE_CRC_NONE) {
-                        slice->crc.size =
-                                panfrost_compute_checksum_size(slice, width, height);
-
-                        if (crc_mode == PAN_IMAGE_CRC_INBAND) {
-                                slice->crc.offset = offset;
-                                offset += slice->crc.size;
-                                slice->size += slice->crc.size;
-                        } else {
-                                slice->crc.offset = oob_crc_offset;
-                                oob_crc_offset += slice->crc.size;
-                        }
-                }
-
-                width = u_minify(width, 1);
-                height = u_minify(height, 1);
-                depth = u_minify(depth, 1);
-        }
-
-        /* Arrays and cubemaps have the entire miptree duplicated */
-        layout->array_stride = ALIGN_POT(offset, 64);
-        if (explicit_layout)
-                layout->data_size = offset;
-        else
-                layout->data_size = ALIGN_POT(layout->array_stride * array_size, 4096);
-        layout->crc_size = oob_crc_offset;
-
-        return true;
-}
-
-void
-pan_iview_get_surface(const struct pan_image_view *iview,
-                      unsigned level, unsigned layer, unsigned sample,
-                      struct pan_surface *surf)
-{
-        level += iview->first_level;
-        assert(level < iview->image->layout.nr_slices);
-
-       layer += iview->first_layer;
-
-        bool is_3d = iview->image->layout.dim == MALI_TEXTURE_DIMENSION_3D;
-        const struct pan_image_slice_layout *slice = &iview->image->layout.slices[level];
-        mali_ptr base = iview->image->data.bo->ptr.gpu + iview->image->data.offset;
-
-        if (drm_is_afbc(iview->image->layout.modifier)) {
-                assert(!sample);
-
-                if (is_3d) {
-                        ASSERTED unsigned depth = u_minify(iview->image->layout.depth, level);
-                        assert(layer < depth);
-                        surf->afbc.header = base + slice->offset +
-                                           (layer * slice->afbc.surface_stride);
-                        surf->afbc.body = base + slice->offset +
-                                          slice->afbc.header_size +
-                                          (slice->surface_stride * layer);
-                } else {
-                        assert(layer < iview->image->layout.array_size);
-                        surf->afbc.header = base +
-                                            panfrost_texture_offset(&iview->image->layout,
-                                                                    level, layer, 0);
-                        surf->afbc.body = surf->afbc.header + slice->afbc.header_size;
-                }
-        } else {
-                unsigned array_idx = is_3d ? 0 : layer;
-                unsigned surface_idx = is_3d ? layer : sample;
-
-                surf->data = base +
-                             panfrost_texture_offset(&iview->image->layout, level,
-                                                     array_idx, surface_idx);
-        }
-}
-
-#else /* ifndef PAN_ARCH */
 
 #if PAN_ARCH >= 5
-/* Arm Scalable Texture Compression (ASTC) corresponds to just a few formats.
+/*
+ * Arm Scalable Texture Compression (ASTC) corresponds to just a few formats.
  * The block dimension is not part of the format. Instead, it is encoded as a
  * 6-bit tag on the payload pointer. Map the block size for a single dimension.
  */
-
 static inline enum mali_astc_2d_dimension
 panfrost_astc_dim_2d(unsigned dim)
 {
-        switch (dim) {
-        case  4: return MALI_ASTC_2D_DIMENSION_4;
-        case  5: return MALI_ASTC_2D_DIMENSION_5;
-        case  6: return MALI_ASTC_2D_DIMENSION_6;
-        case  8: return MALI_ASTC_2D_DIMENSION_8;
-        case 10: return MALI_ASTC_2D_DIMENSION_10;
-        case 12: return MALI_ASTC_2D_DIMENSION_12;
-        default: unreachable("Invalid ASTC dimension");
-        }
+   switch (dim) {
+   case 4:
+      return MALI_ASTC_2D_DIMENSION_4;
+   case 5:
+      return MALI_ASTC_2D_DIMENSION_5;
+   case 6:
+      return MALI_ASTC_2D_DIMENSION_6;
+   case 8:
+      return MALI_ASTC_2D_DIMENSION_8;
+   case 10:
+      return MALI_ASTC_2D_DIMENSION_10;
+   case 12:
+      return MALI_ASTC_2D_DIMENSION_12;
+   default:
+      unreachable("Invalid ASTC dimension");
+   }
 }
 
 static inline enum mali_astc_3d_dimension
 panfrost_astc_dim_3d(unsigned dim)
 {
-        switch (dim) {
-        case  3: return MALI_ASTC_3D_DIMENSION_3;
-        case  4: return MALI_ASTC_3D_DIMENSION_4;
-        case  5: return MALI_ASTC_3D_DIMENSION_5;
-        case  6: return MALI_ASTC_3D_DIMENSION_6;
-        default: unreachable("Invalid ASTC dimension");
-        }
+   switch (dim) {
+   case 3:
+      return MALI_ASTC_3D_DIMENSION_3;
+   case 4:
+      return MALI_ASTC_3D_DIMENSION_4;
+   case 5:
+      return MALI_ASTC_3D_DIMENSION_5;
+   case 6:
+      return MALI_ASTC_3D_DIMENSION_6;
+   default:
+      unreachable("Invalid ASTC dimension");
+   }
 }
 #endif
 
@@ -387,88 +81,62 @@ panfrost_astc_dim_3d(unsigned dim)
 
 static unsigned
 panfrost_compression_tag(const struct util_format_description *desc,
-                         enum mali_texture_dimension dim,
-                         uint64_t modifier)
+                         enum mali_texture_dimension dim, uint64_t modifier)
 {
 #if PAN_ARCH >= 5 && PAN_ARCH <= 8
-        if (drm_is_afbc(modifier)) {
-                unsigned flags = (modifier & AFBC_FORMAT_MOD_YTR) ?
-                                 MALI_AFBC_SURFACE_FLAG_YTR : 0;
+   if (drm_is_afbc(modifier)) {
+      unsigned flags =
+         (modifier & AFBC_FORMAT_MOD_YTR) ? MALI_AFBC_SURFACE_FLAG_YTR : 0;
 
 #if PAN_ARCH >= 6
-                /* Prefetch enable */
-                flags |= MALI_AFBC_SURFACE_FLAG_PREFETCH;
+      /* Prefetch enable */
+      flags |= MALI_AFBC_SURFACE_FLAG_PREFETCH;
 
-                /* Wide blocks (> 16x16) */
-                if (panfrost_block_dim(modifier, true, 0) > 16)
-                        flags |= MALI_AFBC_SURFACE_FLAG_WIDE_BLOCK;
-
-                /* Used to make sure AFBC headers don't point outside the AFBC
-                 * body. HW is using the AFBC surface stride to do this check,
-                 * which doesn't work for 3D textures because the surface
-                 * stride does not cover the body. Only supported on v7+.
-                 */
+      if (panfrost_afbc_is_wide(modifier))
+         flags |= MALI_AFBC_SURFACE_FLAG_WIDE_BLOCK;
 #endif
 
 #if PAN_ARCH >= 7
-                if (dim != MALI_TEXTURE_DIMENSION_3D)
-                        flags |= MALI_AFBC_SURFACE_FLAG_CHECK_PAYLOAD_RANGE;
+      /* Tiled headers */
+      if (modifier & AFBC_FORMAT_MOD_TILED)
+         flags |= MALI_AFBC_SURFACE_FLAG_TILED_HEADER;
+
+      /* Used to make sure AFBC headers don't point outside the AFBC
+       * body. HW is using the AFBC surface stride to do this check,
+       * which doesn't work for 3D textures because the surface
+       * stride does not cover the body. Only supported on v7+.
+       */
+      if (dim != MALI_TEXTURE_DIMENSION_3D)
+         flags |= MALI_AFBC_SURFACE_FLAG_CHECK_PAYLOAD_RANGE;
 #endif
 
-                return flags;
-        } else if (desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
-                if (desc->block.depth > 1) {
-                        return (panfrost_astc_dim_3d(desc->block.depth) << 4) |
-                               (panfrost_astc_dim_3d(desc->block.height) << 2) |
-                                panfrost_astc_dim_3d(desc->block.width);
-                } else {
-                        return (panfrost_astc_dim_2d(desc->block.height) << 3) |
-                                panfrost_astc_dim_2d(desc->block.width);
-                }
-        }
+      return flags;
+   } else if (desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
+      if (desc->block.depth > 1) {
+         return (panfrost_astc_dim_3d(desc->block.depth) << 4) |
+                (panfrost_astc_dim_3d(desc->block.height) << 2) |
+                panfrost_astc_dim_3d(desc->block.width);
+      } else {
+         return (panfrost_astc_dim_2d(desc->block.height) << 3) |
+                panfrost_astc_dim_2d(desc->block.width);
+      }
+   }
 #endif
 
-        /* Tags are not otherwise used */
-        return 0;
-}
-
-/* Cubemaps have 6 faces as "layers" in between each actual layer. We
- * need to fix this up. TODO: logic wrong in the asserted out cases ...
- * can they happen, perhaps from cubemap arrays? */
-
-static void
-panfrost_adjust_cube_dimensions(
-                unsigned *first_face, unsigned *last_face,
-                unsigned *first_layer, unsigned *last_layer)
-{
-        *first_face = *first_layer % 6;
-        *last_face = *last_layer % 6;
-        *first_layer /= 6;
-        *last_layer /= 6;
-
-        assert((*first_layer == *last_layer) || (*first_face == 0 && *last_face == 5));
+   /* Tags are not otherwise used */
+   return 0;
 }
 
 /* Following the texture descriptor is a number of descriptors. How many? */
 
 static unsigned
-panfrost_texture_num_elements(
-                unsigned first_level, unsigned last_level,
-                unsigned first_layer, unsigned last_layer,
-                unsigned nr_samples, bool is_cube)
+panfrost_texture_num_elements(const struct pan_image_view *iview)
 {
-        unsigned first_face  = 0, last_face = 0;
+   unsigned levels = 1 + iview->last_level - iview->first_level;
+   unsigned layers = 1 + iview->last_layer - iview->first_layer;
+   unsigned nr_samples = pan_image_view_get_nr_samples(iview);
 
-        if (is_cube) {
-                panfrost_adjust_cube_dimensions(&first_face, &last_face,
-                                &first_layer, &last_layer);
-        }
-
-        unsigned levels = 1 + last_level - first_level;
-        unsigned layers = 1 + last_layer - first_layer;
-        unsigned faces  = 1 + last_face  - first_face;
-
-        return levels * layers * faces * MAX2(nr_samples, 1);
+   return levels * layers * MAX2(nr_samples, 1);
 }
 
 /* Conservative estimate of the size of the texture payload a priori.
@@ -480,356 +148,440 @@ panfrost_texture_num_elements(
 unsigned
 GENX(panfrost_estimate_texture_payload_size)(const struct pan_image_view *iview)
 {
+   size_t element_size;
+
 #if PAN_ARCH >= 9
-        size_t element_size = pan_size(PLANE);
+   element_size = pan_size(PLANE);
+
+   /* 2-plane and 3-plane YUV use two plane descriptors. */
+   if (panfrost_format_is_yuv(iview->format) && iview->planes[1] != NULL)
+      element_size *= 2;
+#elif PAN_ARCH == 7
+   if (panfrost_format_is_yuv(iview->format))
+      element_size = pan_size(MULTIPLANAR_SURFACE);
+   else
+      element_size = pan_size(SURFACE_WITH_STRIDE);
 #else
-        /* Assume worst case. Overestimates on Midgard, but that's ok. */
-        size_t element_size = pan_size(SURFACE_WITH_STRIDE);
+   /* Assume worst case. Overestimates on Midgard, but that's ok. */
+   element_size = pan_size(SURFACE_WITH_STRIDE);
 #endif
 
-        unsigned elements =
-                panfrost_texture_num_elements(iview->first_level, iview->last_level,
-                                              iview->first_layer, iview->last_layer,
-                                              iview->image->layout.nr_samples,
-                                              iview->dim == MALI_TEXTURE_DIMENSION_CUBE);
+   unsigned elements = panfrost_texture_num_elements(iview);
 
-        return element_size * elements;
-}
-
-struct panfrost_surface_iter {
-        unsigned layer, last_layer;
-        unsigned level, first_level, last_level;
-        unsigned face, first_face, last_face;
-        unsigned sample, first_sample, last_sample;
-};
-
-static void
-panfrost_surface_iter_begin(struct panfrost_surface_iter *iter,
-                            unsigned first_layer, unsigned last_layer,
-                            unsigned first_level, unsigned last_level,
-                            unsigned first_face, unsigned last_face,
-                            unsigned nr_samples)
-{
-        iter->layer = first_layer;
-        iter->last_layer = last_layer;
-        iter->level = iter->first_level = first_level;
-        iter->last_level = last_level;
-        iter->face = iter->first_face = first_face;
-        iter->last_face = last_face;
-        iter->sample = iter->first_sample = 0;
-        iter->last_sample = nr_samples - 1;
-}
-
-static bool
-panfrost_surface_iter_end(const struct panfrost_surface_iter *iter)
-{
-        return iter->layer > iter->last_layer;
+   return element_size * elements;
 }
 
 static void
-panfrost_surface_iter_next(struct panfrost_surface_iter *iter)
-{
-#define INC_TEST(field) \
-        do { \
-                if (iter->field++ < iter->last_ ## field) \
-                       return; \
-                iter->field = iter->first_ ## field; \
-        } while (0)
-
-        /* Ordering is different on v7: inner loop is iterating on levels */
-        if (PAN_ARCH >= 7)
-                INC_TEST(level);
-
-        INC_TEST(sample);
-        INC_TEST(face);
-
-        if (PAN_ARCH < 7)
-                INC_TEST(level);
-
-        iter->layer++;
-
-#undef INC_TEST
-}
-
-static void
-panfrost_get_surface_strides(const struct pan_image_layout *layout,
-                             unsigned l,
+panfrost_get_surface_strides(const struct pan_image_layout *layout, unsigned l,
                              int32_t *row_stride, int32_t *surf_stride)
 {
-        const struct pan_image_slice_layout *slice = &layout->slices[l];
+   const struct pan_image_slice_layout *slice = &layout->slices[l];
 
-        if (drm_is_afbc(layout->modifier)) {
-                /* Pre v7 don't have a row stride field. This field is
-                 * repurposed as a Y offset which we don't use */
-                *row_stride = PAN_ARCH < 7 ? 0 : slice->afbc.row_stride;
-                *surf_stride = slice->afbc.surface_stride;
-        } else {
-                *row_stride = slice->row_stride;
-                *surf_stride = slice->surface_stride;
-        }
+   if (drm_is_afbc(layout->modifier)) {
+      /* Pre v7 don't have a row stride field. This field is
+       * repurposed as a Y offset which we don't use */
+      *row_stride = PAN_ARCH < 7 ? 0 : slice->row_stride;
+      *surf_stride = slice->afbc.surface_stride;
+   } else {
+      *row_stride = slice->row_stride;
+      *surf_stride = slice->surface_stride;
+   }
 }
 
 static mali_ptr
 panfrost_get_surface_pointer(const struct pan_image_layout *layout,
-                             enum mali_texture_dimension dim,
-                             mali_ptr base,
-                             unsigned l, unsigned w, unsigned f, unsigned s)
+                             enum mali_texture_dimension dim, mali_ptr base,
+                             unsigned l, unsigned i, unsigned s)
 {
-        unsigned face_mult = dim == MALI_TEXTURE_DIMENSION_CUBE ? 6 : 1;
-        unsigned offset;
+   unsigned offset;
 
-        if (layout->dim == MALI_TEXTURE_DIMENSION_3D) {
-                assert(!f && !s);
-                offset = layout->slices[l].offset +
-                         (w * panfrost_get_layer_stride(layout, l));
-        } else {
-                offset = panfrost_texture_offset(layout, l, (w * face_mult) + f, s);
-        }
+   if (layout->dim == MALI_TEXTURE_DIMENSION_3D) {
+      assert(!s);
+      offset =
+         layout->slices[l].offset + i * panfrost_get_layer_stride(layout, l);
+   } else {
+      offset = panfrost_texture_offset(layout, l, i, s);
+   }
 
-        return base + offset;
+   return base + offset;
 }
+
+#if PAN_ARCH <= 7
+static void
+panfrost_emit_surface_with_stride(mali_ptr plane, int32_t row_stride,
+                                  int32_t surface_stride, void **payload)
+{
+   pan_pack(*payload, SURFACE_WITH_STRIDE, cfg) {
+      cfg.pointer = plane;
+      cfg.row_stride = row_stride;
+      cfg.surface_stride = surface_stride;
+   }
+   *payload += pan_size(SURFACE_WITH_STRIDE);
+}
+#endif
+
+#if PAN_ARCH == 7
+static void
+panfrost_emit_multiplanar_surface(mali_ptr planes[MAX_IMAGE_PLANES],
+                                  int32_t row_strides[MAX_IMAGE_PLANES],
+                                  void **payload)
+{
+   assert(row_strides[2] == 0 || row_strides[1] == row_strides[2]);
+
+   pan_pack(*payload, MULTIPLANAR_SURFACE, cfg) {
+      cfg.plane_0_pointer = planes[0];
+      cfg.plane_0_row_stride = row_strides[0];
+      cfg.plane_1_2_row_stride = row_strides[1];
+      cfg.plane_1_pointer = planes[1];
+      cfg.plane_2_pointer = planes[2];
+   }
+   *payload += pan_size(MULTIPLANAR_SURFACE);
+}
+#endif
 
 #if PAN_ARCH >= 9
 
+/* clang-format off */
 #define CLUMP_FMT(pipe, mali) [PIPE_FORMAT_ ## pipe] = MALI_CLUMP_FORMAT_ ## mali
 static enum mali_clump_format special_clump_formats[PIPE_FORMAT_COUNT] = {
-        CLUMP_FMT(X32_S8X24_UINT, X32S8X24),
-        CLUMP_FMT(X24S8_UINT, X24S8),
-        CLUMP_FMT(S8X24_UINT, S8X24),
-        CLUMP_FMT(S8_UINT, S8),
-        CLUMP_FMT(L4A4_UNORM, L4A4),
-        CLUMP_FMT(L8A8_UNORM, L8A8),
-        CLUMP_FMT(L8A8_UINT, L8A8),
-        CLUMP_FMT(L8A8_SINT, L8A8),
-        CLUMP_FMT(A8_UNORM, A8),
-        CLUMP_FMT(A8_UINT, A8),
-        CLUMP_FMT(A8_SINT, A8),
-        CLUMP_FMT(ETC1_RGB8, ETC2_RGB8),
-        CLUMP_FMT(ETC2_RGB8, ETC2_RGB8),
-        CLUMP_FMT(ETC2_SRGB8, ETC2_RGB8),
-        CLUMP_FMT(ETC2_RGB8A1, ETC2_RGB8A1),
-        CLUMP_FMT(ETC2_SRGB8A1, ETC2_RGB8A1),
-        CLUMP_FMT(ETC2_RGBA8, ETC2_RGBA8),
-        CLUMP_FMT(ETC2_SRGBA8, ETC2_RGBA8),
-        CLUMP_FMT(ETC2_R11_UNORM, ETC2_R11_UNORM),
-        CLUMP_FMT(ETC2_R11_SNORM, ETC2_R11_SNORM),
-        CLUMP_FMT(ETC2_RG11_UNORM, ETC2_RG11_UNORM),
-        CLUMP_FMT(ETC2_RG11_SNORM, ETC2_RG11_SNORM),
-        CLUMP_FMT(DXT1_RGB,                BC1_UNORM),
-        CLUMP_FMT(DXT1_RGBA,               BC1_UNORM),
-        CLUMP_FMT(DXT1_SRGB,               BC1_UNORM),
-        CLUMP_FMT(DXT1_SRGBA,              BC1_UNORM),
-        CLUMP_FMT(DXT3_RGBA,               BC2_UNORM),
-        CLUMP_FMT(DXT3_SRGBA,              BC2_UNORM),
-        CLUMP_FMT(DXT5_RGBA,               BC3_UNORM),
-        CLUMP_FMT(DXT5_SRGBA,              BC3_UNORM),
-        CLUMP_FMT(RGTC1_UNORM,             BC4_UNORM),
-        CLUMP_FMT(RGTC1_SNORM,             BC4_SNORM),
-        CLUMP_FMT(RGTC2_UNORM,             BC5_UNORM),
-        CLUMP_FMT(RGTC2_SNORM,             BC5_SNORM),
-        CLUMP_FMT(BPTC_RGB_FLOAT,          BC6H_SF16),
-        CLUMP_FMT(BPTC_RGB_UFLOAT,         BC6H_UF16),
-        CLUMP_FMT(BPTC_RGBA_UNORM,         BC7_UNORM),
-        CLUMP_FMT(BPTC_SRGBA,              BC7_UNORM),
+   CLUMP_FMT(X32_S8X24_UINT,  X32S8X24),
+   CLUMP_FMT(X24S8_UINT,      X24S8),
+   CLUMP_FMT(S8X24_UINT,      S8X24),
+   CLUMP_FMT(S8_UINT,         S8),
+   CLUMP_FMT(L4A4_UNORM,      L4A4),
+   CLUMP_FMT(L8A8_UNORM,      L8A8),
+   CLUMP_FMT(L8A8_UINT,       L8A8),
+   CLUMP_FMT(L8A8_SINT,       L8A8),
+   CLUMP_FMT(A8_UNORM,        A8),
+   CLUMP_FMT(A8_UINT,         A8),
+   CLUMP_FMT(A8_SINT,         A8),
+   CLUMP_FMT(ETC1_RGB8,       ETC2_RGB8),
+   CLUMP_FMT(ETC2_RGB8,       ETC2_RGB8),
+   CLUMP_FMT(ETC2_SRGB8,      ETC2_RGB8),
+   CLUMP_FMT(ETC2_RGB8A1,     ETC2_RGB8A1),
+   CLUMP_FMT(ETC2_SRGB8A1,    ETC2_RGB8A1),
+   CLUMP_FMT(ETC2_RGBA8,      ETC2_RGBA8),
+   CLUMP_FMT(ETC2_SRGBA8,     ETC2_RGBA8),
+   CLUMP_FMT(ETC2_R11_UNORM,  ETC2_R11_UNORM),
+   CLUMP_FMT(ETC2_R11_SNORM,  ETC2_R11_SNORM),
+   CLUMP_FMT(ETC2_RG11_UNORM, ETC2_RG11_UNORM),
+   CLUMP_FMT(ETC2_RG11_SNORM, ETC2_RG11_SNORM),
+   CLUMP_FMT(DXT1_RGB,        BC1_UNORM),
+   CLUMP_FMT(DXT1_RGBA,       BC1_UNORM),
+   CLUMP_FMT(DXT1_SRGB,       BC1_UNORM),
+   CLUMP_FMT(DXT1_SRGBA,      BC1_UNORM),
+   CLUMP_FMT(DXT3_RGBA,       BC2_UNORM),
+   CLUMP_FMT(DXT3_SRGBA,      BC2_UNORM),
+   CLUMP_FMT(DXT5_RGBA,       BC3_UNORM),
+   CLUMP_FMT(DXT5_SRGBA,      BC3_UNORM),
+   CLUMP_FMT(RGTC1_UNORM,     BC4_UNORM),
+   CLUMP_FMT(RGTC1_SNORM,     BC4_SNORM),
+   CLUMP_FMT(RGTC2_UNORM,     BC5_UNORM),
+   CLUMP_FMT(RGTC2_SNORM,     BC5_SNORM),
+   CLUMP_FMT(BPTC_RGB_FLOAT,  BC6H_SF16),
+   CLUMP_FMT(BPTC_RGB_UFLOAT, BC6H_UF16),
+   CLUMP_FMT(BPTC_RGBA_UNORM, BC7_UNORM),
+   CLUMP_FMT(BPTC_SRGBA,      BC7_UNORM),
 };
 #undef CLUMP_FMT
+/* clang-format on */
 
 static enum mali_clump_format
 panfrost_clump_format(enum pipe_format format)
 {
-        /* First, try a special clump format. Note that the 0 encoding is for a
-         * raw clump format, which will never be in the special table.
-         */
-        if (special_clump_formats[format])
-                return special_clump_formats[format];
+   /* First, try a special clump format. Note that the 0 encoding is for a
+    * raw clump format, which will never be in the special table.
+    */
+   if (special_clump_formats[format])
+      return special_clump_formats[format];
 
-        /* Else, it's a raw format. Raw formats must not be compressed. */
-        assert(!util_format_is_compressed(format));
+   /* Else, it's a raw format. Raw formats must not be compressed. */
+   assert(!util_format_is_compressed(format));
 
-        /* Select the appropriate raw format. */
-        switch (util_format_get_blocksize(format)) {
-        case  1: return MALI_CLUMP_FORMAT_RAW8;
-        case  2: return MALI_CLUMP_FORMAT_RAW16;
-        case  3: return MALI_CLUMP_FORMAT_RAW24;
-        case  4: return MALI_CLUMP_FORMAT_RAW32;
-        case  6: return MALI_CLUMP_FORMAT_RAW48;
-        case  8: return MALI_CLUMP_FORMAT_RAW64;
-        case 12: return MALI_CLUMP_FORMAT_RAW96;
-        case 16: return MALI_CLUMP_FORMAT_RAW128;
-        default: unreachable("Invalid bpp");
-        }
+   /* YUV-sampling has special cases */
+   if (panfrost_format_is_yuv(format)) {
+      switch (format) {
+      case PIPE_FORMAT_R8G8_R8B8_UNORM:
+      case PIPE_FORMAT_G8R8_B8R8_UNORM:
+      case PIPE_FORMAT_R8B8_R8G8_UNORM:
+      case PIPE_FORMAT_B8R8_G8R8_UNORM:
+         return MALI_CLUMP_FORMAT_Y8_UV8_422;
+      case PIPE_FORMAT_R8_G8B8_420_UNORM:
+      case PIPE_FORMAT_R8_B8G8_420_UNORM:
+      case PIPE_FORMAT_R8_G8_B8_420_UNORM:
+      case PIPE_FORMAT_R8_B8_G8_420_UNORM:
+         return MALI_CLUMP_FORMAT_Y8_UV8_420;
+      default:
+         unreachable("unhandled clump format");
+      }
+   }
+
+   /* Select the appropriate raw format. */
+   switch (util_format_get_blocksize(format)) {
+   case 1:
+      return MALI_CLUMP_FORMAT_RAW8;
+   case 2:
+      return MALI_CLUMP_FORMAT_RAW16;
+   case 3:
+      return MALI_CLUMP_FORMAT_RAW24;
+   case 4:
+      return MALI_CLUMP_FORMAT_RAW32;
+   case 6:
+      return MALI_CLUMP_FORMAT_RAW48;
+   case 8:
+      return MALI_CLUMP_FORMAT_RAW64;
+   case 12:
+      return MALI_CLUMP_FORMAT_RAW96;
+   case 16:
+      return MALI_CLUMP_FORMAT_RAW128;
+   default:
+      unreachable("Invalid bpp");
+   }
+}
+
+static enum mali_afbc_superblock_size
+translate_superblock_size(uint64_t modifier)
+{
+   assert(drm_is_afbc(modifier));
+
+   switch (modifier & AFBC_FORMAT_MOD_BLOCK_SIZE_MASK) {
+   case AFBC_FORMAT_MOD_BLOCK_SIZE_16x16:
+      return MALI_AFBC_SUPERBLOCK_SIZE_16X16;
+   case AFBC_FORMAT_MOD_BLOCK_SIZE_32x8:
+      return MALI_AFBC_SUPERBLOCK_SIZE_32X8;
+   case AFBC_FORMAT_MOD_BLOCK_SIZE_64x4:
+      return MALI_AFBC_SUPERBLOCK_SIZE_64X4;
+   default:
+      unreachable("Invalid superblock size");
+   }
 }
 
 static void
-panfrost_emit_plane(const struct pan_image_layout *layout,
-                    enum pipe_format format,
-                    mali_ptr pointer,
-                    unsigned level,
-                    void *payload)
+panfrost_emit_plane(const struct pan_image_view *iview, int index,
+                    const struct pan_image_layout *layout,
+                    enum pipe_format format, mali_ptr pointer, unsigned level,
+                    int32_t row_stride, int32_t surface_stride,
+                    mali_ptr plane2_ptr, void **payload)
 {
-        const struct util_format_description *desc =
-                util_format_description(layout->format);
+   const struct util_format_description *desc =
+      util_format_description(format);
 
-        int32_t row_stride, surface_stride;
+   assert(row_stride >= 0 && surface_stride >= 0 && "negative stride");
 
-        panfrost_get_surface_strides(layout, level, &row_stride, &surface_stride);
-        assert(row_stride >= 0 && surface_stride >= 0 && "negative stride");
+   bool afbc = drm_is_afbc(layout->modifier);
+   bool afrc = drm_is_afrc(layout->modifier);
+   // TODO: this isn't technically guaranteed to be YUV, but it is in practice.
+   bool is_3_planar_yuv = desc->layout == UTIL_FORMAT_LAYOUT_PLANAR3;
 
-        pan_pack(payload, PLANE, cfg) {
-                cfg.pointer = pointer;
-                cfg.row_stride = row_stride;
-                cfg.size = layout->data_size - layout->slices[level].offset;
+   pan_pack(*payload, PLANE, cfg) {
+      cfg.pointer = pointer;
+      cfg.row_stride = row_stride;
+      cfg.size = layout->data_size - layout->slices[level].offset;
 
-                cfg.slice_stride = layout->nr_samples ?
-                                   layout->slices[level].surface_stride :
-                                   panfrost_get_layer_stride(layout, level);
+      if (is_3_planar_yuv) {
+         cfg.two_plane_yuv_chroma.secondary_pointer = plane2_ptr;
+      } else if (!panfrost_format_is_yuv(layout->format)) {
+         cfg.slice_stride = layout->nr_samples
+                               ? surface_stride
+                               : panfrost_get_layer_stride(layout, level);
+      }
 
-                if (desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
-                        if (desc->block.depth > 1) {
-                                cfg.plane_type = MALI_PLANE_TYPE_ASTC_3D;
-                                cfg.astc._3d.block_width = panfrost_astc_dim_3d(desc->block.width);
-                                cfg.astc._3d.block_height = panfrost_astc_dim_3d(desc->block.height);
-                                cfg.astc._3d.block_depth = panfrost_astc_dim_3d(desc->block.depth);
-                        } else {
-                                cfg.plane_type = MALI_PLANE_TYPE_ASTC_2D;
-                                cfg.astc._2d.block_width = panfrost_astc_dim_2d(desc->block.width);
-                                cfg.astc._2d.block_height = panfrost_astc_dim_2d(desc->block.height);
-                        }
+      if (desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
+         assert(!afbc);
+         assert(!afrc);
 
-                        bool srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
+         if (desc->block.depth > 1) {
+            cfg.plane_type = MALI_PLANE_TYPE_ASTC_3D;
+            cfg.astc._3d.block_width = panfrost_astc_dim_3d(desc->block.width);
+            cfg.astc._3d.block_height =
+               panfrost_astc_dim_3d(desc->block.height);
+            cfg.astc._3d.block_depth = panfrost_astc_dim_3d(desc->block.depth);
+         } else {
+            cfg.plane_type = MALI_PLANE_TYPE_ASTC_2D;
+            cfg.astc._2d.block_width = panfrost_astc_dim_2d(desc->block.width);
+            cfg.astc._2d.block_height =
+               panfrost_astc_dim_2d(desc->block.height);
+         }
 
-                        /* Mesa does not advertise _HDR formats yet */
-                        cfg.astc.decode_hdr = false;
+         bool srgb = (desc->colorspace == UTIL_FORMAT_COLORSPACE_SRGB);
 
-                        /* sRGB formats decode to RGBA8 sRGB, which is narrow.
-                         *
-                         * Non-sRGB formats decode to RGBA16F which is wide.
-                         * With a future extension, we could decode non-sRGB
-                         * formats narrowly too, but this isn't wired up in Mesa
-                         * yet.
-                         */
-                        cfg.astc.decode_wide = !srgb;
-                } else {
-                        cfg.plane_type = MALI_PLANE_TYPE_GENERIC;
-                        cfg.clump_format = panfrost_clump_format(format);
-                }
+         /* Mesa does not advertise _HDR formats yet */
+         cfg.astc.decode_hdr = false;
 
-                if (layout->modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED)
-                        cfg.clump_ordering = MALI_CLUMP_ORDERING_TILED_U_INTERLEAVED;
-                else
-                        cfg.clump_ordering = MALI_CLUMP_ORDERING_LINEAR;
-        }
+         /* sRGB formats decode to RGBA8 sRGB, which is narrow.
+          *
+          * Non-sRGB formats decode to RGBA16F which is wide except if decode
+          * precision is set to GL_RGBA8 for that texture.
+          */
+         cfg.astc.decode_wide = !srgb && !iview->astc.narrow;
+      } else if (afbc) {
+         cfg.plane_type = MALI_PLANE_TYPE_AFBC;
+         cfg.afbc.superblock_size = translate_superblock_size(layout->modifier);
+         cfg.afbc.ytr = (layout->modifier & AFBC_FORMAT_MOD_YTR);
+         cfg.afbc.tiled_header = (layout->modifier & AFBC_FORMAT_MOD_TILED);
+         cfg.afbc.prefetch = true;
+         cfg.afbc.compression_mode = GENX(pan_afbc_compression_mode)(format);
+         cfg.afbc.header_stride = layout->slices[level].afbc.header_size;
+      } else if (afrc) {
+#if PAN_ARCH >= 10
+         struct pan_afrc_format_info finfo =
+            panfrost_afrc_get_format_info(format);
+
+         cfg.plane_type = MALI_PLANE_TYPE_AFRC;
+         cfg.afrc.block_size =
+            GENX(pan_afrc_block_size)(layout->modifier, index);
+         cfg.afrc.format =
+            GENX(pan_afrc_format)(finfo, layout->modifier, index);
+#endif
+      } else {
+         cfg.plane_type = is_3_planar_yuv ? MALI_PLANE_TYPE_CHROMA_2P
+                                          : MALI_PLANE_TYPE_GENERIC;
+         cfg.clump_format = panfrost_clump_format(format);
+      }
+
+      if (!afbc && !afrc) {
+         if (layout->modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED)
+            cfg.clump_ordering = MALI_CLUMP_ORDERING_TILED_U_INTERLEAVED;
+         else
+            cfg.clump_ordering = MALI_CLUMP_ORDERING_LINEAR;
+      }
+   }
+   *payload += pan_size(PLANE);
 }
 #endif
+
+static void
+panfrost_emit_surface(const struct pan_image_view *iview, unsigned level,
+                      unsigned index, unsigned sample,
+                      enum pipe_format format, void **payload)
+{
+   ASSERTED const struct util_format_description *desc =
+      util_format_description(format);
+
+   const struct pan_image_layout *layouts[MAX_IMAGE_PLANES] = {0};
+   mali_ptr plane_ptrs[MAX_IMAGE_PLANES] = {0};
+   int32_t row_strides[MAX_IMAGE_PLANES] = {0};
+   int32_t surface_strides[MAX_IMAGE_PLANES] = {0};
+
+   for (int i = 0; i < MAX_IMAGE_PLANES; i++) {
+      const struct pan_image *base_image = pan_image_view_get_plane(iview, i);
+
+      if (!base_image) {
+         /* Every texture should have at least one plane. */
+         assert(i > 0);
+         break;
+      }
+
+      mali_ptr base = base_image->data.base + base_image->data.offset;
+
+      if (iview->buf.size) {
+         assert(iview->dim == MALI_TEXTURE_DIMENSION_1D);
+         base += iview->buf.offset;
+      }
+
+      layouts[i] = &pan_image_view_get_plane(iview, i)->layout;
+
+      /* v4 does not support compression */
+      assert(PAN_ARCH >= 5 || !drm_is_afbc(layouts[i]->modifier));
+      assert(PAN_ARCH >= 5 || desc->layout != UTIL_FORMAT_LAYOUT_ASTC);
+
+      /* panfrost_compression_tag() wants the dimension of the resource, not the
+       * one of the image view (those might differ).
+       */
+      unsigned tag =
+         panfrost_compression_tag(desc, layouts[i]->dim, layouts[i]->modifier);
+
+      plane_ptrs[i] = panfrost_get_surface_pointer(
+         layouts[i], iview->dim, base | tag, level, index, sample);
+      panfrost_get_surface_strides(layouts[i], level, &row_strides[i],
+                                   &surface_strides[i]);
+   }
+
+#if PAN_ARCH >= 9
+   if (panfrost_format_is_yuv(format)) {
+      for (int i = 0; i < MAX_IMAGE_PLANES; i++) {
+         /* 3-plane YUV is submitted using two PLANE descriptors, where the
+          * second one is of type CHROMA_2P */
+         if (i > 1)
+            break;
+
+         if (plane_ptrs[i] == 0)
+            break;
+
+         /* 3-plane YUV requires equal stride for both chroma planes */
+         assert(row_strides[2] == 0 || row_strides[1] == row_strides[2]);
+
+         panfrost_emit_plane(iview, i, layouts[i], format, plane_ptrs[i], level,
+                             row_strides[i], surface_strides[i], plane_ptrs[2],
+                             payload);
+      }
+   } else {
+      panfrost_emit_plane(iview, 0, layouts[0], format, plane_ptrs[0], level,
+                          row_strides[0], surface_strides[0], 0, payload);
+   }
+   return;
+#endif
+
+#if PAN_ARCH <= 7
+#if PAN_ARCH == 7
+   if (panfrost_format_is_yuv(format)) {
+      panfrost_emit_multiplanar_surface(plane_ptrs, row_strides, payload);
+      return;
+   }
+#endif
+   panfrost_emit_surface_with_stride(plane_ptrs[0], row_strides[0],
+                                     surface_strides[0], payload);
+#endif
+}
 
 static void
 panfrost_emit_texture_payload(const struct pan_image_view *iview,
-                              enum pipe_format format,
-                              bool manual_stride,
-                              void *payload)
+                              enum pipe_format format, void *payload)
 {
-        const struct pan_image_layout *layout = &iview->image->layout;
-        ASSERTED const struct util_format_description *desc =
-                util_format_description(format);
+   unsigned nr_samples =
+      PAN_ARCH <= 7 ? pan_image_view_get_nr_samples(iview) : 1;
 
-        mali_ptr base = iview->image->data.bo->ptr.gpu + iview->image->data.offset;
+   /* Inject the addresses in, interleaving array indices, mip levels,
+    * cube faces, and strides in that order. On Bifrost and older, each
+    * sample had its own surface descriptor; on Valhall, they are fused
+    * into a single plane descriptor.
+    */
 
-        if (iview->buf.size) {
-                assert (iview->dim == MALI_TEXTURE_DIMENSION_1D);
-                base += iview->buf.offset;
-        }
-
-        /* panfrost_compression_tag() wants the dimension of the resource, not the
-         * one of the image view (those might differ).
-         */
-        base |= panfrost_compression_tag(desc, layout->dim, layout->modifier);
-
-        /* v4 does not support compression */
-        assert(PAN_ARCH >= 5 || !drm_is_afbc(layout->modifier));
-        assert(PAN_ARCH >= 5 || desc->layout != UTIL_FORMAT_LAYOUT_ASTC);
-
-        /* Inject the addresses in, interleaving array indices, mip levels,
-         * cube faces, and strides in that order. On Bifrost and older, each
-         * sample had its own surface descriptor; on Valhall, they are fused
-         * into a single plane descriptor.
-         */
-
-        unsigned first_layer = iview->first_layer, last_layer = iview->last_layer;
-        unsigned nr_samples = PAN_ARCH <= 7 ? layout->nr_samples : 1;
-        unsigned first_face = 0, last_face = 0;
-
-        if (iview->dim == MALI_TEXTURE_DIMENSION_CUBE) {
-                panfrost_adjust_cube_dimensions(&first_face, &last_face,
-                                                &first_layer, &last_layer);
-        }
-
-        struct panfrost_surface_iter iter;
-
-        for (panfrost_surface_iter_begin(&iter, first_layer, last_layer,
-                                         iview->first_level, iview->last_level,
-                                         first_face, last_face, nr_samples);
-             !panfrost_surface_iter_end(&iter);
-             panfrost_surface_iter_next(&iter)) {
-                mali_ptr pointer =
-                        panfrost_get_surface_pointer(layout, iview->dim, base,
-                                                     iter.level, iter.layer,
-                                                     iter.face, iter.sample);
-
-                if (!manual_stride) {
-#if PAN_ARCH <= 5
-                        pan_pack(payload, SURFACE, cfg) {
-                                cfg.pointer = pointer;
-                        }
-                        payload += pan_size(SURFACE);
+#if PAN_ARCH >= 7
+   /* V7 and later treats faces as extra layers */
+   for (int layer = iview->first_layer; layer <= iview->last_layer; ++layer) {
+      for (int sample = 0; sample < nr_samples; ++sample) {
+         for (int level = iview->first_level; level <= iview->last_level; ++level) {
+            panfrost_emit_surface(iview, level, layer, sample,
+                                  format, &payload);
+         }
+      }
+   }
 #else
-                        unreachable("must use explicit stride on Bifrost");
+   unsigned first_layer = iview->first_layer, last_layer = iview->last_layer;
+   unsigned face_count = 1;
+
+   if (iview->dim == MALI_TEXTURE_DIMENSION_CUBE) {
+      first_layer /= 6;
+      last_layer /= 6;
+      face_count = 6;
+   }
+
+   /* V6 and earlier has a different memory-layout */
+   for (int layer = first_layer; layer <= last_layer; ++layer) {
+      for (int level = iview->first_level; level <= iview->last_level; ++level) {
+         /* order of face and sample doesn't matter; we can only have multiple
+          * of one or the other (no support for multisampled cubemaps)
+          */
+         for (int face = 0; face < face_count; ++face) {
+            for (int sample = 0; sample < nr_samples; ++sample) {
+               panfrost_emit_surface(iview, level, (face_count * layer) + face,
+                                     sample, format, &payload);
+            }
+         }
+      }
+   }
 #endif
-                } else {
-#if PAN_ARCH >= 9
-                        panfrost_emit_plane(layout, format, pointer, iter.level, payload);
-                        payload += pan_size(PLANE);
-#else
-                        pan_pack(payload, SURFACE_WITH_STRIDE, cfg) {
-                                cfg.pointer = pointer;
-                                panfrost_get_surface_strides(layout, iter.level,
-                                                             &cfg.row_stride,
-                                                             &cfg.surface_stride);
-                        }
-                        payload += pan_size(SURFACE_WITH_STRIDE);
-#endif
-                }
-        }
-}
-
-/* Check if we need to set a custom stride by computing the "expected"
- * stride and comparing it to what the user actually wants. Only applies
- * to linear textures, since tiled/compressed textures have strict
- * alignment requirements for their strides as it is */
-
-static bool
-panfrost_needs_explicit_stride(const struct pan_image_view *iview)
-{
-        /* Stride is explicit on Bifrost */
-        if (PAN_ARCH >= 6)
-                return true;
-
-        if (iview->image->layout.modifier != DRM_FORMAT_MOD_LINEAR)
-                return false;
-
-        unsigned bytes_per_block = util_format_get_blocksize(iview->format);
-        unsigned block_w = util_format_get_blockwidth(iview->format);
-
-        for (unsigned l = iview->first_level; l <= iview->last_level; ++l) {
-                unsigned actual = iview->image->layout.slices[l].line_stride;
-                unsigned expected =
-                        DIV_ROUND_UP(u_minify(iview->image->layout.width, l), block_w) *
-                        bytes_per_block;
-
-                if (actual != expected)
-                        return true;
-        }
-
-        return false;
 }
 
 #if PAN_ARCH <= 7
@@ -838,104 +590,279 @@ panfrost_needs_explicit_stride(const struct pan_image_view *iview)
 static enum mali_texture_layout
 panfrost_modifier_to_layout(uint64_t modifier)
 {
-        if (drm_is_afbc(modifier))
-                return MALI_TEXTURE_LAYOUT_AFBC;
-        else if (modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED)
-                return MALI_TEXTURE_LAYOUT_TILED;
-        else if (modifier == DRM_FORMAT_MOD_LINEAR)
-                return MALI_TEXTURE_LAYOUT_LINEAR;
-        else
-                unreachable("Invalid modifer");
+   if (drm_is_afbc(modifier))
+      return MALI_TEXTURE_LAYOUT_AFBC;
+   else if (modifier == DRM_FORMAT_MOD_ARM_16X16_BLOCK_U_INTERLEAVED)
+      return MALI_TEXTURE_LAYOUT_TILED;
+   else if (modifier == DRM_FORMAT_MOD_LINEAR)
+      return MALI_TEXTURE_LAYOUT_LINEAR;
+   else
+      unreachable("Invalid modifer");
 }
 #endif
 
+/*
+ * Generates a texture descriptor. Ideally, descriptors are immutable after the
+ * texture is created, so we can keep these hanging around in GPU memory in a
+ * dedicated BO and not have to worry. In practice there are some minor gotchas
+ * with this (the driver sometimes will change the format of a texture on the
+ * fly for compression) but it's fast enough to just regenerate the descriptor
+ * in those cases, rather than monkeypatching at drawtime. A texture descriptor
+ * consists of a 32-byte header followed by pointers.
+ */
 void
-GENX(panfrost_new_texture)(const struct panfrost_device *dev,
-                           const struct pan_image_view *iview,
-                           void *out, const struct panfrost_ptr *payload)
+GENX(panfrost_new_texture)(const struct pan_image_view *iview, void *out,
+                           const struct panfrost_ptr *payload)
 {
-        const struct pan_image_layout *layout = &iview->image->layout;
-        enum pipe_format format = iview->format;
-        unsigned swizzle;
+   const struct pan_image *base_image = pan_image_view_get_plane(iview, 0);
+   const struct pan_image_layout *layout = &base_image->layout;
+   enum pipe_format format = iview->format;
+   const struct util_format_description *desc = util_format_description(format);
+   uint32_t mali_format = GENX(panfrost_format_from_pipe_format)(format)->hw;
+   unsigned char swizzle[4];
 
-        if (PAN_ARCH >= 7 && util_format_is_depth_or_stencil(format)) {
-                /* v7+ doesn't have an _RRRR component order, combine the
-                 * user swizzle with a .XXXX swizzle to emulate that.
-                 */
-                static const unsigned char replicate_x[4] = {
-                        PIPE_SWIZZLE_X, PIPE_SWIZZLE_X,
-                        PIPE_SWIZZLE_X, PIPE_SWIZZLE_X,
-                };
-                unsigned char patched_swizzle[4];
+   if (desc->layout == UTIL_FORMAT_LAYOUT_ASTC && iview->astc.narrow &&
+       desc->colorspace != UTIL_FORMAT_COLORSPACE_SRGB) {
+      mali_format = MALI_PACK_FMT(RGBA8_UNORM, RGBA, L);
+   }
 
-                util_format_compose_swizzles(replicate_x,
-                                             iview->swizzle,
-                                             patched_swizzle);
-                swizzle = panfrost_translate_swizzle_4(patched_swizzle);
-        } else {
-                swizzle = panfrost_translate_swizzle_4(iview->swizzle);
-        }
+   if (PAN_ARCH >= 7 && util_format_is_depth_or_stencil(format)) {
+      /* v7+ doesn't have an _RRRR component order, combine the
+       * user swizzle with a .XXXX swizzle to emulate that.
+       */
+      static const unsigned char replicate_x[4] = {
+         PIPE_SWIZZLE_X,
+         PIPE_SWIZZLE_X,
+         PIPE_SWIZZLE_X,
+         PIPE_SWIZZLE_X,
+      };
 
-        bool manual_stride =
-                panfrost_needs_explicit_stride(iview);
+      util_format_compose_swizzles(replicate_x, iview->swizzle, swizzle);
+   } else if ((PAN_ARCH == 7 || PAN_ARCH == 10) &&
+              !panfrost_format_is_yuv(format)) {
+#if PAN_ARCH == 7 || PAN_ARCH >= 10
+      /* v7 (only) restricts component orders when AFBC is in use.
+       * Rather than restrict AFBC, we use an allowed component order
+       * with an invertible swizzle composed.
+       * v10 has the same restriction, but on AFRC formats.
+       */
+      enum mali_rgb_component_order orig = mali_format & BITFIELD_MASK(12);
+      struct pan_decomposed_swizzle decomposed =
+         GENX(pan_decompose_swizzle)(orig);
 
-        panfrost_emit_texture_payload(iview, format,
-                                      manual_stride,
-                                      payload->cpu);
+      /* Apply the new component order */
+      mali_format = (mali_format & ~orig) | decomposed.pre;
 
-        unsigned array_size = iview->last_layer - iview->first_layer + 1;
-
-        if (iview->dim == MALI_TEXTURE_DIMENSION_CUBE) {
-                assert(iview->first_layer % 6 == 0);
-                assert(iview->last_layer % 6 == 5);
-                array_size /=  6;
-        }
-
-        unsigned width;
-
-        if (iview->buf.size) {
-                assert(iview->dim == MALI_TEXTURE_DIMENSION_1D);
-                assert(!iview->first_level && !iview->last_level);
-                assert(!iview->first_layer && !iview->last_layer);
-                assert(layout->nr_samples == 1);
-                assert(layout->height == 1 && layout->depth == 1);
-                assert(iview->buf.offset + iview->buf.size <= layout->width);
-                width = iview->buf.size;
-        } else {
-                width = u_minify(layout->width, iview->first_level);
-        }
-
-        pan_pack(out, TEXTURE, cfg) {
-                cfg.dimension = iview->dim;
-                cfg.format = dev->formats[format].hw;
-                cfg.width = width;
-                cfg.height = u_minify(layout->height, iview->first_level);
-                if (iview->dim == MALI_TEXTURE_DIMENSION_3D)
-                        cfg.depth = u_minify(layout->depth, iview->first_level);
-                else
-                        cfg.sample_count = layout->nr_samples;
-                cfg.swizzle = swizzle;
-#if PAN_ARCH >= 9
-                cfg.texel_interleave =
-                        (layout->modifier != DRM_FORMAT_MOD_LINEAR) ||
-                        util_format_is_compressed(format);
-#else
-                cfg.texel_ordering =
-                        panfrost_modifier_to_layout(layout->modifier);
+      /* Compose the new swizzle */
+      util_format_compose_swizzles(decomposed.post, iview->swizzle, swizzle);
 #endif
-                cfg.levels = iview->last_level - iview->first_level + 1;
-                cfg.array_size = array_size;
+   } else {
+      STATIC_ASSERT(sizeof(swizzle) == sizeof(iview->swizzle));
+      memcpy(swizzle, iview->swizzle, sizeof(swizzle));
+   }
+
+   panfrost_emit_texture_payload(iview, format, payload->cpu);
+
+   unsigned array_size = iview->last_layer - iview->first_layer + 1;
+
+   /* If this is a cubemap, we expect the number of layers to be a multiple
+    * of 6.
+    */
+   if (iview->dim == MALI_TEXTURE_DIMENSION_CUBE) {
+      assert(array_size % 6 == 0);
+      array_size /= 6;
+   }
+
+   /* Multiplanar YUV textures require 2 surface descriptors. */
+   if (panfrost_format_is_yuv(iview->format) && PAN_ARCH >= 9 &&
+       pan_image_view_get_plane(iview, 1) != NULL)
+      array_size *= 2;
+
+   unsigned width, height, depth;
+
+   if (iview->buf.size) {
+      assert(iview->dim == MALI_TEXTURE_DIMENSION_1D);
+      assert(!iview->first_level && !iview->last_level);
+      assert(!iview->first_layer && !iview->last_layer);
+      assert(layout->nr_samples == 1);
+      assert(layout->height == 1 && layout->depth == 1);
+      assert(iview->buf.offset + iview->buf.size <= layout->width);
+      width = iview->buf.size;
+      height = 1;
+      depth = 1;
+   } else {
+      width = u_minify(layout->width, iview->first_level);
+      height = u_minify(layout->height, iview->first_level);
+      depth = u_minify(layout->depth, iview->first_level);
+      if (util_format_is_compressed(layout->format) &&
+          !util_format_is_compressed(format)) {
+         width =
+            DIV_ROUND_UP(width, util_format_get_blockwidth(layout->format));
+         height =
+            DIV_ROUND_UP(height, util_format_get_blockheight(layout->format));
+         depth =
+            DIV_ROUND_UP(depth, util_format_get_blockdepth(layout->format));
+         assert(util_format_get_blockwidth(format) == 1);
+         assert(util_format_get_blockheight(format) == 1);
+         assert(util_format_get_blockheight(format) == 1);
+         assert(iview->last_level == iview->first_level);
+      }
+   }
+
+   pan_pack(out, TEXTURE, cfg) {
+      cfg.dimension = iview->dim;
+      cfg.format = mali_format;
+      cfg.width = width;
+      cfg.height = height;
+      if (iview->dim == MALI_TEXTURE_DIMENSION_3D)
+         cfg.depth = depth;
+      else
+         cfg.sample_count = layout->nr_samples;
+      cfg.swizzle = panfrost_translate_swizzle_4(swizzle);
+#if PAN_ARCH >= 9
+      cfg.texel_interleave = (layout->modifier != DRM_FORMAT_MOD_LINEAR) ||
+                             util_format_is_compressed(format);
+#else
+      cfg.texel_ordering = panfrost_modifier_to_layout(layout->modifier);
+#endif
+      cfg.levels = iview->last_level - iview->first_level + 1;
+      cfg.array_size = array_size;
 
 #if PAN_ARCH >= 6
-                cfg.surfaces = payload->gpu;
+      cfg.surfaces = payload->gpu;
 
-                /* We specify API-level LOD clamps in the sampler descriptor
-                 * and use these clamps simply for bounds checking */
-                cfg.minimum_lod = FIXED_16(0, false);
-                cfg.maximum_lod = FIXED_16(cfg.levels - 1, false);
-#else
-                cfg.manual_stride = manual_stride;
+      /* We specify API-level LOD clamps in the sampler descriptor
+       * and use these clamps simply for bounds checking.
+       */
+      cfg.minimum_lod = 0;
+      cfg.maximum_lod = cfg.levels - 1;
 #endif
-        }
+   }
 }
-#endif /* ifdef PAN_ARCH */
+
+#if PAN_ARCH >= 9
+enum mali_afbc_compression_mode
+GENX(pan_afbc_compression_mode)(enum pipe_format format)
+{
+   /* There's a special case for texturing the stencil part from a combined
+    * depth/stencil texture, handle it separately.
+    */
+   if (format == PIPE_FORMAT_X24S8_UINT)
+      return MALI_AFBC_COMPRESSION_MODE_X24S8;
+
+   /* Otherwise, map canonical formats to the hardware enum. This only
+    * needs to handle the subset of formats returned by
+    * panfrost_afbc_format.
+    */
+   /* clang-format off */
+   switch (panfrost_afbc_format(PAN_ARCH, format)) {
+   case PAN_AFBC_MODE_R8:          return MALI_AFBC_COMPRESSION_MODE_R8;
+   case PAN_AFBC_MODE_R8G8:        return MALI_AFBC_COMPRESSION_MODE_R8G8;
+   case PAN_AFBC_MODE_R5G6B5:      return MALI_AFBC_COMPRESSION_MODE_R5G6B5;
+   case PAN_AFBC_MODE_R4G4B4A4:    return MALI_AFBC_COMPRESSION_MODE_R4G4B4A4;
+   case PAN_AFBC_MODE_R5G5B5A1:    return MALI_AFBC_COMPRESSION_MODE_R5G5B5A1;
+   case PAN_AFBC_MODE_R8G8B8:      return MALI_AFBC_COMPRESSION_MODE_R8G8B8;
+   case PAN_AFBC_MODE_R8G8B8A8:    return MALI_AFBC_COMPRESSION_MODE_R8G8B8A8;
+   case PAN_AFBC_MODE_R10G10B10A2: return MALI_AFBC_COMPRESSION_MODE_R10G10B10A2;
+   case PAN_AFBC_MODE_R11G11B10:   return MALI_AFBC_COMPRESSION_MODE_R11G11B10;
+   case PAN_AFBC_MODE_S8:          return MALI_AFBC_COMPRESSION_MODE_S8;
+   case PAN_AFBC_MODE_INVALID:     unreachable("Invalid AFBC format");
+   }
+   /* clang-format on */
+
+   unreachable("all AFBC formats handled");
+}
+#endif
+
+#if PAN_ARCH >= 10
+enum mali_afrc_format
+GENX(pan_afrc_format)(struct pan_afrc_format_info info, uint64_t modifier,
+                      unsigned plane)
+{
+   bool scan = panfrost_afrc_is_scan(modifier);
+
+   assert(info.bpc == 8 || info.bpc == 10);
+   assert(info.num_comps > 0 && info.num_comps <= 4);
+
+   switch (info.ichange_fmt) {
+   case PAN_AFRC_ICHANGE_FORMAT_RAW:
+      assert(plane == 0);
+
+      if (info.bpc == 8)
+         return (scan ? MALI_AFRC_FORMAT_R8_SCAN : MALI_AFRC_FORMAT_R8_ROT) +
+                (info.num_comps - 1);
+
+      assert(info.num_comps == 4);
+      return (scan ? MALI_AFRC_FORMAT_R10G10B10A10_SCAN
+                   : MALI_AFRC_FORMAT_R10G10B10A10_ROT);
+
+   case PAN_AFRC_ICHANGE_FORMAT_YUV444:
+      if (info.bpc == 8) {
+         if (plane == 0 || info.num_planes == 3)
+            return (scan ? MALI_AFRC_FORMAT_R8_444_SCAN
+                         : MALI_AFRC_FORMAT_R8_444_ROT);
+
+         return (scan ? MALI_AFRC_FORMAT_R8G8_444_SCAN
+                      : MALI_AFRC_FORMAT_R8G8_444_ROT);
+      }
+
+      assert(info.num_planes == 3);
+      return (scan ? MALI_AFRC_FORMAT_R10_444_SCAN
+                   : MALI_AFRC_FORMAT_R10_444_ROT);
+
+   case PAN_AFRC_ICHANGE_FORMAT_YUV422:
+      if (info.bpc == 8) {
+         if (plane == 0 || info.num_planes == 3)
+            return (scan ? MALI_AFRC_FORMAT_R8_422_SCAN
+                         : MALI_AFRC_FORMAT_R8_422_ROT);
+
+         return (scan ? MALI_AFRC_FORMAT_R8G8_422_SCAN
+                      : MALI_AFRC_FORMAT_R8G8_422_ROT);
+      }
+
+      if (plane == 0 || info.num_planes == 3)
+         return (scan ? MALI_AFRC_FORMAT_R10_422_SCAN
+                      : MALI_AFRC_FORMAT_R10_422_ROT);
+
+      return (scan ? MALI_AFRC_FORMAT_R10G10_422_SCAN
+                   : MALI_AFRC_FORMAT_R10G10_422_ROT);
+
+   case PAN_AFRC_ICHANGE_FORMAT_YUV420:
+      if (info.bpc == 8) {
+         if (plane == 0 || info.num_planes == 3)
+            return (scan ? MALI_AFRC_FORMAT_R8_420_SCAN
+                         : MALI_AFRC_FORMAT_R8_420_ROT);
+
+         return (scan ? MALI_AFRC_FORMAT_R8G8_420_SCAN
+                      : MALI_AFRC_FORMAT_R8G8_420_ROT);
+      }
+
+      if (plane == 0 || info.num_planes == 3)
+         return (scan ? MALI_AFRC_FORMAT_R10_420_SCAN
+                      : MALI_AFRC_FORMAT_R10_420_ROT);
+
+      return (scan ? MALI_AFRC_FORMAT_R10G10_420_SCAN
+                   : MALI_AFRC_FORMAT_R10G10_420_ROT);
+
+   default:
+      return MALI_AFRC_FORMAT_INVALID;
+   }
+}
+
+enum mali_afrc_block_size
+GENX(pan_afrc_block_size)(uint64_t modifier, unsigned index)
+{
+   /* Clump size flag for planes 1 and 2 is shifted by 4 bits */
+   unsigned shift = index == 0 ? 0 : 4;
+   uint64_t flag = (modifier >> shift) & AFRC_FORMAT_MOD_CU_SIZE_MASK;
+
+   /* clang-format off */
+   switch (flag) {
+   case AFRC_FORMAT_MOD_CU_SIZE_16: return MALI_AFRC_BLOCK_SIZE_16;
+   case AFRC_FORMAT_MOD_CU_SIZE_24: return MALI_AFRC_BLOCK_SIZE_24;
+   case AFRC_FORMAT_MOD_CU_SIZE_32: return MALI_AFRC_BLOCK_SIZE_32;
+   default:                         unreachable("invalid code unit size");
+   }
+   /* clang-format on */
+}
+#endif

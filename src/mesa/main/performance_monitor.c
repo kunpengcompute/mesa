@@ -35,7 +35,7 @@
  */
 
 #include <stdbool.h>
-#include "glheader.h"
+#include "util/glheader.h"
 #include "context.h"
 #include "enums.h"
 #include "hash.h"
@@ -57,7 +57,7 @@
 void
 _mesa_init_performance_monitors(struct gl_context *ctx)
 {
-   ctx->PerfMonitor.Monitors = _mesa_NewHashTable();
+   _mesa_InitHashTable(&ctx->PerfMonitor.Monitors);
    ctx->PerfMonitor.NumGroups = 0;
    ctx->PerfMonitor.Groups = NULL;
 }
@@ -256,14 +256,14 @@ is_perf_monitor_result_available(struct gl_context *ctx,
    for (i = 0; i < m->num_active_counters; ++i) {
       struct pipe_query *query = m->active_counters[i].query;
       union pipe_query_result result;
-      if (query && !pipe->get_query_result(pipe, query, FALSE, &result)) {
+      if (query && !pipe->get_query_result(pipe, query, false, &result)) {
          /* The query is busy. */
          return false;
       }
    }
 
    if (m->batch_query &&
-       !pipe->get_query_result(pipe, m->batch_query, FALSE, m->batch_result))
+       !pipe->get_query_result(pipe, m->batch_query, false, m->batch_result))
       return false;
 
    return true;
@@ -288,7 +288,7 @@ get_perf_monitor_result(struct gl_context *ctx,
    bool have_batch_query = false;
 
    if (m->batch_query)
-      have_batch_query = pipe->get_query_result(pipe, m->batch_query, TRUE,
+      have_batch_query = pipe->get_query_result(pipe, m->batch_query, true,
                                                 m->batch_result);
 
    /* Read query results for each active counter. */
@@ -303,7 +303,7 @@ get_perf_monitor_result(struct gl_context *ctx,
       type = ctx->PerfMonitor.Groups[gid].Counters[cid].Type;
 
       if (cntr->query) {
-         if (!pipe->get_query_result(pipe, cntr->query, TRUE, &result))
+         if (!pipe->get_query_result(pipe, cntr->query, true, &result))
             continue;
       } else {
          if (!have_batch_query)
@@ -496,16 +496,15 @@ free_performance_monitor(void *data, void *user)
 void
 _mesa_free_performance_monitors(struct gl_context *ctx)
 {
-   _mesa_HashDeleteAll(ctx->PerfMonitor.Monitors,
-                       free_performance_monitor, ctx);
-   _mesa_DeleteHashTable(ctx->PerfMonitor.Monitors);
+   _mesa_DeinitHashTable(&ctx->PerfMonitor.Monitors, free_performance_monitor,
+                         ctx);
 }
 
 static inline struct gl_perf_monitor_object *
 lookup_monitor(struct gl_context *ctx, GLuint id)
 {
    return (struct gl_perf_monitor_object *)
-      _mesa_HashLookup(ctx->PerfMonitor.Monitors, id);
+      _mesa_HashLookup(&ctx->PerfMonitor.Monitors, id);
 }
 
 static inline const struct gl_perf_monitor_group *
@@ -735,7 +734,7 @@ _mesa_GenPerfMonitorsAMD(GLsizei n, GLuint *monitors)
    if (monitors == NULL)
       return;
 
-   if (_mesa_HashFindFreeKeys(ctx->PerfMonitor.Monitors, monitors, n)) {
+   if (_mesa_HashFindFreeKeys(&ctx->PerfMonitor.Monitors, monitors, n)) {
       GLsizei i;
       for (i = 0; i < n; i++) {
          struct gl_perf_monitor_object *m =
@@ -744,7 +743,7 @@ _mesa_GenPerfMonitorsAMD(GLsizei n, GLuint *monitors)
             _mesa_error(ctx, GL_OUT_OF_MEMORY, "glGenPerfMonitorsAMD");
             return;
          }
-         _mesa_HashInsert(ctx->PerfMonitor.Monitors, monitors[i], m, true);
+         _mesa_HashInsert(&ctx->PerfMonitor.Monitors, monitors[i], m);
       }
    } else {
       _mesa_error(ctx, GL_OUT_OF_MEMORY, "glGenPerfMonitorsAMD");
@@ -779,7 +778,7 @@ _mesa_DeletePerfMonitorsAMD(GLsizei n, GLuint *monitors)
             m->Ended = false;
          }
 
-         _mesa_HashRemove(ctx->PerfMonitor.Monitors, monitors[i]);
+         _mesa_HashRemove(&ctx->PerfMonitor.Monitors, monitors[i]);
          ralloc_free(m->ActiveGroups);
          ralloc_free(m->ActiveCounters);
          delete_perf_monitor(ctx, m);
@@ -942,6 +941,15 @@ perf_monitor_result_size(const struct gl_context *ctx,
    unsigned group, counter;
    unsigned size = 0;
 
+   /**
+    * If no BeginPerfMonitorAMD has been issued for a monitor,
+    * or if SelectPerfMonitorCountersAMD is called on a monitor, then the result
+    * of querying for PERFMON_RESULT_SIZE will be 0.
+    * Using the same logic in is_perf_monitor_result_available().
+    */
+   if (!m->num_active_counters)
+      return 0;
+
    for (group = 0; group < ctx->PerfMonitor.NumGroups; group++) {
       const struct gl_perf_monitor_group *g = &ctx->PerfMonitor.Groups[group];
 
@@ -964,7 +972,6 @@ _mesa_GetPerfMonitorCounterDataAMD(GLuint monitor, GLenum pname,
    GET_CURRENT_CONTEXT(ctx);
 
    struct gl_perf_monitor_object *m = lookup_monitor(ctx, monitor);
-   bool result_available;
 
    if (m == NULL) {
       _mesa_error(ctx, GL_INVALID_VALUE,
@@ -986,12 +993,12 @@ _mesa_GetPerfMonitorCounterDataAMD(GLuint monitor, GLenum pname,
       return;
    }
 
-   /* If the monitor has never ended, there is no result. */
-   result_available = m->Ended &&
-      is_perf_monitor_result_available(ctx, m);
-
-   /* AMD appears to return 0 for all queries unless a result is available. */
-   if (!result_available) {
+   /**
+    * If no EndPerfMonitorAMD has been issued for a monitor
+    * then the result of querying for PERFMON_RESULT_AVAILABLE and
+    * PERFMON_RESULT_SIZE will be 0
+    */
+   if (!m->Ended) {
       *data = 0;
       if (bytesWritten != NULL)
          *bytesWritten = sizeof(GLuint);
@@ -1000,7 +1007,10 @@ _mesa_GetPerfMonitorCounterDataAMD(GLuint monitor, GLenum pname,
 
    switch (pname) {
    case GL_PERFMON_RESULT_AVAILABLE_AMD:
-      *data = 1;
+      if (is_perf_monitor_result_available(ctx, m))
+         *data = 1;
+      else
+         *data = 0;
       if (bytesWritten != NULL)
          *bytesWritten = sizeof(GLuint);
       break;

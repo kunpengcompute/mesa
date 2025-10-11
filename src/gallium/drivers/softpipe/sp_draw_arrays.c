@@ -82,7 +82,7 @@ softpipe_draw_vbo(struct pipe_context *pipe,
       return;
 
    if (indirect && indirect->buffer) {
-      util_draw_indirect(pipe, info, indirect);
+      util_draw_indirect(pipe, info, drawid_offset, indirect);
       return;
    }
 
@@ -117,7 +117,7 @@ softpipe_draw_vbo(struct pipe_context *pipe,
       }
 
       draw_set_indexes(draw,
-                       (ubyte *) mapped_indices,
+                       (uint8_t *) mapped_indices,
                        info->index_size, available_space);
    }
 
@@ -164,5 +164,5 @@ softpipe_draw_vbo(struct pipe_context *pipe,
    draw_flush(draw);
 
    /* Note: leave drawing surfaces mapped */
-   sp->dirty_render_cache = TRUE;
+   sp->dirty_render_cache = true;
 }

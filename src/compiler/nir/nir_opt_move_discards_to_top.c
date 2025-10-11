@@ -26,24 +26,6 @@
 #include "nir_control_flow.h"
 #include "nir_worklist.h"
 
-static bool
-nir_op_is_derivative(nir_op op)
-{
-   return op == nir_op_fddx ||
-          op == nir_op_fddy ||
-          op == nir_op_fddx_fine ||
-          op == nir_op_fddy_fine ||
-          op == nir_op_fddx_coarse ||
-          op == nir_op_fddy_coarse;
-}
-
-static bool
-nir_texop_implies_derivative(nir_texop op)
-{
-   return op == nir_texop_tex ||
-          op == nir_texop_txb ||
-          op == nir_texop_lod;
-}
 #define MOVE_INSTR_FLAG            1
 #define STOP_PROCESSING_INSTR_FLAG 2
 
@@ -54,9 +36,6 @@ nir_texop_implies_derivative(nir_texop op)
 static bool
 can_move_src(nir_src *src, void *worklist)
 {
-   if (!src->is_ssa)
-      return false;
-
    nir_instr *instr = src->ssa->parent_instr;
    if (instr->pass_flags)
       return true;
@@ -147,17 +126,12 @@ opt_move_discards_to_top_impl(nir_function_impl *impl)
          instr->pass_flags = 0;
 
          switch (instr->type) {
-         case nir_instr_type_alu: {
-            nir_alu_instr *alu = nir_instr_as_alu(instr);
-            if (nir_op_is_derivative(alu->op))
-               consider_discards = false;
-            continue;
-         }
-
+         case nir_instr_type_alu:
          case nir_instr_type_deref:
          case nir_instr_type_load_const:
-         case nir_instr_type_ssa_undef:
+         case nir_instr_type_undef:
          case nir_instr_type_phi:
+         case nir_instr_type_debug_info:
             /* These are all safe */
             continue;
 
@@ -168,7 +142,7 @@ opt_move_discards_to_top_impl(nir_function_impl *impl)
 
          case nir_instr_type_tex: {
             nir_tex_instr *tex = nir_instr_as_tex(instr);
-            if (nir_texop_implies_derivative(tex->op))
+            if (nir_tex_instr_has_implicit_derivative(tex))
                consider_discards = false;
             continue;
          }
@@ -179,10 +153,57 @@ opt_move_discards_to_top_impl(nir_function_impl *impl)
                instr->pass_flags = STOP_PROCESSING_INSTR_FLAG;
                goto break_all;
             }
-
-            if ((intrin->intrinsic == nir_intrinsic_discard_if && consider_discards) ||
-                intrin->intrinsic == nir_intrinsic_demote_if)
+            switch (intrin->intrinsic) {
+            case nir_intrinsic_quad_broadcast:
+            case nir_intrinsic_quad_swap_horizontal:
+            case nir_intrinsic_quad_swap_vertical:
+            case nir_intrinsic_quad_swap_diagonal:
+            case nir_intrinsic_quad_vote_all:
+            case nir_intrinsic_quad_vote_any:
+            case nir_intrinsic_quad_swizzle_amd:
+            case nir_intrinsic_ddx:
+            case nir_intrinsic_ddx_fine:
+            case nir_intrinsic_ddx_coarse:
+            case nir_intrinsic_ddy:
+            case nir_intrinsic_ddy_fine:
+            case nir_intrinsic_ddy_coarse:
+               consider_discards = false;
+               break;
+            case nir_intrinsic_vote_any:
+            case nir_intrinsic_vote_all:
+            case nir_intrinsic_vote_feq:
+            case nir_intrinsic_vote_ieq:
+            case nir_intrinsic_ballot:
+            case nir_intrinsic_first_invocation:
+            case nir_intrinsic_read_invocation:
+            case nir_intrinsic_read_first_invocation:
+            case nir_intrinsic_elect:
+            case nir_intrinsic_reduce:
+            case nir_intrinsic_inclusive_scan:
+            case nir_intrinsic_exclusive_scan:
+            case nir_intrinsic_shuffle:
+            case nir_intrinsic_shuffle_xor:
+            case nir_intrinsic_shuffle_up:
+            case nir_intrinsic_shuffle_down:
+            case nir_intrinsic_rotate:
+            case nir_intrinsic_masked_swizzle_amd:
+            case nir_intrinsic_is_helper_invocation:
+            case nir_intrinsic_load_helper_invocation:
+               instr->pass_flags = STOP_PROCESSING_INSTR_FLAG;
+               goto break_all;
+            case nir_intrinsic_terminate_if:
+               if (!consider_discards) {
+                  /* assume that a shader either uses terminate or demote, but not both */
+                  instr->pass_flags = STOP_PROCESSING_INSTR_FLAG;
+                  goto break_all;
+               }
+            FALLTHROUGH;
+            case nir_intrinsic_demote_if:
                moved = moved || try_move_discard(intrin);
+               break;
+            default:
+               break;
+            }
             continue;
          }
 
@@ -210,7 +231,7 @@ break_all:
        * This provides stability for the algorithm and ensures that we don't
        * accidentally get dependencies out-of-order.
        */
-      nir_cursor cursor = nir_before_block(nir_start_block(impl));
+      nir_cursor cursor = nir_before_impl(impl);
       nir_foreach_block(block, impl) {
          nir_foreach_instr_safe(instr, block) {
             if (instr->pass_flags == STOP_PROCESSING_INSTR_FLAG)
@@ -240,10 +261,9 @@ nir_opt_move_discards_to_top(nir_shader *shader)
    if (!shader->info.fs.uses_discard)
       return false;
 
-   nir_foreach_function(function, shader) {
-      if (function->impl && opt_move_discards_to_top_impl(function->impl)) {
-         nir_metadata_preserve(function->impl, nir_metadata_block_index |
-                                               nir_metadata_dominance);
+   nir_foreach_function_impl(impl, shader) {
+      if (opt_move_discards_to_top_impl(impl)) {
+         nir_metadata_preserve(impl, nir_metadata_control_flow);
          progress = true;
       }
    }

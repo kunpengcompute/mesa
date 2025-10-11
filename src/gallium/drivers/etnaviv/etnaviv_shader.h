@@ -28,9 +28,11 @@
 #define H_ETNAVIV_SHADER
 
 #include "mesa/main/config.h"
+#include "etna_core_info.h"
 #include "nir.h"
 #include "pipe/p_state.h"
 #include "util/disk_cache.h"
+#include "util/u_queue.h"
 
 struct etna_context;
 struct etna_shader_variant;
@@ -44,8 +46,8 @@ struct etna_shader_key
           * Combined Vertex/Fragment shader parameters:
           */
 
-         /* do we need to swap rb in frag color? */
-         unsigned frag_rb_swap : 1;
+         /* do we need to swap rb in frag colors? */
+         unsigned frag_rb_swap : PIPE_MAX_COLOR_BUFS;
          /* do we need to invert front facing value? */
          unsigned front_ccw : 1;
          /* do we need to replace glTexCoord.xy ? */
@@ -58,12 +60,13 @@ struct etna_shader_key
    };
 
    int num_texture_states;
-   nir_lower_tex_shadow_swizzle tex_swizzle[PIPE_MAX_SHADER_SAMPLER_VIEWS];
-   enum compare_func tex_compare_func[PIPE_MAX_SHADER_SAMPLER_VIEWS];
+   nir_lower_tex_shadow_swizzle tex_swizzle[16];
+   enum compare_func tex_compare_func[16];
 };
 
 static inline bool
-etna_shader_key_equal(struct etna_shader_key *a, struct etna_shader_key *b)
+etna_shader_key_equal(const struct etna_shader_key* const a,
+                      const struct etna_shader_key* const b)
 {
    /* slow-path if we need to check tex_{swizzle,compare_func} */
    if (unlikely(a->has_sample_tex_compare || b->has_sample_tex_compare))
@@ -77,14 +80,17 @@ struct etna_shader {
    uint32_t id;
    uint32_t variant_count;
 
-   struct tgsi_token *tokens;
    struct nir_shader *nir;
+   const struct etna_core_info *info;
    const struct etna_specs *specs;
    struct etna_compiler *compiler;
 
    struct etna_shader_variant *variants;
 
    cache_key cache_key;     /* shader disk-cache key */
+
+   /* parallel shader compiles */
+   struct util_queue_fence ready;
 };
 
 bool
@@ -94,10 +100,18 @@ bool
 etna_shader_update_vertex(struct etna_context *ctx);
 
 struct etna_shader_variant *
-etna_shader_variant(struct etna_shader *shader, struct etna_shader_key key,
-                   struct util_debug_callback *debug);
+etna_shader_variant(struct etna_shader *shader,
+                    const struct etna_shader_key* const key,
+                    struct util_debug_callback *debug,
+                    bool called_from_draw);
 
 void
 etna_shader_init(struct pipe_context *pctx);
+
+bool
+etna_shader_screen_init(struct pipe_screen *pscreen);
+
+void
+etna_shader_screen_fini(struct pipe_screen *pscreen);
 
 #endif

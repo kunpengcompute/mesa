@@ -141,11 +141,9 @@ nvc0_resource_from_user_memory(struct pipe_screen *pipe,
                                const struct pipe_resource *templ,
                                void *user_memory)
 {
-   ASSERTED struct nouveau_screen *screen = nouveau_screen(pipe);
-
-   assert(screen->has_svm);
-   assert(templ->target == PIPE_BUFFER);
-
+   struct nouveau_screen *screen = nouveau_screen(pipe);
+   if (!screen->has_svm || templ->target != PIPE_BUFFER)
+      return NULL;
    return nouveau_buffer_create_from_user(pipe, templ, user_memory);
 }
 
@@ -175,4 +173,8 @@ nvc0_screen_init_resource_functions(struct pipe_screen *pscreen)
    pscreen->resource_get_handle = nvc0_miptree_get_handle;
    pscreen->resource_destroy = nvc0_resource_destroy;
    pscreen->resource_from_user_memory = nvc0_resource_from_user_memory;
+
+   pscreen->memobj_create_from_handle = nv50_memobj_create_from_handle;
+   pscreen->resource_from_memobj = nv50_resource_from_memobj;
+   pscreen->memobj_destroy = nv50_memobj_destroy;
 }

@@ -24,7 +24,7 @@
 #include <stdlib.h>
 #include <math.h>
 
-#include "util/debug.h"
+#include "util/u_debug.h"
 #include "util/macros.h"
 #include "util/u_math.h"
 #include "compiler/shader_enums.h"
@@ -64,8 +64,7 @@ void
 intel_get_urb_config(const struct intel_device_info *devinfo,
                      const struct intel_l3_config *l3_cfg,
                      bool tess_present, bool gs_present,
-                     const unsigned entry_size[4],
-                     unsigned entries[4], unsigned start[4],
+                     struct intel_urb_config *urb_cfg,
                      enum intel_urb_deref_block_size *deref_block_size,
                      bool *constrained)
 {
@@ -82,10 +81,10 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
     *    Engine, the actual URB space available for operation is only 60KB
     *    (per bank). Similarly when URB space programmed is 128KB (per bank)
     *    for render engine, the actual URB space available for operation is
-    *    only 124KB (per bank). More detailed descripton available in "L3
+    *    only 124KB (per bank). More detailed description available in "L3
     *    Cache" section of the B-Spec."
     */
-   if (devinfo->verx10 == 120) {
+   if (devinfo->verx10 == 120 && devinfo->has_compute_engine) {
       assert(devinfo->num_slices == 1);
       urb_size_kB -= 4 * devinfo->l3_banks;
    }
@@ -110,7 +109,7 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
     */
    unsigned granularity[4];
    for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
-      granularity[i] = (entry_size[i] < 9) ? 8 : 1;
+      granularity[i] = (urb_cfg->size[i] < 9) ? 8 : 1;
    }
 
    unsigned min_entries[4] = {
@@ -148,7 +147,7 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
 
    unsigned entry_size_bytes[4];
    for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
-      entry_size_bytes[i] = 64 * entry_size[i];
+      entry_size_bytes[i] = 64 * urb_cfg->size[i];
    }
 
    /* Initially, assign each stage the minimum amount of URB space it needs,
@@ -208,20 +207,21 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
     * allocated to each stage.
     */
    for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
-      entries[i] = chunks[i] * chunk_size_bytes / entry_size_bytes[i];
+      urb_cfg->entries[i] = chunks[i] * chunk_size_bytes / entry_size_bytes[i];
 
       /* Since we rounded up when computing wants[], this may be slightly
        * more than the maximum allowed amount, so correct for that.
        */
-      entries[i] = MIN2(entries[i], devinfo->urb.max_entries[i]);
+      urb_cfg->entries[i] = MIN2(urb_cfg->entries[i],
+                                 devinfo->urb.max_entries[i]);
 
       /* Ensure that we program a multiple of the granularity. */
-      entries[i] = ROUND_DOWN_TO(entries[i], granularity[i]);
+      urb_cfg->entries[i] = ROUND_DOWN_TO(urb_cfg->entries[i], granularity[i]);
 
       /* Finally, sanity check to make sure we have at least the minimum
        * number of entries needed for each stage.
        */
-      assert(entries[i] >= min_entries[i]);
+      assert(urb_cfg->entries[i] >= min_entries[i]);
    }
 
    /* Lay out the URB in pipeline order: push constants, VS, HS, DS, GS. */
@@ -245,12 +245,12 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
 
    int next_urb = first_urb;
    for (int i = MESA_SHADER_VERTEX; i <= MESA_SHADER_GEOMETRY; i++) {
-      if (entries[i]) {
-         start[i] = next_urb;
+      if (urb_cfg->entries[i]) {
+         urb_cfg->start[i] = next_urb;
          next_urb += chunks[i];
       } else {
          /* Put disabled stages at the beginning of the valid range */
-         start[i] = first_urb;
+         urb_cfg->start[i] = first_urb;
       }
    }
 
@@ -278,12 +278,12 @@ intel_get_urb_config(const struct intel_device_info *devinfo,
          if (gs_present) {
             *deref_block_size = INTEL_URB_DEREF_BLOCK_SIZE_PER_POLY;
          } else if (tess_present) {
-            if (entries[MESA_SHADER_TESS_EVAL] < 324)
+            if (urb_cfg->entries[MESA_SHADER_TESS_EVAL] < 324)
                *deref_block_size = INTEL_URB_DEREF_BLOCK_SIZE_PER_POLY;
             else
                *deref_block_size = INTEL_URB_DEREF_BLOCK_SIZE_32;
          } else {
-            if (entries[MESA_SHADER_VERTEX] < 192)
+            if (urb_cfg->entries[MESA_SHADER_VERTEX] < 192)
                *deref_block_size = INTEL_URB_DEREF_BLOCK_SIZE_PER_POLY;
             else
                *deref_block_size = INTEL_URB_DEREF_BLOCK_SIZE_32;
@@ -315,68 +315,100 @@ intel_get_mesh_urb_config(const struct intel_device_info *devinfo,
     * of entries, so we need to discount the space for constants for all of
     * them.  See 3DSTATE_URB_ALLOC_MESH and 3DSTATE_URB_ALLOC_TASK.
     */
-   const unsigned push_constant_kb = devinfo->max_constant_urb_size_kb;
+   unsigned push_constant_kb = devinfo->mesh_max_constant_urb_size_kb;
+   /* 3DSTATE_URB_ALLOC_MESH_BODY says
+    *
+    *    MESH URB Starting Address SliceN
+    *       This field specifies the offset (from the start of the URB memory
+    *       in slices beyond Slice0) of the MESH URB allocation, specified in
+    *       multiples of 8 KB.
+    */
+   push_constant_kb = ALIGN(push_constant_kb, 8);
    total_urb_kb -= push_constant_kb;
+   const unsigned total_urb_avail_mesh_task_kb = total_urb_kb;
 
    /* TODO(mesh): Take push constant size as parameter instead of considering always
     * the max? */
 
    float task_urb_share = 0.0f;
    if (r.task_entry_size_64b > 0) {
-      /* By default, assign 10% to TASK and 90% to MESH, since we expect MESH
-       * to use larger URB entries since it contains all the vertex and
-       * primitive data.  Environment variable allow us to tweak it.
+      /* By default, split memory between TASK and MESH proportionally to
+       * their entry sizes. Environment variable allow us to tweak it.
        *
        * TODO(mesh): Re-evaluate if this is a good default once there are more
        * workloads.
        */
       static int task_urb_share_percentage = -1;
-      if (task_urb_share_percentage < 0) {
+      if (task_urb_share_percentage == -1) {
          task_urb_share_percentage =
-            MIN2(env_var_as_unsigned("INTEL_MESH_TASK_URB_SHARE", 10), 100);
+            MIN2(debug_get_num_option("INTEL_MESH_TASK_URB_SHARE", -2), 100);
       }
-      task_urb_share = task_urb_share_percentage / 100.0f;
+
+      if (task_urb_share_percentage >= 0) {
+         task_urb_share = task_urb_share_percentage / 100.0f;
+      } else {
+         task_urb_share = (float)r.task_entry_size_64b / (r.task_entry_size_64b + r.mesh_entry_size_64b);
+      }
    }
 
-   const unsigned one_task_urb_kb = ALIGN(r.task_entry_size_64b * 64, 1024) / 1024;
+   /* 3DSTATE_URB_ALLOC_MESH_BODY and 3DSTATE_URB_ALLOC_TASK_BODY says
+    *
+    *   MESH Number of URB Entries must be divisible by 8 if the MESH/TASK URB
+    *   Entry Allocation Size is less than 9 512-bit URB entries.
+    */
+   const unsigned min_mesh_entries = r.mesh_entry_size_64b < 9 ? 8 : 1;
+   const unsigned min_task_entries = r.task_entry_size_64b < 9 ? 8 : 1;
+   const unsigned min_mesh_urb_kb = ALIGN(r.mesh_entry_size_64b * min_mesh_entries * 64, 1024) / 1024;
+   const unsigned min_task_urb_kb = ALIGN(r.task_entry_size_64b * min_task_entries * 64, 1024) / 1024;
 
-   const unsigned task_urb_kb = ALIGN(MAX2(total_urb_kb * task_urb_share, one_task_urb_kb), 8);
+   total_urb_kb -= (min_mesh_urb_kb + min_task_urb_kb);
 
-   const unsigned mesh_urb_kb = total_urb_kb - task_urb_kb;
+   /* split the remaining urb_kbs */
+   unsigned task_urb_kb = total_urb_kb * task_urb_share;
+   unsigned mesh_urb_kb = total_urb_kb - task_urb_kb;
+
+   /* sum minimum + split urb_kbs */
+   mesh_urb_kb += min_mesh_urb_kb;
+
+   /* 3DSTATE_URB_ALLOC_TASK_BODY says
+    *    MESH Number of URB Entries SliceN
+    *       This field specifies the offset (from the start of the URB memory
+    *       in slices beyond Slice0) of the TASK URB allocation, specified in
+    *       multiples of 8 KB.
+    */
+   if ((total_urb_avail_mesh_task_kb - ALIGN(mesh_urb_kb, 8)) >= min_task_entries) {
+      mesh_urb_kb = ALIGN(mesh_urb_kb, 8);
+   } else {
+      mesh_urb_kb = ROUND_DOWN_TO(mesh_urb_kb, 8);
+   }
 
    /* TODO(mesh): Could we avoid allocating URB for Mesh if rasterization is
     * disabled? */
 
-   unsigned next_address_8kb = DIV_ROUND_UP(push_constant_kb, 8);
-
-   if (r.task_entry_size_64b > 0) {
-      r.task_entries = MIN2((task_urb_kb * 16) / r.task_entry_size_64b, 1548);
-
-      /* 3DSTATE_URB_ALLOC_TASK_BODY says
-       *
-       *   TASK Number of URB Entries must be divisible by 8 if the TASK URB
-       *   Entry Allocation Size is less than 9 512-bit URB entries.
-       */
-      if (r.task_entry_size_64b < 9)
-         r.task_entries = ROUND_DOWN_TO(r.task_entries, 8);
-
-      r.task_starting_address_8kb = next_address_8kb;
-
-      assert(task_urb_kb % 8 == 0);
-      next_address_8kb += task_urb_kb / 8;
-   }
-
-   r.mesh_entries = MIN2((mesh_urb_kb * 16) / r.mesh_entry_size_64b, 1548);
-
-   /* Similar restriction to TASK. */
-   if (r.mesh_entry_size_64b < 9)
-      r.mesh_entries = ROUND_DOWN_TO(r.mesh_entries, 8);
+   unsigned next_address_8kb = push_constant_kb / 8;
+   assert(push_constant_kb % 8 == 0);
 
    r.mesh_starting_address_8kb = next_address_8kb;
+   r.mesh_entries = MIN2((mesh_urb_kb * 16) / r.mesh_entry_size_64b, 1548);
+   r.mesh_entries = r.mesh_entry_size_64b < 9 ? ROUND_DOWN_TO(r.mesh_entries, 8) : r.mesh_entries;
+
+   next_address_8kb += mesh_urb_kb / 8;
+   assert(mesh_urb_kb % 8 == 0);
+
+   r.task_starting_address_8kb = next_address_8kb;
+   task_urb_kb = total_urb_avail_mesh_task_kb - mesh_urb_kb;
+   if (r.task_entry_size_64b > 0) {
+      r.task_entries = MIN2((task_urb_kb * 16) / r.task_entry_size_64b, 1548);
+      r.task_entries = r.task_entry_size_64b < 9 ? ROUND_DOWN_TO(r.task_entries, 8) : r.task_entries;
+   }
 
    r.deref_block_size = r.mesh_entries > 32 ?
       INTEL_URB_DEREF_BLOCK_SIZE_MESH :
       INTEL_URB_DEREF_BLOCK_SIZE_PER_POLY;
+
+   assert(mesh_urb_kb + task_urb_kb <= total_urb_avail_mesh_task_kb);
+   assert(mesh_urb_kb >= min_mesh_urb_kb);
+   assert(task_urb_kb >= min_task_urb_kb);
 
    return r;
 }

@@ -1,25 +1,8 @@
 /*
  * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
  * Copyright 2009 Marek Olšák <maraeo@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "draw/draw_context.h"
 
@@ -34,7 +17,7 @@
 
 #include "tgsi/tgsi_parse.h"
 
-#include "pipe/p_config.h"
+#include "util/detect.h"
 
 #include "r300_cb.h"
 #include "r300_context.h"
@@ -46,8 +29,8 @@
 #include "r300_fs.h"
 #include "r300_texture.h"
 #include "r300_vs.h"
-#include "nir.h"
-#include "nir/nir_to_tgsi.h"
+#include "compiler/r300_nir.h"
+#include "compiler/nir_to_rc.h"
 
 /* r300_state: Functions used to initialize state context by translating
  * Gallium state objects into semi-native r300 state objects. */
@@ -58,8 +41,8 @@
         r300_mark_atom_dirty(r300, &(atom));   \
     }
 
-static boolean blend_discard_if_src_alpha_0(unsigned srcRGB, unsigned srcA,
-                                            unsigned dstRGB, unsigned dstA)
+static bool blend_discard_if_src_alpha_0(unsigned srcRGB, unsigned srcA,
+                                         unsigned dstRGB, unsigned dstA)
 {
     /* If the blend equation is ADD or REVERSE_SUBTRACT,
      * SRC_ALPHA == 0, and the following state is set, the colorbuffer
@@ -79,8 +62,8 @@ static boolean blend_discard_if_src_alpha_0(unsigned srcRGB, unsigned srcA,
             dstA == PIPE_BLENDFACTOR_ONE);
 }
 
-static boolean blend_discard_if_src_alpha_1(unsigned srcRGB, unsigned srcA,
-                                            unsigned dstRGB, unsigned dstA)
+static bool blend_discard_if_src_alpha_1(unsigned srcRGB, unsigned srcA,
+                                         unsigned dstRGB, unsigned dstA)
 {
     /* If the blend equation is ADD or REVERSE_SUBTRACT,
      * SRC_ALPHA == 1, and the following state is set, the colorbuffer
@@ -98,8 +81,8 @@ static boolean blend_discard_if_src_alpha_1(unsigned srcRGB, unsigned srcA,
             dstA == PIPE_BLENDFACTOR_ONE);
 }
 
-static boolean blend_discard_if_src_color_0(unsigned srcRGB, unsigned srcA,
-                                            unsigned dstRGB, unsigned dstA)
+static bool blend_discard_if_src_color_0(unsigned srcRGB, unsigned srcA,
+                                         unsigned dstRGB, unsigned dstA)
 {
     /* If the blend equation is ADD or REVERSE_SUBTRACT,
      * SRC_COLOR == (0,0,0), and the following state is set, the colorbuffer
@@ -113,8 +96,8 @@ static boolean blend_discard_if_src_color_0(unsigned srcRGB, unsigned srcA,
            (dstA == PIPE_BLENDFACTOR_ONE);
 }
 
-static boolean blend_discard_if_src_color_1(unsigned srcRGB, unsigned srcA,
-                                            unsigned dstRGB, unsigned dstA)
+static bool blend_discard_if_src_color_1(unsigned srcRGB, unsigned srcA,
+                                         unsigned dstRGB, unsigned dstA)
 {
     /* If the blend equation is ADD or REVERSE_SUBTRACT,
      * SRC_COLOR == (1,1,1), and the following state is set, the colorbuffer
@@ -128,8 +111,8 @@ static boolean blend_discard_if_src_color_1(unsigned srcRGB, unsigned srcA,
            (dstA == PIPE_BLENDFACTOR_ONE);
 }
 
-static boolean blend_discard_if_src_alpha_color_0(unsigned srcRGB, unsigned srcA,
-                                                  unsigned dstRGB, unsigned dstA)
+static bool blend_discard_if_src_alpha_color_0(unsigned srcRGB, unsigned srcA,
+                                               unsigned dstRGB, unsigned dstA)
 {
     /* If the blend equation is ADD or REVERSE_SUBTRACT,
      * SRC_ALPHA_COLOR == (0,0,0,0), and the following state is set,
@@ -151,8 +134,8 @@ static boolean blend_discard_if_src_alpha_color_0(unsigned srcRGB, unsigned srcA
             dstA == PIPE_BLENDFACTOR_ONE);
 }
 
-static boolean blend_discard_if_src_alpha_color_1(unsigned srcRGB, unsigned srcA,
-                                                  unsigned dstRGB, unsigned dstA)
+static bool blend_discard_if_src_alpha_color_1(unsigned srcRGB, unsigned srcA,
+                                               unsigned dstRGB, unsigned dstA)
 {
     /* If the blend equation is ADD or REVERSE_SUBTRACT,
      * SRC_ALPHA_COLOR == (1,1,1,1), and the following state is set,
@@ -274,7 +257,7 @@ static unsigned arra_cmask(unsigned mask)
 static unsigned blend_read_enable(unsigned eqRGB, unsigned eqA,
                                   unsigned dstRGB, unsigned dstA,
                                   unsigned srcRGB, unsigned srcA,
-                                  boolean src_alpha_optz)
+                                  bool src_alpha_optz)
 {
     unsigned blend_control = 0;
 
@@ -397,8 +380,8 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
             ( r300_translate_blend_factor(srcRGBX) << R300_SRC_BLEND_SHIFT) |
             ( r300_translate_blend_factor(dstRGBX) << R300_DST_BLEND_SHIFT);
 
-        blend_eq = r300_translate_blend_function(eqRGB, TRUE);
-        blend_eq_noclamp = r300_translate_blend_function(eqRGB, FALSE);
+        blend_eq = r300_translate_blend_function(eqRGB, true);
+        blend_eq_noclamp = r300_translate_blend_function(eqRGB, false);
 
         blend_control |= blend_eq;
         blend_control_noalpha |= blend_eq;
@@ -409,11 +392,11 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
         blend_control |= blend_read_enable(eqRGB, eqA, dstRGB, dstA,
                                            srcRGB, srcA, r300screen->caps.is_r500);
         blend_control_noclamp |= blend_read_enable(eqRGB, eqA, dstRGB, dstA,
-                                                   srcRGB, srcA, FALSE);
+                                                   srcRGB, srcA, false);
         blend_control_noalpha |= blend_read_enable(eqRGB, eqA, dstRGBX, dstA,
                                                    srcRGBX, srcA, r300screen->caps.is_r500);
         blend_control_noalpha_noclamp |= blend_read_enable(eqRGB, eqA, dstRGBX, dstA,
-                                                           srcRGBX, srcA, FALSE);
+                                                           srcRGBX, srcA, false);
 
         /* Optimization: discard pixels which don't change the colorbuffer.
          * It cannot be used with FP16 AA. */
@@ -430,8 +413,8 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
             alpha_blend_control = alpha_blend_control_noclamp =
                 (r300_translate_blend_factor(srcA) << R300_SRC_BLEND_SHIFT) |
                 (r300_translate_blend_factor(dstA) << R300_DST_BLEND_SHIFT);
-            alpha_blend_control |= r300_translate_blend_function(eqA, TRUE);
-            alpha_blend_control_noclamp |= r300_translate_blend_function(eqA, FALSE);
+            alpha_blend_control |= r300_translate_blend_function(eqA, true);
+            alpha_blend_control_noclamp |= r300_translate_blend_function(eqA, false);
         }
         if (srcA != srcRGBX || dstA != dstRGBX || eqA != eqRGB) {
             blend_control_noalpha |= R300_SEPARATE_ALPHA_ENABLE;
@@ -440,8 +423,8 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
             alpha_blend_control_noalpha = alpha_blend_control_noalpha_noclamp =
                 (r300_translate_blend_factor(srcA) << R300_SRC_BLEND_SHIFT) |
                 (r300_translate_blend_factor(dstA) << R300_DST_BLEND_SHIFT);
-            alpha_blend_control_noalpha |= r300_translate_blend_function(eqA, TRUE);
-            alpha_blend_control_noalpha_noclamp |= r300_translate_blend_function(eqA, FALSE);
+            alpha_blend_control_noalpha |= r300_translate_blend_function(eqA, true);
+            alpha_blend_control_noalpha_noclamp |= r300_translate_blend_function(eqA, false);
         }
     }
 
@@ -477,7 +460,7 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
         };
 
         for (i = 0; i < COLORMASK_NUM_SWIZZLES; i++) {
-            boolean has_alpha = i != COLORMASK_RGBX && i != COLORMASK_BGRX;
+            bool has_alpha = i != COLORMASK_RGBX && i != COLORMASK_BGRX;
 
             BEGIN_CB(blend->cb_clamp[i], 8);
             OUT_CB_REG(R300_RB3D_ROPCNTL, rop);
@@ -529,8 +512,8 @@ static void r300_bind_blend_state(struct pipe_context* pipe,
 {
     struct r300_context* r300 = r300_context(pipe);
     struct r300_blend_state *blend  = (struct r300_blend_state*)state;
-    boolean last_alpha_to_one = r300->alpha_to_one;
-    boolean last_alpha_to_coverage = r300->alpha_to_coverage;
+    bool last_alpha_to_one = r300->alpha_to_one;
+    bool last_alpha_to_coverage = r300->alpha_to_coverage;
 
     UPDATE_STATE(state, r300->blend_state);
 
@@ -606,6 +589,7 @@ static void r300_set_blend_color(struct pipe_context* pipe,
 
         case PIPE_FORMAT_R8G8B8A8_UNORM:
         case PIPE_FORMAT_R8G8B8X8_UNORM:
+        case PIPE_FORMAT_R10G10B10A2_UNORM:
             tmp = c.color[0];
             c.color[0] = c.color[2];
             c.color[2] = tmp;
@@ -679,7 +663,7 @@ static void r300_set_clip_state(struct pipe_context* pipe,
 static void* r300_create_dsa_state(struct pipe_context* pipe,
                           const struct pipe_depth_stencil_alpha_state* state)
 {
-    boolean is_r500 = r300_screen(pipe->screen)->caps.is_r500;
+    bool is_r500 = r300_screen(pipe->screen)->caps.is_r500;
     struct r300_dsa_state* dsa = CALLOC_STRUCT(r300_dsa_state);
     CB_LOCALS;
     uint32_t alpha_value_fp16 = 0;
@@ -721,7 +705,7 @@ static void* r300_create_dsa_state(struct pipe_context* pipe,
                 (state->stencil[0].writemask << R300_STENCILWRITEMASK_SHIFT);
 
         if (state->stencil[1].enabled) {
-            dsa->two_sided = TRUE;
+            dsa->two_sided = true;
 
             z_buffer_control |= R300_STENCIL_FRONT_BACK;
             z_stencil_control |=
@@ -890,7 +874,7 @@ void r300_mark_fb_state_dirty(struct r300_context *r300,
 
     if (r300->cmask_in_use) {
         r300->fb_state.size += 6;
-        if (r300->screen->caps.is_r500 && r300->screen->info.drm_minor >= 29) {
+        if (r300->screen->caps.is_r500) {
             r300->fb_state.size += 3;
         }
     }
@@ -907,7 +891,7 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
     struct pipe_framebuffer_state *current_state = r300->fb_state.state;
     unsigned max_width, max_height, i;
     uint32_t zbuffer_bpp = 0;
-    boolean unlock_zbuffer = FALSE;
+    bool unlock_zbuffer = false;
 
     if (r300->screen->caps.is_r500) {
         max_width = max_height = 4096;
@@ -919,7 +903,7 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
 
     if (state->width > max_width || state->height > max_height) {
         fprintf(stderr, "r300: Implementation error: Render targets are too "
-        "big in %s, refusing to bind framebuffer state!\n", __FUNCTION__);
+        "big in %s, refusing to bind framebuffer state!\n", __func__);
         return;
     }
 
@@ -929,7 +913,7 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
             if (!pipe_surface_equal(current_state->zsbuf, state->zsbuf)) {
                 /* Decompress the currently bound zbuffer before we bind another one. */
                 r300_decompress_zmask(r300);
-                r300->hiz_in_use = FALSE;
+                r300->hiz_in_use = false;
             }
         } else {
             /* We don't bind another zbuffer, so lock the current one. */
@@ -942,10 +926,10 @@ r300_set_framebuffer_state(struct pipe_context* pipe,
                 /* We are binding some other zbuffer, so decompress the locked one,
                  * it gets unlocked automatically. */
                 r300_decompress_zmask_locked_unsafe(r300);
-                r300->hiz_in_use = FALSE;
+                r300->hiz_in_use = false;
             } else {
                 /* We are binding the locked zbuffer again, so unlock it. */
-                unlock_zbuffer = TRUE;
+                unlock_zbuffer = true;
             }
         }
     }
@@ -1045,9 +1029,7 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
     fs->state = *shader;
 
     if (fs->state.type == PIPE_SHADER_IR_NIR) {
-       if (r300->screen->caps.is_r500)
-           NIR_PASS_V(shader->ir.nir, r300_transform_fs_trig_input);
-       fs->state.tokens = nir_to_tgsi(shader->ir.nir, pipe->screen);
+       fs->state.tokens = nir_to_rc(shader->ir.nir, pipe->screen);
     } else {
        assert(fs->state.type == PIPE_SHADER_IR_TGSI);
        /* we need to keep a local copy of the tokens */
@@ -1064,7 +1046,8 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
     tgsi_scan_shader(fs->state.tokens, &info);
     for (int i = 0; i < PIPE_MAX_SHADER_SAMPLER_VIEWS; i++) {
         if (info.sampler_targets[i] == TGSI_TEXTURE_SHADOW1D ||
-            info.sampler_targets[i] == TGSI_TEXTURE_SHADOW2D) {
+            info.sampler_targets[i] == TGSI_TEXTURE_SHADOW2D ||
+            info.sampler_targets[i] == TGSI_TEXTURE_SHADOWRECT) {
             precompile_state.unit[i].compare_mode_enabled = true;
             precompile_state.unit[i].texture_compare_func = PIPE_FUNC_LESS;
         }
@@ -1118,6 +1101,8 @@ static void r300_delete_fs_state(struct pipe_context* pipe, void* shader)
     struct r300_fragment_shader* fs = (struct r300_fragment_shader*)shader;
     struct r300_fragment_shader_code *tmp, *ptr = fs->first;
 
+    free(fs->shader->code.constants_remap_table);
+
     while (ptr) {
         tmp = ptr;
         ptr = ptr->next;
@@ -1163,7 +1148,7 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
     float point_texcoord_bottom = 0;/* R300_GA_POINT_T0: 0x4204 */
     float point_texcoord_right = 1; /* R300_GA_POINT_S1: 0x4208 */
     float point_texcoord_top = 0;   /* R300_GA_POINT_T1: 0x420c */
-    boolean vclamp = !r300_context(pipe)->screen->caps.is_r500;
+    bool vclamp = !r300_context(pipe)->screen->caps.is_r500;
     CB_LOCALS;
 
     /* Copy rasterizer state. */
@@ -1218,7 +1203,7 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
 
     /* Line control. */
     line_control = pack_float_16_6x(state->line_width) |
-        R300_GA_LINE_CNTL_END_TYPE_COMP;
+        (state->line_smooth ? R300_GA_LINE_CNTL_END_TYPE_COMP : R300_GA_LINE_CNTL_END_TYPE_SQR);
 
     /* Enable polygon mode */
     polygon_mode = 0;
@@ -1280,17 +1265,15 @@ static void* r300_create_rs_state(struct pipe_context* pipe,
     clip_rule = state->scissor ? 0xAAAA : 0xFFFF;
 
     /* Point sprites coord mode */
-    if (rs->rs.sprite_coord_enable) {
-        switch (state->sprite_coord_mode) {
-            case PIPE_SPRITE_COORD_UPPER_LEFT:
-                point_texcoord_top = 0.0f;
-                point_texcoord_bottom = 1.0f;
-                break;
-            case PIPE_SPRITE_COORD_LOWER_LEFT:
-                point_texcoord_top = 1.0f;
-                point_texcoord_bottom = 0.0f;
-                break;
-        }
+    switch (state->sprite_coord_mode) {
+        case PIPE_SPRITE_COORD_UPPER_LEFT:
+            point_texcoord_top = 0.0f;
+            point_texcoord_bottom = 1.0f;
+            break;
+        case PIPE_SPRITE_COORD_LOWER_LEFT:
+            point_texcoord_top = 1.0f;
+            point_texcoord_bottom = 0.0f;
+            break;
     }
 
     if (r300_screen(pipe->screen)->caps.has_tcl) {
@@ -1363,10 +1346,10 @@ static void r300_bind_rs_state(struct pipe_context* pipe, void* state)
     struct r300_context* r300 = r300_context(pipe);
     struct r300_rs_state* rs = (struct r300_rs_state*)state;
     int last_sprite_coord_enable = r300->sprite_coord_enable;
-    boolean last_two_sided_color = r300->two_sided_color;
-    boolean last_msaa_enable = r300->msaa_enable;
-    boolean last_flatshade = r300->flatshade;
-    boolean last_clip_halfz = r300->clip_halfz;
+    bool last_two_sided_color = r300->two_sided_color;
+    bool last_msaa_enable = r300->msaa_enable;
+    bool last_flatshade = r300->flatshade;
+    bool last_clip_halfz = r300->clip_halfz;
 
     if (r300->draw && rs) {
         draw_set_rasterizer_state(r300->draw, &rs->rs_draw, state);
@@ -1380,12 +1363,12 @@ static void r300_bind_rs_state(struct pipe_context* pipe, void* state)
         r300->flatshade = rs->rs.flatshade;
         r300->clip_halfz = rs->rs.clip_halfz;
     } else {
-        r300->polygon_offset_enabled = FALSE;
+        r300->polygon_offset_enabled = false;
         r300->sprite_coord_enable = 0;
-        r300->two_sided_color = FALSE;
-        r300->msaa_enable = FALSE;
-        r300->flatshade = FALSE;
-        r300->clip_halfz = FALSE;
+        r300->two_sided_color = false;
+        r300->msaa_enable = false;
+        r300->flatshade = false;
+        r300->clip_halfz = false;
     }
 
     UPDATE_STATE(state, r300->rs_state);
@@ -1425,7 +1408,7 @@ static void*
 {
     struct r300_context* r300 = r300_context(pipe);
     struct r300_sampler_state* sampler = CALLOC_STRUCT(r300_sampler_state);
-    boolean is_r500 = r300->screen->caps.is_r500;
+    bool is_r500 = r300->screen->caps.is_r500;
     int lod_bias;
 
     sampler->state = *state;
@@ -1558,7 +1541,7 @@ static void r300_set_sampler_views(struct pipe_context* pipe,
     struct r300_resource *texture;
     unsigned i, real_num_views = 0, view_index = 0;
     unsigned tex_units = r300->screen->caps.num_tex_units;
-    boolean dirty_tex = FALSE;
+    bool dirty_tex = false;
 
     assert(start == 0);  /* non-zero not handled yet */
 
@@ -1594,7 +1577,7 @@ static void r300_set_sampler_views(struct pipe_context* pipe,
         }
 
         /* A new sampler view (= texture)... */
-        dirty_tex = TRUE;
+        dirty_tex = true;
 
         /* Set the texrect factor in the fragment shader.
              * Needed for RECT and NPOT fallback. */
@@ -1634,8 +1617,8 @@ r300_create_sampler_view_custom(struct pipe_context *pipe,
 {
     struct r300_sampler_view *view = CALLOC_STRUCT(r300_sampler_view);
     struct r300_resource *tex = r300_resource(texture);
-    boolean is_r500 = r300_screen(pipe->screen)->caps.is_r500;
-    boolean dxtc_swizzle = r300_screen(pipe->screen)->caps.dxtc_swizzle;
+    bool is_r500 = r300_screen(pipe->screen)->caps.is_r500;
+    bool dxtc_swizzle = r300_screen(pipe->screen)->caps.dxtc_swizzle;
 
     if (view) {
         unsigned hwformat;
@@ -1772,53 +1755,46 @@ static void r300_set_viewport_states(struct pipe_context* pipe,
 }
 
 static void r300_set_vertex_buffers_hwtcl(struct pipe_context* pipe,
-                                    unsigned start_slot, unsigned count,
-                                    unsigned unbind_num_trailing_slots,
-                                    bool take_ownership,
+                                    unsigned count,
                                     const struct pipe_vertex_buffer* buffers)
 {
     struct r300_context* r300 = r300_context(pipe);
 
     util_set_vertex_buffers_count(r300->vertex_buffer,
-                                  &r300->nr_vertex_buffers,
-                                  buffers, start_slot, count,
-                                  unbind_num_trailing_slots, take_ownership);
+                                  &r300->nr_vertex_buffers, buffers, count,
+                                  true);
 
     /* There must be at least one vertex buffer set, otherwise it locks up. */
     if (!r300->nr_vertex_buffers) {
         util_set_vertex_buffers_count(r300->vertex_buffer,
                                       &r300->nr_vertex_buffers,
-                                      &r300->dummy_vb, 0, 1, 0, false);
+                                      &r300->dummy_vb, 1, false);
     }
 
-    r300->vertex_arrays_dirty = TRUE;
+    r300->vertex_arrays_dirty = true;
 }
 
 static void r300_set_vertex_buffers_swtcl(struct pipe_context* pipe,
-                                    unsigned start_slot, unsigned count,
-                                    unsigned unbind_num_trailing_slots,
-                                    bool take_ownership,
+                                    unsigned count,
                                     const struct pipe_vertex_buffer* buffers)
 {
     struct r300_context* r300 = r300_context(pipe);
     unsigned i;
 
     util_set_vertex_buffers_count(r300->vertex_buffer,
-                                  &r300->nr_vertex_buffers,
-                                  buffers, start_slot, count,
-                                  unbind_num_trailing_slots, take_ownership);
-    draw_set_vertex_buffers(r300->draw, start_slot, count,
-                            unbind_num_trailing_slots, buffers);
+                                  &r300->nr_vertex_buffers, buffers, count,
+                                  true);
+    draw_set_vertex_buffers(r300->draw, count, buffers);
 
     if (!buffers)
         return;
 
     for (i = 0; i < count; i++) {
         if (buffers[i].is_user_buffer) {
-            draw_set_mapped_vertex_buffer(r300->draw, start_slot + i,
+            draw_set_mapped_vertex_buffer(r300->draw, i,
                                           buffers[i].buffer.user, ~0);
         } else if (buffers[i].buffer.resource) {
-            draw_set_mapped_vertex_buffer(r300->draw, start_slot + i,
+            draw_set_mapped_vertex_buffer(r300->draw, i,
                                           r300_resource(buffers[i].buffer.resource)->malloced_buffer, ~0);
         }
     }
@@ -1928,7 +1904,7 @@ static void r300_bind_vertex_elements_state(struct pipe_context *pipe,
 
     UPDATE_STATE(&velems->vertex_stream, r300->vertex_stream_state);
     r300->vertex_stream_state.size = (1 + velems->vertex_stream.count) * 2;
-    r300->vertex_arrays_dirty = TRUE;
+    r300->vertex_arrays_dirty = true;
 }
 
 static void r300_delete_vertex_elements_state(struct pipe_context *pipe, void *state)
@@ -1946,27 +1922,7 @@ static void* r300_create_vs_state(struct pipe_context* pipe,
     vs->state = *shader;
 
     if (vs->state.type == PIPE_SHADER_IR_NIR) {
-       static const struct nir_to_tgsi_options swtcl_options = {0};
-       static const struct nir_to_tgsi_options hwtcl_r300_options = {
-           .lower_cmp = true,
-           .lower_fabs = true,
-       };
-       static const struct nir_to_tgsi_options hwtcl_r500_options = {
-           .lower_cmp = true,
-       };
-       const struct nir_to_tgsi_options *ntt_options;
-       if (r300->screen->caps.has_tcl) {
-           if (r300->screen->caps.is_r500) {
-               ntt_options = &hwtcl_r500_options;
-               NIR_PASS_V(shader->ir.nir, r300_transform_vs_trig_input);
-           }
-            else
-               ntt_options = &hwtcl_r300_options;
-       } else {
-           ntt_options = &swtcl_options;
-       }
-       vs->state.tokens = nir_to_tgsi_options(shader->ir.nir, pipe->screen,
-                                              ntt_options);
+       vs->state.tokens = nir_to_rc(shader->ir.nir, pipe->screen);
     } else {
        assert(vs->state.type == PIPE_SHADER_IR_TGSI);
        /* we need to keep a local copy of the tokens */
@@ -2075,7 +2031,7 @@ static void r300_set_constant_buffer(struct pipe_context *pipe,
         struct r300_resource *rbuf = r300_resource(cb->buffer);
 
         if (rbuf && rbuf->malloced_buffer)
-            mapped = (uint32_t*)rbuf->malloced_buffer;
+            mapped = (uint32_t*)(rbuf->malloced_buffer + cb->buffer_offset);
         else
             return;
     }

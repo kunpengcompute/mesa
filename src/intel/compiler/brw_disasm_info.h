@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 struct cfg_t;
-struct backend_instruction;
+struct fs_inst;
 struct intel_device_info;
 
 struct inst_group {
@@ -48,15 +48,14 @@ struct inst_group {
    struct bblock_t *block_start;
    struct bblock_t *block_end;
 
-   /* Annotation for the generated IR.  One of the two can be set. */
-   const void *ir;
+   /* Annotation for the generated IR. */
    const char *annotation;
 };
 
 struct disasm_info {
    struct exec_list group_list;
 
-   const struct intel_device_info *devinfo;
+   const struct brw_isa_info *isa;
    const struct cfg_t *cfg;
 
    /** Block index in the cfg. */
@@ -69,19 +68,19 @@ dump_assembly(void *assembly, int start_offset, int end_offset,
               struct disasm_info *disasm, const unsigned *block_latency);
 
 struct disasm_info *
-disasm_initialize(const struct intel_device_info *devinfo,
+disasm_initialize(const struct brw_isa_info *isa,
                   const struct cfg_t *cfg);
 
 struct inst_group *
-disasm_new_inst_group(struct disasm_info *disasm, unsigned offset);
+disasm_new_inst_group(struct disasm_info *disasm, int offset);
 
 void
 disasm_annotate(struct disasm_info *disasm,
-                struct backend_instruction *inst, unsigned offset);
+                struct fs_inst *inst, int offset);
 
 void
-disasm_insert_error(struct disasm_info *disasm, unsigned offset,
-                    const char *error);
+disasm_insert_error(struct disasm_info *disasm, int offset,
+                    int inst_size, const char *error);
 
 #ifdef __cplusplus
 } /* extern "C" */

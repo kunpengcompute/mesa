@@ -23,54 +23,62 @@
 
 #include <gtest/gtest.h>
 #include "brw_fs.h"
+#include "brw_fs_builder.h"
 #include "brw_cfg.h"
-#include "program/program.h"
 
 using namespace brw;
 
 class copy_propagation_test : public ::testing::Test {
-   virtual void SetUp();
-   virtual void TearDown();
+protected:
+   copy_propagation_test();
+   ~copy_propagation_test() override;
 
-public:
    struct brw_compiler *compiler;
+   struct brw_compile_params params;
    struct intel_device_info *devinfo;
    void *ctx;
    struct brw_wm_prog_data *prog_data;
    struct gl_shader_program *shader_prog;
    fs_visitor *v;
+   fs_builder bld;
 };
 
 class copy_propagation_fs_visitor : public fs_visitor
 {
 public:
    copy_propagation_fs_visitor(struct brw_compiler *compiler,
-                               void *mem_ctx,
+                               struct brw_compile_params *params,
                                struct brw_wm_prog_data *prog_data,
                                nir_shader *shader)
-      : fs_visitor(compiler, NULL, mem_ctx, NULL,
-                   &prog_data->base, shader, 8, false) {}
+      : fs_visitor(compiler, params, NULL,
+                   &prog_data->base, shader, 8, false, false) {}
 };
 
 
-void copy_propagation_test::SetUp()
+copy_propagation_test::copy_propagation_test()
+   : bld(NULL, 0)
 {
    ctx = ralloc_context(NULL);
    compiler = rzalloc(ctx, struct brw_compiler);
    devinfo = rzalloc(ctx, struct intel_device_info);
    compiler->devinfo = devinfo;
 
+   params = {};
+   params.mem_ctx = ctx;
+
    prog_data = ralloc(ctx, struct brw_wm_prog_data);
    nir_shader *shader =
       nir_shader_create(ctx, MESA_SHADER_FRAGMENT, NULL, NULL);
 
-   v = new copy_propagation_fs_visitor(compiler, ctx, prog_data, shader);
+   v = new copy_propagation_fs_visitor(compiler, &params, prog_data, shader);
 
-   devinfo->ver = 4;
+   bld = fs_builder(v).at_end();
+
+   devinfo->ver = 9;
    devinfo->verx10 = devinfo->ver * 10;
 }
 
-void copy_propagation_test::TearDown()
+copy_propagation_test::~copy_propagation_test()
 {
    delete v;
    v = NULL;
@@ -99,7 +107,7 @@ copy_propagation(fs_visitor *v)
       v->cfg->dump();
    }
 
-   bool ret = v->opt_copy_propagation();
+   bool ret = brw_fs_opt_copy_propagation(*v);
 
    if (print) {
       fprintf(stderr, "\n= After =\n");
@@ -111,11 +119,10 @@ copy_propagation(fs_visitor *v)
 
 TEST_F(copy_propagation_test, basic)
 {
-   const fs_builder &bld = v->bld;
-   fs_reg vgrf0 = v->vgrf(glsl_type::float_type);
-   fs_reg vgrf1 = v->vgrf(glsl_type::float_type);
-   fs_reg vgrf2 = v->vgrf(glsl_type::float_type);
-   fs_reg vgrf3 = v->vgrf(glsl_type::float_type);
+   brw_reg vgrf0 = bld.vgrf(BRW_TYPE_F);
+   brw_reg vgrf1 = bld.vgrf(BRW_TYPE_F);
+   brw_reg vgrf2 = bld.vgrf(BRW_TYPE_F);
+   brw_reg vgrf3 = bld.vgrf(BRW_TYPE_F);
    bld.MOV(vgrf0, vgrf2);
    bld.ADD(vgrf1, vgrf0, vgrf3);
 
@@ -129,7 +136,7 @@ TEST_F(copy_propagation_test, basic)
     * 1: add(8)        vgrf1  vgrf2  vgrf3
     */
 
-   v->calculate_cfg();
+   brw_calculate_cfg(*v);
    bblock_t *block0 = v->cfg->blocks[0];
 
    EXPECT_EQ(0, block0->start_ip);
@@ -153,10 +160,9 @@ TEST_F(copy_propagation_test, basic)
 
 TEST_F(copy_propagation_test, maxmax_sat_imm)
 {
-   const fs_builder &bld = v->bld;
-   fs_reg vgrf0 = v->vgrf(glsl_type::float_type);
-   fs_reg vgrf1 = v->vgrf(glsl_type::float_type);
-   fs_reg vgrf2 = v->vgrf(glsl_type::float_type);
+   brw_reg vgrf0 = bld.vgrf(BRW_TYPE_F);
+   brw_reg vgrf1 = bld.vgrf(BRW_TYPE_F);
+   brw_reg vgrf2 = bld.vgrf(BRW_TYPE_F);
 
    static const struct {
       enum brw_conditional_mod conditional_mod;
@@ -164,12 +170,12 @@ TEST_F(copy_propagation_test, maxmax_sat_imm)
       bool expected_result;
    } test[] = {
       /*   conditional mod,     imm, expected_result */
-      { BRW_CONDITIONAL_GE  ,  0.1f, true },
-      { BRW_CONDITIONAL_L   ,  0.1f, true },
-      { BRW_CONDITIONAL_GE  ,  0.5f, true },
-      { BRW_CONDITIONAL_L   ,  0.5f, true },
-      { BRW_CONDITIONAL_GE  ,  0.9f, true },
-      { BRW_CONDITIONAL_L   ,  0.9f, true },
+      { BRW_CONDITIONAL_GE  ,  0.1f, false },
+      { BRW_CONDITIONAL_L   ,  0.1f, false },
+      { BRW_CONDITIONAL_GE  ,  0.5f, false },
+      { BRW_CONDITIONAL_L   ,  0.5f, false },
+      { BRW_CONDITIONAL_GE  ,  0.9f, false },
+      { BRW_CONDITIONAL_L   ,  0.9f, false },
       { BRW_CONDITIONAL_GE  , -1.5f, false },
       { BRW_CONDITIONAL_L   , -1.5f, false },
       { BRW_CONDITIONAL_GE  ,  1.5f, false },
@@ -191,7 +197,7 @@ TEST_F(copy_propagation_test, maxmax_sat_imm)
                                  bld.SEL(vgrf2, vgrf0,
                                          brw_imm_f(test[i].immediate)));
 
-      v->calculate_cfg();
+      brw_calculate_cfg(*v);
 
       bblock_t *block0 = v->cfg->blocks[0];
 
@@ -221,4 +227,90 @@ TEST_F(copy_propagation_test, maxmax_sat_imm)
       delete v->cfg;
       v->cfg = NULL;
    }
+}
+
+TEST_F(copy_propagation_test, mixed_integer_sign)
+{
+   brw_reg vgrf0 = bld.vgrf(BRW_TYPE_UD);
+   brw_reg vgrf1 = bld.vgrf(BRW_TYPE_D);
+   brw_reg vgrf2 = bld.vgrf(BRW_TYPE_UD);
+   brw_reg vgrf3 = bld.vgrf(BRW_TYPE_UD);
+   brw_reg vgrf4 = bld.vgrf(BRW_TYPE_UD);
+
+   bld.MOV(vgrf1, vgrf0);
+   bld.BFE(vgrf2, vgrf3, vgrf4, retype(vgrf1, BRW_TYPE_UD));
+
+   /* = Before =
+    *
+    * 0: mov(8)        vgrf1:D  vgrf0:UD
+    * 1: bfe(8)        vgrf2:UD vgrf3:UD  vgrf4:UD  vgrf1:UD
+    *
+    * = After =
+    * 0: mov(8)        vgrf1:D  vgrf0:UD
+    * 1: bfe(8)        vgrf2:UD vgrf3:UD  vgrf4:UD  vgrf0:UD
+    */
+
+   brw_calculate_cfg(*v);
+   bblock_t *block0 = v->cfg->blocks[0];
+
+   EXPECT_EQ(0, block0->start_ip);
+   EXPECT_EQ(1, block0->end_ip);
+
+   EXPECT_TRUE(copy_propagation(v));
+   EXPECT_EQ(0, block0->start_ip);
+   EXPECT_EQ(1, block0->end_ip);
+
+   fs_inst *mov = instruction(block0, 0);
+   EXPECT_EQ(BRW_OPCODE_MOV, mov->opcode);
+   EXPECT_TRUE(mov->dst.equals(vgrf1));
+   EXPECT_TRUE(mov->src[0].equals(vgrf0));
+
+   fs_inst *bfe = instruction(block0, 1);
+   EXPECT_EQ(BRW_OPCODE_BFE, bfe->opcode);
+   EXPECT_TRUE(bfe->dst.equals(vgrf2));
+   EXPECT_TRUE(bfe->src[0].equals(vgrf3));
+   EXPECT_TRUE(bfe->src[1].equals(vgrf4));
+   EXPECT_TRUE(bfe->src[2].equals(vgrf0));
+}
+
+TEST_F(copy_propagation_test, mixed_integer_sign_with_vector_imm)
+{
+   brw_reg vgrf0 = bld.vgrf(BRW_TYPE_W);
+   brw_reg vgrf1 = bld.vgrf(BRW_TYPE_UD);
+   brw_reg vgrf2 = bld.vgrf(BRW_TYPE_UD);
+
+   bld.MOV(vgrf0, brw_imm_uv(0xffff));
+   bld.ADD(vgrf1, vgrf2, retype(vgrf0, BRW_TYPE_UW));
+
+   /* = Before =
+    *
+    * 0: mov(8)        vgrf0:W  ...:UV
+    * 1: add(8)        vgrf1:UD vgrf2:UD  vgrf0:UW
+    *
+    * = After =
+    * No change
+    */
+
+   brw_calculate_cfg(*v);
+   bblock_t *block0 = v->cfg->blocks[0];
+
+   const brw_reg src1 = instruction(block0, 1)->src[1];
+
+   EXPECT_EQ(0, block0->start_ip);
+   EXPECT_EQ(1, block0->end_ip);
+
+   EXPECT_FALSE(copy_propagation(v));
+   EXPECT_EQ(0, block0->start_ip);
+   EXPECT_EQ(1, block0->end_ip);
+
+   fs_inst *mov = instruction(block0, 0);
+   EXPECT_EQ(BRW_OPCODE_MOV, mov->opcode);
+   EXPECT_TRUE(mov->dst.equals(vgrf0));
+   EXPECT_TRUE(mov->src[0].file == IMM);
+
+   fs_inst *add = instruction(block0, 1);
+   EXPECT_EQ(BRW_OPCODE_ADD, add->opcode);
+   EXPECT_TRUE(add->dst.equals(vgrf1));
+   EXPECT_TRUE(add->src[0].equals(vgrf2));
+   EXPECT_TRUE(add->src[1].equals(src1));
 }

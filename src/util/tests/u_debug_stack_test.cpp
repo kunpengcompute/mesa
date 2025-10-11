@@ -49,7 +49,8 @@ func_b(void)
    debug_backtrace_dump(backtrace, 16);
 }
 
-static void ATTRIBUTE_NOINLINE
+/* This function must emit a stack frame for the unit test to work */
+static void ATTRIBUTE_NOINLINE ATTRIBUTE_OPTIMIZE("no-omit-frame-pointer")
 func_c(struct debug_stack_frame *frames)
 {
    debug_backtrace_capture(frames, 0, 16);
@@ -78,7 +79,7 @@ TEST(u_debug_stack_test, basics)
    debug_backtrace_dump(stored_backtrace, 16);
 }
 
-#if _POSIX_C_SOURCE >= 200809L
+#if defined(_POSIX_C_SOURCE) && (_POSIX_C_SOURCE >= 200809L)
 
 TEST(u_debug_stack_test, capture_not_overwritten)
 {

@@ -1,6 +1,5 @@
 # Copyright © 2021 Collabora, Ltd.
 # Copyright © 2021 Google, Inc
-#
 # SPDX-License-Identifier: MIT
 
 pps_freedreno_lib = static_library(
@@ -21,7 +20,6 @@ pps_freedreno_lib = static_library(
     dep_perfetto,
     dep_valgrind,
   ],
-  cpp_args: '-std=c++17'
 )
 
 pps_freedreno_dep = declare_dependency(

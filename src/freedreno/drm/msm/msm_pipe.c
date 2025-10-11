@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012-2018 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012-2018 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -92,16 +74,16 @@ msm_pipe_get_param(struct fd_pipe *pipe, enum fd_param_id param,
       return query_param(pipe, MSM_PARAM_MAX_FREQ, value);
    case FD_TIMESTAMP:
       return query_param(pipe, MSM_PARAM_TIMESTAMP, value);
-   case FD_NR_RINGS:
-      return query_param(pipe, MSM_PARAM_NR_RINGS, value);
-   case FD_PP_PGTABLE:
-      return query_param(pipe, MSM_PARAM_PP_PGTABLE, value);
+   case FD_NR_PRIORITIES:
+      return query_param(pipe, MSM_PARAM_PRIORITIES, value);
    case FD_CTX_FAULTS:
       return query_queue_param(pipe, MSM_SUBMITQUEUE_PARAM_FAULTS, value);
    case FD_GLOBAL_FAULTS:
       return query_param(pipe, MSM_PARAM_FAULTS, value);
    case FD_SUSPEND_COUNT:
       return query_param(pipe, MSM_PARAM_SUSPENDS, value);
+   case FD_VA_SIZE:
+      return query_param(pipe, MSM_PARAM_VA_SIZE, value);
    default:
       ERROR_MSG("invalid param id: %d", param);
       return -1;
@@ -155,13 +137,13 @@ msm_pipe_wait(struct fd_pipe *pipe, const struct fd_fence *fence, uint64_t timeo
 }
 
 static int
-open_submitqueue(struct fd_pipe *pipe, uint32_t prio)
+__open_submitqueue(struct fd_pipe *pipe, uint32_t prio, uint32_t flags)
 {
    struct drm_msm_submitqueue req = {
-      .flags = 0,
+      .flags = flags,
       .prio = prio,
    };
-   uint64_t nr_rings = 1;
+   uint64_t nr_prio = 1;
    int ret;
 
    if (fd_device_version(pipe->dev) < FD_VERSION_SUBMIT_QUEUES) {
@@ -169,18 +151,37 @@ open_submitqueue(struct fd_pipe *pipe, uint32_t prio)
       return 0;
    }
 
-   msm_pipe_get_param(pipe, FD_NR_RINGS, &nr_rings);
+   msm_pipe_get_param(pipe, FD_NR_PRIORITIES, &nr_prio);
 
-   req.prio = MIN2(req.prio, MAX2(nr_rings, 1) - 1);
+   req.prio = MIN2(req.prio, MAX2(nr_prio, 1) - 1);
 
    ret = drmCommandWriteRead(pipe->dev->fd, DRM_MSM_SUBMITQUEUE_NEW, &req,
                              sizeof(req));
+   if (ret)
+      return ret;
+
+   to_msm_pipe(pipe)->queue_id = req.id;
+   return 0;
+}
+
+static int
+open_submitqueue(struct fd_pipe *pipe, uint32_t prio)
+{
+   const struct fd_dev_info *info = fd_dev_info_raw(&pipe->dev_id);
+   int ret = -1;
+
+   if (info && info->chip >= A7XX)
+      ret = __open_submitqueue(pipe, prio, MSM_SUBMITQUEUE_ALLOW_PREEMPT);
+
+   /* If kernel doesn't support preemption, try again without: */
+   if (ret)
+      ret = __open_submitqueue(pipe, prio, 0);
+
    if (ret) {
       ERROR_MSG("could not create submitqueue! %d (%s)", ret, strerror(errno));
       return ret;
    }
 
-   to_msm_pipe(pipe)->queue_id = req.id;
    return 0;
 }
 

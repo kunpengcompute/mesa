@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -30,7 +12,7 @@
 #include "ir3.h"
 #include "ir3_compiler.h"
 
-#ifdef DEBUG
+#if MESA_DEBUG
 #define SCHED_DEBUG (ir3_shader_debug & IR3_DBG_SCHEDMSGS)
 #else
 #define SCHED_DEBUG 0
@@ -90,6 +72,7 @@
  */
 
 struct ir3_sched_ctx {
+   struct ir3_compiler *compiler;
    struct ir3_block *block; /* the current block */
    struct dag *dag;
 
@@ -97,9 +80,8 @@ struct ir3_sched_ctx {
    struct ir3_instruction *scheduled; /* last scheduled instr */
    struct ir3_instruction *addr0;     /* current a0.x user, if any */
    struct ir3_instruction *addr1;     /* current a1.x user, if any */
-   struct ir3_instruction *pred;      /* current p0.x user, if any */
 
-   struct ir3_instruction *split; /* most-recently-split a0/a1/p0 producer */
+   struct ir3_instruction *split; /* most-recently-split a0/a1 producer */
 
    int remaining_kills;
    int remaining_tex;
@@ -174,7 +156,8 @@ struct ir3_sched_node {
 
 static void sched_node_init(struct ir3_sched_ctx *ctx,
                             struct ir3_instruction *instr);
-static void sched_node_add_dep(struct ir3_instruction *instr,
+static void sched_node_add_dep(struct ir3_sched_ctx *ctx,
+                               struct ir3_instruction *instr,
                                struct ir3_instruction *src, int i);
 
 static bool
@@ -183,10 +166,11 @@ is_scheduled(struct ir3_instruction *instr)
    return !!(instr->flags & IR3_INSTR_MARK);
 }
 
-/* check_src_cond() passing a ir3_sched_ctx. */
+/* check_src_cond() passing the user and ir3_sched_ctx. */
 static bool
 sched_check_src_cond(struct ir3_instruction *instr,
                      bool (*cond)(struct ir3_instruction *,
+                                  struct ir3_instruction *,
                                   struct ir3_sched_ctx *),
                      struct ir3_sched_ctx *ctx)
 {
@@ -198,7 +182,7 @@ sched_check_src_cond(struct ir3_instruction *instr,
          if (sched_check_src_cond(src, cond, ctx))
             return true;
       } else {
-         if (cond(src, ctx))
+         if (cond(src, instr, ctx))
             return true;
       }
    }
@@ -209,7 +193,8 @@ sched_check_src_cond(struct ir3_instruction *instr,
 /* Is this a sy producer that hasn't been waited on yet? */
 
 static bool
-is_outstanding_sy(struct ir3_instruction *instr, struct ir3_sched_ctx *ctx)
+is_outstanding_sy(struct ir3_instruction *instr, struct ir3_instruction *use,
+                  struct ir3_sched_ctx *ctx)
 {
    if (!is_sy_producer(instr))
       return false;
@@ -225,9 +210,10 @@ is_outstanding_sy(struct ir3_instruction *instr, struct ir3_sched_ctx *ctx)
 }
 
 static bool
-is_outstanding_ss(struct ir3_instruction *instr, struct ir3_sched_ctx *ctx)
+is_outstanding_ss(struct ir3_instruction *instr, struct ir3_instruction *use,
+                  struct ir3_sched_ctx *ctx)
 {
-   if (!is_ss_producer(instr))
+   if (!needs_ss(ctx->compiler, instr, use))
       return false;
 
    /* The sched node is only valid within the same block, we cannot
@@ -261,25 +247,20 @@ cycle_count(struct ir3_instruction *instr)
 static void
 schedule(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
 {
-   debug_assert(ctx->block == instr->block);
+   assert(ctx->block == instr->block);
 
    /* remove from depth list:
     */
    list_delinit(&instr->node);
 
    if (writes_addr0(instr)) {
-      debug_assert(ctx->addr0 == NULL);
+      assert(ctx->addr0 == NULL);
       ctx->addr0 = instr;
    }
 
    if (writes_addr1(instr)) {
-      debug_assert(ctx->addr1 == NULL);
+      assert(ctx->addr1 == NULL);
       ctx->addr1 = instr;
-   }
-
-   if (writes_pred(instr)) {
-      debug_assert(ctx->pred == NULL);
-      ctx->pred = instr;
    }
 
    instr->flags |= IR3_INSTR_MARK;
@@ -366,40 +347,14 @@ struct ir3_sched_notes {
     */
    bool blocked_kill;
    /* there is at least one instruction that could be scheduled,
-    * except for conflicting address/predicate register usage:
+    * except for conflicting address register usage:
     */
-   bool addr0_conflict, addr1_conflict, pred_conflict;
+   bool addr0_conflict, addr1_conflict;
 };
 
-/* could an instruction be scheduled if specified ssa src was scheduled? */
 static bool
-could_sched(struct ir3_instruction *instr, struct ir3_instruction *src)
+should_skip(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
 {
-   foreach_ssa_src (other_src, instr) {
-      /* if dependency not scheduled, we aren't ready yet: */
-      if ((src != other_src) && !is_scheduled(other_src)) {
-         return false;
-      }
-   }
-   return true;
-}
-
-/* Check if instruction is ok to schedule.  Make sure it is not blocked
- * by use of addr/predicate register, etc.
- */
-static bool
-check_instr(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
-            struct ir3_instruction *instr)
-{
-   debug_assert(!is_scheduled(instr));
-
-   if (instr == ctx->split) {
-      /* Don't schedule instructions created by splitting a a0.x/a1.x/p0.x
-       * write until another "normal" instruction has been scheduled.
-       */
-      return false;
-   }
-
    if (ctx->remaining_kills && (is_tex(instr) || is_mem(instr))) {
       /* avoid texture/memory access if we have unscheduled kills
        * that could make the expensive operation unnecessary.  By
@@ -409,8 +364,50 @@ check_instr(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
        */
       struct ir3_sched_node *n = instr->data;
       if (!n->kill_path)
-         return false;
+         return true;
    }
+
+   return false;
+}
+
+/* could an instruction be scheduled if specified ssa src was scheduled? */
+static bool
+could_sched(struct ir3_sched_ctx *ctx,
+            struct ir3_instruction *instr, struct ir3_instruction *src)
+{
+   foreach_ssa_src (other_src, instr) {
+      /* if dependency not scheduled, we aren't ready yet: */
+      if ((src != other_src) && !is_scheduled(other_src)) {
+         return false;
+      }
+   }
+
+   /* Instructions not in the current block can never be scheduled.
+    */
+   if (instr->block != src->block)
+      return false;
+
+   return !should_skip(ctx, instr);
+}
+
+/* Check if instruction is ok to schedule.  Make sure it is not blocked
+ * by use of addr/predicate register, etc.
+ */
+static bool
+check_instr(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
+            struct ir3_instruction *instr)
+{
+   assert(!is_scheduled(instr));
+
+   if (instr == ctx->split) {
+      /* Don't schedule instructions created by splitting a a0.x/a1.x/p0.x
+       * write until another "normal" instruction has been scheduled.
+       */
+      return false;
+   }
+
+   if (should_skip(ctx, instr))
+       return false;
 
    /* For instructions that write address register we need to
     * make sure there is at least one instruction that uses the
@@ -428,7 +425,7 @@ check_instr(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
             continue;
          if (indirect->address->def != instr->dsts[0])
             continue;
-         ready = could_sched(indirect, instr);
+         ready = could_sched(ctx, indirect, instr);
       }
 
       /* nothing could be scheduled, so keep looking: */
@@ -445,7 +442,7 @@ check_instr(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
             continue;
          if (indirect->address->def != instr->dsts[0])
             continue;
-         ready = could_sched(indirect, instr);
+         ready = could_sched(ctx, indirect, instr);
       }
 
       /* nothing could be scheduled, so keep looking: */
@@ -458,20 +455,14 @@ check_instr(struct ir3_sched_ctx *ctx, struct ir3_sched_notes *notes,
     * free:
     */
    if (writes_addr0(instr) && ctx->addr0) {
-      debug_assert(ctx->addr0 != instr);
+      assert(ctx->addr0 != instr);
       notes->addr0_conflict = true;
       return false;
    }
 
    if (writes_addr1(instr) && ctx->addr1) {
-      debug_assert(ctx->addr1 != instr);
+      assert(ctx->addr1 != instr);
       notes->addr1_conflict = true;
-      return false;
-   }
-
-   if (writes_pred(instr) && ctx->pred) {
-      debug_assert(ctx->pred != instr);
-      notes->pred_conflict = true;
       return false;
    }
 
@@ -903,7 +894,7 @@ split_addr(struct ir3_sched_ctx *ctx, struct ir3_instruction **addr,
    struct ir3_instruction *new_addr = NULL;
    unsigned i;
 
-   debug_assert(*addr);
+   assert(*addr);
 
    for (i = 0; i < users_count; i++) {
       struct ir3_instruction *indirect = users[i];
@@ -928,7 +919,7 @@ split_addr(struct ir3_sched_ctx *ctx, struct ir3_instruction **addr,
          /* don't need to remove old dag edge since old addr is
           * already scheduled:
           */
-         sched_node_add_dep(indirect, new_addr, 0);
+         sched_node_add_dep(ctx, indirect, new_addr, 0);
          di(indirect, "new address");
       }
    }
@@ -937,68 +928,6 @@ split_addr(struct ir3_sched_ctx *ctx, struct ir3_instruction **addr,
    *addr = NULL;
 
    return new_addr;
-}
-
-/* "spill" the predicate register by remapping any unscheduled
- * instructions which depend on the current predicate register
- * to a clone of the instruction which wrote the address reg.
- */
-static struct ir3_instruction *
-split_pred(struct ir3_sched_ctx *ctx)
-{
-   struct ir3 *ir;
-   struct ir3_instruction *new_pred = NULL;
-   unsigned i;
-
-   debug_assert(ctx->pred);
-
-   ir = ctx->pred->block->shader;
-
-   for (i = 0; i < ir->predicates_count; i++) {
-      struct ir3_instruction *predicated = ir->predicates[i];
-
-      if (!predicated)
-         continue;
-
-      /* skip instructions already scheduled: */
-      if (is_scheduled(predicated))
-         continue;
-
-      /* remap remaining instructions using current pred
-       * to new pred:
-       *
-       * TODO is there ever a case when pred isn't first
-       * (and only) src?
-       */
-      if (ssa(predicated->srcs[0]) == ctx->pred) {
-         if (!new_pred) {
-            new_pred = split_instr(ctx, ctx->pred);
-            /* original pred is scheduled, but new one isn't: */
-            new_pred->flags &= ~IR3_INSTR_MARK;
-         }
-         predicated->srcs[0]->instr = new_pred;
-         /* don't need to remove old dag edge since old pred is
-          * already scheduled:
-          */
-         sched_node_add_dep(predicated, new_pred, 0);
-         di(predicated, "new predicate");
-      }
-   }
-
-   if (ctx->block->condition == ctx->pred) {
-      if (!new_pred) {
-         new_pred = split_instr(ctx, ctx->pred);
-         /* original pred is scheduled, but new one isn't: */
-         new_pred->flags &= ~IR3_INSTR_MARK;
-      }
-      ctx->block->condition = new_pred;
-      d("new branch condition");
-   }
-
-   /* all remaining predicated remapped to new pred: */
-   ctx->pred = NULL;
-
-   return new_pred;
 }
 
 static void
@@ -1013,7 +942,8 @@ sched_node_init(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
 }
 
 static void
-sched_node_add_dep(struct ir3_instruction *instr, struct ir3_instruction *src,
+sched_node_add_dep(struct ir3_sched_ctx *ctx,
+                   struct ir3_instruction *instr, struct ir3_instruction *src,
                    int i)
 {
    /* don't consider dependencies in other blocks: */
@@ -1022,7 +952,7 @@ sched_node_add_dep(struct ir3_instruction *instr, struct ir3_instruction *src,
 
    /* we could have false-dep's that end up unused: */
    if (src->flags & IR3_INSTR_UNUSED) {
-      debug_assert(__is_false_dep(instr, i));
+      assert(__is_false_dep(instr, i));
       return;
    }
 
@@ -1036,8 +966,8 @@ sched_node_add_dep(struct ir3_instruction *instr, struct ir3_instruction *src,
    if (instr->opc == OPC_META_COLLECT)
       sn->collect = instr;
 
-   unsigned d_soft = ir3_delayslots(src, instr, i, true);
-   unsigned d = ir3_delayslots(src, instr, i, false);
+   unsigned d_soft = ir3_delayslots(ctx->compiler, src, instr, i, true);
+   unsigned d = ir3_delayslots(ctx->compiler, src, instr, i, false);
 
    /* delays from (ss) and (sy) are considered separately and more accurately in
     * the scheduling heuristic, so ignore it when calculating the ip of
@@ -1094,7 +1024,7 @@ is_output_only(struct ir3_instruction *instr)
 }
 
 static void
-sched_node_add_deps(struct ir3_instruction *instr)
+sched_node_add_deps(struct ir3_sched_ctx *ctx, struct ir3_instruction *instr)
 {
    /* There's nothing to do for phi nodes, since they always go first. And
     * phi nodes can reference sources later in the same block, so handling
@@ -1107,7 +1037,7 @@ sched_node_add_deps(struct ir3_instruction *instr)
     * the DAG easily in a single pass.
     */
    foreach_ssa_src_n (src, i, instr) {
-      sched_node_add_dep(instr, src, i);
+      sched_node_add_dep(ctx, instr, src, i);
    }
 
    /* NOTE that all inputs must be scheduled before a kill, so
@@ -1137,15 +1067,30 @@ sched_dag_max_delay_cb(struct dag_node *node, void *state)
    n->max_delay = MAX2(n->max_delay, max_delay + n->delay);
 }
 
+#ifndef NDEBUG
+static void
+sched_dag_validate_cb(const struct dag_node *node, void *data)
+{
+   struct ir3_sched_node *n = (struct ir3_sched_node *)node;
+
+   ir3_print_instr(n->instr);
+}
+#endif
+
 static void
 sched_dag_init(struct ir3_sched_ctx *ctx)
 {
    ctx->dag = dag_create(ctx);
 
-   foreach_instr (instr, &ctx->unscheduled_list) {
+   foreach_instr (instr, &ctx->unscheduled_list)
       sched_node_init(ctx, instr);
-      sched_node_add_deps(instr);
-   }
+
+#ifndef NDEBUG
+   dag_validate(ctx->dag, sched_dag_validate_cb, NULL);
+#endif
+
+   foreach_instr (instr, &ctx->unscheduled_list)
+      sched_node_add_deps(ctx, instr);
 
    dag_traverse_bottom_up(ctx->dag, sched_dag_max_delay_cb, NULL);
 }
@@ -1165,11 +1110,16 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
    /* addr/pred writes are per-block: */
    ctx->addr0 = NULL;
    ctx->addr1 = NULL;
-   ctx->pred = NULL;
    ctx->sy_delay = 0;
    ctx->ss_delay = 0;
    ctx->sy_index = ctx->first_outstanding_sy_index = 0;
    ctx->ss_index = ctx->first_outstanding_ss_index = 0;
+
+   /* The terminator has to stay at the end. Instead of trying to set up
+    * dependencies to achieve this, it's easier to just remove it now and add it
+    * back after scheduling.
+    */
+   struct ir3_instruction *terminator = ir3_block_take_terminator(block);
 
    /* move all instructions to the unscheduled list, and
     * empty the block's instruction list (to which we will
@@ -1208,6 +1158,10 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
       if (instr->opc == OPC_META_TEX_PREFETCH)
          schedule(ctx, instr);
 
+   foreach_instr_safe (instr, &ctx->unscheduled_list)
+      if (instr->opc == OPC_PUSH_CONSTS_LOAD_MACRO)
+         schedule(ctx, instr);
+
    while (!list_is_empty(&ctx->unscheduled_list)) {
       struct ir3_sched_notes notes = {0};
       struct ir3_instruction *instr;
@@ -1217,7 +1171,7 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
          unsigned delay = node_delay(ctx, instr->data);
          d("delay=%u", delay);
 
-         debug_assert(delay <= 6);
+         assert(delay <= 6);
 
          schedule(ctx, instr);
 
@@ -1240,13 +1194,11 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
          } else if (notes.addr1_conflict) {
             new_instr =
                split_addr(ctx, &ctx->addr1, ir->a1_users, ir->a1_users_count);
-         } else if (notes.pred_conflict) {
-            new_instr = split_pred(ctx);
          } else {
             d("unscheduled_list:");
             foreach_instr (instr, &ctx->unscheduled_list)
                di(instr, "unscheduled: ");
-            debug_assert(0);
+            assert(0);
             ctx->error = true;
             return;
          }
@@ -1264,6 +1216,9 @@ sched_block(struct ir3_sched_ctx *ctx, struct ir3_block *block)
    }
 
    sched_dag_destroy(ctx);
+
+   if (terminator)
+      list_addtail(&terminator->node, &block->instr_list);
 }
 
 int
@@ -1271,13 +1226,15 @@ ir3_sched(struct ir3 *ir)
 {
    struct ir3_sched_ctx *ctx = rzalloc(NULL, struct ir3_sched_ctx);
 
+   ctx->compiler = ir->compiler;
+
    foreach_block (block, &ir->block_list) {
       foreach_instr (instr, &block->instr_list) {
          instr->data = NULL;
       }
    }
 
-   ir3_count_instructions(ir);
+   ir3_count_instructions_sched(ir);
    ir3_clear_mark(ir);
    ir3_find_ssa_uses(ir, ctx, false);
 
@@ -1353,7 +1310,7 @@ add_barrier_deps(struct ir3_block *block, struct ir3_instruction *instr)
     */
    while (prev != &block->instr_list) {
       struct ir3_instruction *pi =
-         LIST_ENTRY(struct ir3_instruction, prev, node);
+         list_entry(prev, struct ir3_instruction, node);
 
       prev = prev->prev;
 
@@ -1374,7 +1331,7 @@ add_barrier_deps(struct ir3_block *block, struct ir3_instruction *instr)
     */
    while (next != &block->instr_list) {
       struct ir3_instruction *ni =
-         LIST_ENTRY(struct ir3_instruction, next, node);
+         list_entry(next, struct ir3_instruction, node);
 
       next = next->next;
 

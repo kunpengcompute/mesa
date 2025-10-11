@@ -41,6 +41,7 @@
 #include "xm_api.h"
 #include "main/errors.h"
 #include "main/config.h"
+#include "util/compiler.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
@@ -103,21 +104,20 @@ struct __GLXcontextRec
 };
 
 
-
-static pipe_tsd ContextTSD;
+thread_local GLXContext ContextTSD;
 
 /** Set current context for calling thread */
 static void
 SetCurrentContext(GLXContext c)
 {
-   pipe_tsd_set(&ContextTSD, c);
+   ContextTSD = c;
 }
 
 /** Get current context for calling thread */
 static GLXContext
 GetCurrentContext(void)
 {
-   return pipe_tsd_get(&ContextTSD);
+   return ContextTSD;
 }
 
 
@@ -423,7 +423,7 @@ get_visual( Display *dpy, int scr, unsigned int depth, int xclass )
          return vis;
       }
       else {
-         free((void *) vis);
+         XFree((void *) vis);
          return NULL;
       }
    }
@@ -1176,7 +1176,7 @@ glXMakeContextCurrent( Display *dpy, GLXDrawable draw,
 {
    GLXContext glxCtx = ctx;
    GLXContext current = GetCurrentContext();
-   static boolean firsttime = 1, no_rast = 0;
+   static bool firsttime = 1, no_rast = 0;
 
    if (firsttime) {
       no_rast = getenv("SP_NO_RAST") != NULL;
@@ -1392,8 +1392,14 @@ glXQueryExtension( Display *dpy, int *errorBase, int *eventBase )
 PUBLIC void
 glXDestroyContext( Display *dpy, GLXContext ctx )
 {
-   if (ctx) {
-      GLXContext glxCtx = ctx;
+   GLXContext glxCtx = ctx;
+
+   if (glxCtx == NULL || glxCtx->xid == None)
+      return;
+
+   if (ctx->currentDpy) {
+      ctx->xid = None;
+   } else {
       (void) dpy;
       XMesaDestroyContext( glxCtx->xmesaContext );
       XMesaGarbageCollect();
@@ -1414,7 +1420,7 @@ PUBLIC void
 glXSwapBuffers( Display *dpy, GLXDrawable drawable )
 {
    XMesaBuffer buffer = XMesaFindBuffer( dpy, drawable );
-   static boolean firsttime = 1, no_rast = 0;
+   static bool firsttime = 1, no_rast = 0;
 
    if (firsttime) {
       no_rast = getenv("SP_NO_RAST") != NULL;

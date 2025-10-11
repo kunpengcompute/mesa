@@ -25,6 +25,9 @@
 #define VK_COMMAND_BUFFER_H
 
 #include "vk_cmd_queue.h"
+#include "vk_graphics_state.h"
+#include "vk_log.h"
+#include "vk_meta_object_list.h"
 #include "vk_object.h"
 #include "util/list.h"
 #include "util/u_dynarray.h"
@@ -38,14 +41,10 @@ struct vk_framebuffer;
 struct vk_image_view;
 struct vk_render_pass;
 
-/* Since VkSubpassDescription2::viewMask is a 32-bit integer, there are a
- * maximum of 32 possible views.
- */
-#define MESA_VK_MAX_MULTIVIEW_VIEW_COUNT 32
-
 struct vk_attachment_view_state {
    VkImageLayout layout;
    VkImageLayout stencil_layout;
+   const VkSampleLocationsInfoEXT *sample_locations;
 };
 
 struct vk_attachment_state {
@@ -61,6 +60,48 @@ struct vk_attachment_state {
    VkClearValue clear_value;
 };
 
+/** Command buffer ops */
+struct vk_command_buffer_ops {
+   /** Creates a command buffer
+    *
+    * Used by the common command pool implementation.  This function MUST
+    * call `vk_command_buffer_finish()`.  Notably, this function does not
+    * receive any additional parameters such as the level.  The level will be
+    * set by `vk_common_AllocateCommandBuffers()` and the driver must not rely
+    * on it until `vkBeginCommandBuffer()` time.
+    */
+   VkResult (*create)(struct vk_command_pool *, VkCommandBufferLevel,
+                      struct vk_command_buffer **);
+
+   /** Resets the command buffer
+    *
+    * Used by the common command pool implementation.  This function MUST
+    * call `vk_command_buffer_reset()`.  Unlike `vkResetCommandBuffer()`,
+    * this function does not have a return value because it may be called on
+    * destruction paths.
+    */
+   void (*reset)(struct vk_command_buffer *, VkCommandBufferResetFlags);
+
+   /** Destroys the command buffer
+    *
+    * Used by the common command pool implementation.  This function MUST
+    * call `vk_command_buffer_finish()`.
+    */
+   void (*destroy)(struct vk_command_buffer *);
+};
+
+enum mesa_vk_command_buffer_state {
+   MESA_VK_COMMAND_BUFFER_STATE_INVALID,
+   MESA_VK_COMMAND_BUFFER_STATE_INITIAL,
+   MESA_VK_COMMAND_BUFFER_STATE_RECORDING,
+   MESA_VK_COMMAND_BUFFER_STATE_EXECUTABLE,
+   MESA_VK_COMMAND_BUFFER_STATE_PENDING,
+};
+
+/* this needs spec fixes */
+#define MESA_VK_SHADER_STAGE_WORKGRAPH_HACK_BIT_FIXME (1<<30)
+VkShaderStageFlags vk_shader_stages_from_bind_point(VkPipelineBindPoint pipelineBindPoint);
+
 struct vk_command_buffer {
    struct vk_object_base base;
 
@@ -69,18 +110,24 @@ struct vk_command_buffer {
    /** VkCommandBufferAllocateInfo::level */
    VkCommandBufferLevel level;
 
+   const struct vk_command_buffer_ops *ops;
+
+   struct vk_dynamic_graphics_state dynamic_graphics_state;
+
+   /** State of the command buffer */
+   enum mesa_vk_command_buffer_state state;
+
+   /** Command buffer recording error state. */
+   VkResult record_result;
+
    /** Link in vk_command_pool::command_buffers if pool != NULL */
    struct list_head pool_link;
 
-   /** Destroys the command buffer
-    *
-    * Used by the common command pool implementation.  This function MUST
-    * call vk_command_buffer_finish().
-    */
-   void (*destroy)(struct vk_command_buffer *);
-
    /** Command list for emulated secondary command buffers */
    struct vk_cmd_queue cmd_queue;
+
+   /** Object list for meta objects */
+   struct vk_meta_object_list meta_objects;
 
    /**
     * VK_EXT_debug_utils
@@ -105,11 +152,11 @@ struct vk_command_buffer {
     * call. This means that there can be no more than one such label at a
     * time.
     *
-    * \c labels contains all active labels at this point in order of submission
-    * \c region_begin denotes whether the most recent label opens a new region
-    * If \t labels is empty \t region_begin must be true.
+    * ``labels`` contains all active labels at this point in order of
+    * submission ``region_begin`` denotes whether the most recent label opens
+    * a new region If ``labels`` is empty ``region_begin`` must be true.
     *
-    * Anytime we modify labels, we first check for \c region_begin. If it's
+    * Anytime we modify labels, we first check for ``region_begin``. If it's
     * false, it means that the most recent label was submitted by
     * `*InsertDebugUtilsLabel` and we need to remove it before doing anything
     * else.
@@ -127,17 +174,34 @@ struct vk_command_buffer {
    struct vk_framebuffer *framebuffer;
    VkRect2D render_area;
 
+   /**
+    * True if we are currently inside a CmdPipelineBarrier() is inserted by
+    * the runtime's vk_render_pass.c
+    */
+   bool runtime_rp_barrier;
+
    /* This uses the same trick as STACK_ARRAY */
    struct vk_attachment_state *attachments;
    struct vk_attachment_state _attachments[8];
+
+   VkRenderPassSampleLocationsBeginInfoEXT *pass_sample_locations;
+
+   /**
+    * Bitmask of shader stages bound via a vk_pipeline since the last call to
+    * vkBindShadersEXT().
+    *
+    * Used by the common vk_pipeline implementation
+    */
+   VkShaderStageFlags pipeline_shader_stages;
 };
 
 VK_DEFINE_HANDLE_CASTS(vk_command_buffer, base, VkCommandBuffer,
                        VK_OBJECT_TYPE_COMMAND_BUFFER)
 
 VkResult MUST_CHECK
-vk_command_buffer_init(struct vk_command_buffer *command_buffer,
-                       struct vk_command_pool *pool,
+vk_command_buffer_init(struct vk_command_pool *pool,
+                       struct vk_command_buffer *command_buffer,
+                       const struct vk_command_buffer_ops *ops,
                        VkCommandBufferLevel level);
 
 void
@@ -147,7 +211,40 @@ void
 vk_command_buffer_reset(struct vk_command_buffer *command_buffer);
 
 void
+vk_command_buffer_recycle(struct vk_command_buffer *command_buffer);
+
+void
+vk_command_buffer_begin(struct vk_command_buffer *command_buffer,
+                        const VkCommandBufferBeginInfo *pBeginInfo);
+
+VkResult
+vk_command_buffer_end(struct vk_command_buffer *command_buffer);
+
+void
 vk_command_buffer_finish(struct vk_command_buffer *command_buffer);
+
+static inline VkResult
+__vk_command_buffer_set_error(struct vk_command_buffer *command_buffer,
+                              VkResult error, const char *file, int line)
+{
+   assert(error != VK_SUCCESS);
+   error = __vk_errorf(command_buffer, error, file, line, NULL);
+   if (command_buffer->record_result == VK_SUCCESS)
+       command_buffer->record_result = error;
+   return error;
+}
+
+#define vk_command_buffer_set_error(command_buffer, error) \
+   __vk_command_buffer_set_error(command_buffer, error, __FILE__, __LINE__)
+
+static inline VkResult
+vk_command_buffer_get_record_result(struct vk_command_buffer *command_buffer)
+{
+   return command_buffer->record_result;
+}
+
+#define vk_command_buffer_has_error(command_buffer) \
+   unlikely((command_buffer)->record_result != VK_SUCCESS)
 
 #ifdef __cplusplus
 }

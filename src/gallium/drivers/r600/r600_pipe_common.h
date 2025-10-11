@@ -1,27 +1,7 @@
 /*
  * Copyright 2013 Advanced Micro Devices, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
  * Authors: Marek Olšák <maraeo@gmail.com>
- *
+ * SPDX-License-Identifier: MIT
  */
 
 /**
@@ -34,7 +14,7 @@
 
 #include <stdio.h>
 
-#include "radeon/radeon_winsys.h"
+#include "winsys/radeon_winsys.h"
 
 #include "util/disk_cache.h"
 #include "util/u_blitter.h"
@@ -63,7 +43,7 @@ struct u_log_context;
 #define R600_CONTEXT_PRIVATE_FLAG		(1u << 4)
 
 /* special primitive types */
-#define R600_PRIM_RECTANGLE_LIST	PIPE_PRIM_MAX
+#define R600_PRIM_RECTANGLE_LIST	MESA_PRIM_COUNT
 
 #define R600_NOT_QUERY		0xffffffff
 
@@ -113,12 +93,6 @@ enum r600_coherency {
 	R600_COHERENCY_CB_META,
 };
 
-#if UTIL_ARCH_BIG_ENDIAN
-#define R600_BIG_ENDIAN 1
-#else
-#define R600_BIG_ENDIAN 0
-#endif
-
 struct r600_common_context;
 struct r600_perfcounters;
 struct tgsi_shader_info;
@@ -131,7 +105,7 @@ struct r600_resource {
 	struct threaded_resource	b;
 
 	/* Winsys objects. */
-	struct pb_buffer		*buf;
+	struct pb_buffer_lean		*buf;
 	uint64_t			gpu_address;
 	/* Memory usage if the buffer placement is optimal. */
 	uint64_t			vram_usage;
@@ -148,7 +122,7 @@ struct r600_resource {
 	 * streamout, DMA, or as a random access target). The rest of
 	 * the buffer is considered invalid and can be mapped unsynchronized.
 	 *
-	 * This allows unsychronized mapping of a buffer range which hasn't
+	 * This allows unsynchronized mapping of a buffer range which hasn't
 	 * been used yet. It's for applications which forget to use
 	 * the unsynchronized map flag and expect the driver to figure it out.
          */
@@ -320,7 +294,7 @@ union r600_mmio_counters {
 
 struct r600_memory_object {
 	struct pipe_memory_object	b;
-	struct pb_buffer		*buf;
+	struct pb_buffer_lean		*buf;
 	uint32_t			stride;
 	uint32_t			offset;
 };
@@ -329,7 +303,7 @@ struct r600_common_screen {
 	struct pipe_screen		b;
 	struct radeon_winsys		*ws;
 	enum radeon_family		family;
-	enum chip_class			chip_class;
+	enum amd_gfx_level			gfx_level;
 	struct radeon_info		info;
 	uint64_t			debug_flags;
 	bool				has_cp_dma;
@@ -360,6 +334,7 @@ struct r600_common_screen {
 	/* GPU load thread. */
 	mtx_t				gpu_load_mutex;
 	thrd_t				gpu_load_thread;
+	bool				gpu_load_thread_created;
 	union r600_mmio_counters	mmio_counters;
 	volatile unsigned		gpu_load_stop_thread; /* bool */
 
@@ -400,7 +375,8 @@ struct r600_common_screen {
 		unsigned compute_to_L2;
 	} barrier_flags;
 
-        struct nir_shader_compiler_options nir_options;
+	struct nir_shader_compiler_options nir_options;
+	struct nir_shader_compiler_options nir_options_fs;
 };
 
 /* This encapsulates a state or an operation which can emitted into the GPU
@@ -492,7 +468,7 @@ struct r600_common_context {
 	struct radeon_winsys		*ws;
 	struct radeon_winsys_ctx	*ctx;
 	enum radeon_family		family;
-	enum chip_class			chip_class;
+	enum amd_gfx_level			gfx_level;
 	struct r600_ring		gfx;
 	struct r600_ring		dma;
 	struct pipe_fence_handle	*last_gfx_fence;
@@ -615,12 +591,12 @@ struct r600_common_context {
 
 	void (*check_vm_faults)(struct r600_common_context *ctx,
 				struct radeon_saved_cs *saved,
-				enum ring_type ring);
+				enum amd_ip_type ring);
 };
 
 /* r600_buffer_common.c */
 bool r600_rings_is_buffer_referenced(struct r600_common_context *ctx,
-				     struct pb_buffer *buf,
+				     struct pb_buffer_lean *buf,
 				     unsigned usage);
 void *r600_buffer_map_sync_with_rings(struct r600_common_context *ctx,
                                       struct r600_resource *resource,
@@ -769,7 +745,7 @@ unsigned r600_translate_colorswap(enum pipe_format format, bool do_endian_swap);
 void evergreen_do_fast_color_clear(struct r600_common_context *rctx,
 				   struct pipe_framebuffer_state *fb,
 				   struct r600_atom *fb_state,
-				   unsigned *buffers, ubyte *dirty_cbufs,
+				   unsigned *buffers, uint8_t *dirty_cbufs,
 				   const union pipe_color_union *color);
 void r600_init_screen_texture_functions(struct r600_common_screen *rscreen);
 void r600_init_context_texture_functions(struct r600_common_context *rctx);

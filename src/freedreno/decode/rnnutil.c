@@ -1,26 +1,8 @@
 /* -*- mode: C; c-file-style: "k&r"; tab-width 4; indent-tabs-mode: t; -*- */
 
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -73,7 +55,7 @@ rnn_new(int nocolor)
 }
 
 static void
-init(struct rnn *rnn, char *file, char *domain)
+init(struct rnn *rnn, char *file, char *domain, char *variant)
 {
    /* prepare rnn stuff for lookup */
    rnn_parsefile(rnn->db, file);
@@ -87,11 +69,11 @@ init(struct rnn *rnn, char *file, char *domain)
    if (!rnn->dom[0] && rnn->dom[1]) {
       fprintf(stderr, "Could not find domain %s in %s\n", domain, file);
    }
-   rnn->variant = domain;
+   rnn->variant = variant;
 
-   rnndec_varadd(rnn->vc, "chip", domain);
+   rnndec_varadd(rnn->vc, "chip", variant);
    if (rnn->vc != rnn->vc_nocolor)
-      rnndec_varadd(rnn->vc_nocolor, "chip", domain);
+      rnndec_varadd(rnn->vc_nocolor, "chip", variant);
    if (rnn->db->estatus)
       errx(rnn->db->estatus, "failed to parse register database");
 }
@@ -99,22 +81,24 @@ init(struct rnn *rnn, char *file, char *domain)
 void
 rnn_load_file(struct rnn *rnn, char *file, char *domain)
 {
-   init(rnn, file, domain);
+   init(rnn, file, domain, domain);
 }
 
 void
 rnn_load(struct rnn *rnn, const char *gpuname)
 {
    if (strstr(gpuname, "a2")) {
-      init(rnn, "adreno/a2xx.xml", "A2XX");
+      init(rnn, "adreno/a2xx.xml", "A2XX", "A2XX");
    } else if (strstr(gpuname, "a3")) {
-      init(rnn, "adreno/a3xx.xml", "A3XX");
+      init(rnn, "adreno/a3xx.xml", "A3XX", "A3XX");
    } else if (strstr(gpuname, "a4")) {
-      init(rnn, "adreno/a4xx.xml", "A4XX");
+      init(rnn, "adreno/a4xx.xml", "A4XX", "A4XX");
    } else if (strstr(gpuname, "a5")) {
-      init(rnn, "adreno/a5xx.xml", "A5XX");
+      init(rnn, "adreno/a5xx.xml", "A5XX", "A5XX");
    } else if (strstr(gpuname, "a6")) {
-      init(rnn, "adreno/a6xx.xml", "A6XX");
+      init(rnn, "adreno/a6xx.xml", "A6XX", "A6XX");
+   } else if (strstr(gpuname, "a7")) {
+      init(rnn, "adreno/a6xx.xml", "A6XX", "A7XX");
    }
 }
 
@@ -144,10 +128,20 @@ rnn_regname(struct rnn *rnn, uint32_t regbase, int color)
    return NULL;
 }
 
+/* call rnn_reginfo_free() to free the result */
 struct rnndecaddrinfo *
 rnn_reginfo(struct rnn *rnn, uint32_t regbase)
 {
    return rnndec_decodeaddr(rnn->vc, finddom(rnn, regbase), regbase, 0);
+}
+
+void
+rnn_reginfo_free(struct rnndecaddrinfo *info)
+{
+   if (!info)
+      return;
+   free(info->name);
+   free(info);
 }
 
 const char *

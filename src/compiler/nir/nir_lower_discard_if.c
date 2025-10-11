@@ -21,29 +21,43 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "nir.h"
 
 static bool
-lower_discard_if_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
+lower_discard_if(nir_builder *b, nir_intrinsic_instr *instr, void *cb_data)
 {
-   if (instr_->type != nir_instr_type_intrinsic)
+   nir_lower_discard_if_options options = *(nir_lower_discard_if_options *)cb_data;
+
+   switch (instr->intrinsic) {
+   case nir_intrinsic_demote_if:
+      if (!(options & nir_lower_demote_if_to_cf))
+         return false;
+      break;
+   case nir_intrinsic_terminate_if:
+      if (!(options & nir_lower_terminate_if_to_cf))
+         return false;
+      break;
+   default:
       return false;
-
-   nir_intrinsic_instr *instr = nir_instr_as_intrinsic(instr_);
-
-   if (instr->intrinsic == nir_intrinsic_discard_if) {
-      b->cursor = nir_before_instr(&instr->instr);
-
-      nir_if *if_stmt = nir_push_if(b, nir_ssa_for_src(b, instr->src[0], 1));
-      nir_discard(b);
-      nir_pop_if(b, if_stmt);
-      nir_instr_remove(&instr->instr);
-      return true;
-   } else if (instr->intrinsic == nir_intrinsic_terminate_if ||
-              instr->intrinsic == nir_intrinsic_demote_if) {
-      unreachable("todo: handle terminates and demotes for Vulkan");
    }
+
+   b->cursor = nir_before_instr(&instr->instr);
+
+   nir_if *if_stmt = nir_push_if(b, instr->src[0].ssa);
+   switch (instr->intrinsic) {
+   case nir_intrinsic_demote_if:
+      nir_demote(b);
+      break;
+   case nir_intrinsic_terminate_if:
+      nir_terminate(b);
+      break;
+   default:
+      unreachable("bad intrinsic");
+   }
+   nir_pop_if(b, if_stmt);
+   nir_instr_remove(&instr->instr);
+   return true;
 
    /* a shader like this (shaders@glsl-fs-discard-04):
 
@@ -73,7 +87,7 @@ lower_discard_if_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
          }   else   {
             block   block_6:
             /   preds:   block_4   /
-            intrinsic   discard   ()   () <-- not last instruction
+            intrinsic   terminate   ()   () <-- not last instruction
             vec1   32   ssa_23   =   iadd   ssa_50,   ssa_31 <-- dead code loop itr increment
             /   succs:   block_7   /
          }
@@ -82,7 +96,7 @@ lower_discard_if_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
 
       which means that we can't assert like this:
 
-      assert(instr->intrinsic != nir_intrinsic_discard ||
+      assert(instr->intrinsic != nir_intrinsic_terminate ||
              nir_block_last_instr(instr->instr.block) == &instr->instr);
 
 
@@ -94,10 +108,10 @@ lower_discard_if_instr(nir_builder *b, nir_instr *instr_, UNUSED void *cb_data)
 }
 
 bool
-nir_lower_discard_if(nir_shader *shader)
+nir_lower_discard_if(nir_shader *shader, nir_lower_discard_if_options options)
 {
-   return nir_shader_instructions_pass(shader,
-                                       lower_discard_if_instr,
-                                       nir_metadata_none,
-                                       NULL);
+   return nir_shader_intrinsics_pass(shader,
+                                     lower_discard_if,
+                                     nir_metadata_none,
+                                     &options);
 }

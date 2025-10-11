@@ -1,46 +1,21 @@
 /*
  * Copyright 2014 Advanced Micro Devices, Inc.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE COPYRIGHT HOLDERS, AUTHORS AND/OR ITS SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE.
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
+ * SPDX-License-Identifier: MIT
  */
 /* based on pieces from si_pipe.c and radeon_llvm_emit.c */
 #include "ac_llvm_util.h"
 
 #include "ac_llvm_build.h"
 #include "c11/threads.h"
-#include "gallivm/lp_bld_misc.h"
 #include "util/bitscan.h"
 #include "util/u_math.h"
 #include <llvm-c/Core.h>
 #include <llvm-c/Support.h>
-#include <llvm-c/Transforms/IPO.h>
-#include <llvm-c/Transforms/Scalar.h>
-#include <llvm-c/Transforms/Utils.h>
 
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
-
-extern void LLVMInitializeAMDGPUDisassembler();
 
 static void ac_init_llvm_target(void)
 {
@@ -59,12 +34,14 @@ static void ac_init_llvm_target(void)
       /* error messages prefix */
       "mesa",
       "-amdgpu-atomic-optimizations=true",
-#if LLVM_VERSION_MAJOR == 11
-      /* This fixes variable indexing on LLVM 11. It also breaks atomic.cmpswap on LLVM >= 12. */
-      "-structurizecfg-skip-uniform-regions",
-#endif
+      /* image_msaa_load currently doesn't work with LLVM + GFX12 */
+      "-amdgpu-enable-image-intrinsic-optimizer=false",
    };
+
+   ac_reset_llvm_all_options_occurrences();
    LLVMParseCommandLineOptions(ARRAY_SIZE(argv), argv, NULL);
+
+   ac_llvm_run_atexit_for_destructors();
 }
 
 PUBLIC void ac_init_shared_llvm_once(void)
@@ -90,7 +67,7 @@ void ac_init_llvm_once(void)
 #endif
 }
 
-static LLVMTargetRef ac_get_llvm_target(const char *triple)
+LLVMTargetRef ac_get_llvm_target(const char *triple)
 {
    LLVMTargetRef target = NULL;
    char *err_message = NULL;
@@ -106,83 +83,6 @@ static LLVMTargetRef ac_get_llvm_target(const char *triple)
    return target;
 }
 
-const char *ac_get_llvm_processor_name(enum radeon_family family)
-{
-   switch (family) {
-   case CHIP_TAHITI:
-      return "tahiti";
-   case CHIP_PITCAIRN:
-      return "pitcairn";
-   case CHIP_VERDE:
-      return "verde";
-   case CHIP_OLAND:
-      return "oland";
-   case CHIP_HAINAN:
-      return "hainan";
-   case CHIP_BONAIRE:
-      return "bonaire";
-   case CHIP_KABINI:
-      return "kabini";
-   case CHIP_KAVERI:
-      return "kaveri";
-   case CHIP_HAWAII:
-      return "hawaii";
-   case CHIP_TONGA:
-      return "tonga";
-   case CHIP_ICELAND:
-      return "iceland";
-   case CHIP_CARRIZO:
-      return "carrizo";
-   case CHIP_FIJI:
-      return "fiji";
-   case CHIP_STONEY:
-      return "stoney";
-   case CHIP_POLARIS10:
-      return "polaris10";
-   case CHIP_POLARIS11:
-   case CHIP_POLARIS12:
-   case CHIP_VEGAM:
-      return "polaris11";
-   case CHIP_VEGA10:
-      return "gfx900";
-   case CHIP_RAVEN:
-      return "gfx902";
-   case CHIP_VEGA12:
-      return "gfx904";
-   case CHIP_VEGA20:
-      return "gfx906";
-   case CHIP_RAVEN2:
-   case CHIP_RENOIR:
-      return "gfx909";
-   case CHIP_ARCTURUS:
-      return "gfx908";
-   case CHIP_ALDEBARAN:
-      return "gfx90a";
-   case CHIP_NAVI10:
-      return "gfx1010";
-   case CHIP_NAVI12:
-      return "gfx1011";
-   case CHIP_NAVI14:
-      return "gfx1012";
-   case CHIP_SIENNA_CICHLID:
-      return "gfx1030";
-   case CHIP_NAVY_FLOUNDER:
-      return LLVM_VERSION_MAJOR >= 12 ? "gfx1031" : "gfx1030";
-   case CHIP_DIMGREY_CAVEFISH:
-      return LLVM_VERSION_MAJOR >= 12 ? "gfx1032" : "gfx1030";
-   case CHIP_VANGOGH:
-      return LLVM_VERSION_MAJOR >= 12 ? "gfx1033" : "gfx1030";
-   case CHIP_BEIGE_GOBY:
-      return LLVM_VERSION_MAJOR >= 13 ? "gfx1034" : "gfx1030";
-   case CHIP_YELLOW_CARP:
-      return LLVM_VERSION_MAJOR >= 13 ? "gfx1035" : "gfx1030";
-   case CHIP_GFX1036: /* TODO: LLVM 15 doesn't support this yet */
-      return "gfx1030";
-   default:
-      return "";
-   }
-}
-
 static LLVMTargetMachineRef ac_create_target_machine(enum radeon_family family,
                                                      enum ac_target_machine_options tm_options,
                                                      LLVMCodeGenOptLevel level,
@@ -191,10 +91,17 @@ static LLVMTargetMachineRef ac_create_target_machine(enum radeon_family family,
    assert(family >= CHIP_TAHITI);
    const char *triple = (tm_options & AC_TM_SUPPORTS_SPILL) ? "amdgcn-mesa-mesa3d" : "amdgcn--";
    LLVMTargetRef target = ac_get_llvm_target(triple);
+   const char *name = ac_get_llvm_processor_name(family);
 
    LLVMTargetMachineRef tm =
-      LLVMCreateTargetMachine(target, triple, ac_get_llvm_processor_name(family), "", level,
+      LLVMCreateTargetMachine(target, triple, name, "", level,
                               LLVMRelocDefault, LLVMCodeModelDefault);
+
+   if (!ac_is_llvm_processor_supported(tm, name)) {
+      LLVMDisposeTargetMachine(tm);
+      fprintf(stderr, "amd: LLVM doesn't support %s, bailing out...\n", name);
+      return NULL;
+   }
 
    if (out_triple)
       *out_triple = triple;
@@ -202,87 +109,16 @@ static LLVMTargetMachineRef ac_create_target_machine(enum radeon_family family,
    return tm;
 }
 
-static LLVMPassManagerRef ac_create_passmgr(LLVMTargetLibraryInfoRef target_library_info,
-                                            bool check_ir)
+LLVMAttributeRef ac_get_llvm_attribute(LLVMContextRef ctx, const char *str)
 {
-   LLVMPassManagerRef passmgr = LLVMCreatePassManager();
-   if (!passmgr)
-      return NULL;
-
-   if (target_library_info)
-      LLVMAddTargetLibraryInfo(target_library_info, passmgr);
-
-   if (check_ir)
-      LLVMAddVerifierPass(passmgr);
-   LLVMAddAlwaysInlinerPass(passmgr);
-   /* Normally, the pass manager runs all passes on one function before
-    * moving onto another. Adding a barrier no-op pass forces the pass
-    * manager to run the inliner on all functions first, which makes sure
-    * that the following passes are only run on the remaining non-inline
-    * function, so it removes useless work done on dead inline functions.
-    */
-   ac_llvm_add_barrier_noop_pass(passmgr);
-   /* This pass should eliminate all the load and store instructions. */
-   LLVMAddPromoteMemoryToRegisterPass(passmgr);
-   LLVMAddScalarReplAggregatesPass(passmgr);
-   LLVMAddLICMPass(passmgr);
-   LLVMAddAggressiveDCEPass(passmgr);
-   LLVMAddCFGSimplificationPass(passmgr);
-   /* This is recommended by the instruction combining pass. */
-   LLVMAddEarlyCSEMemSSAPass(passmgr);
-   LLVMAddInstructionCombiningPass(passmgr);
-   return passmgr;
-}
-
-static const char *attr_to_str(enum ac_func_attr attr)
-{
-   switch (attr) {
-   case AC_FUNC_ATTR_ALWAYSINLINE:
-      return "alwaysinline";
-   case AC_FUNC_ATTR_INREG:
-      return "inreg";
-   case AC_FUNC_ATTR_NOALIAS:
-      return "noalias";
-   case AC_FUNC_ATTR_NOUNWIND:
-      return "nounwind";
-   case AC_FUNC_ATTR_READNONE:
-      return "readnone";
-   case AC_FUNC_ATTR_READONLY:
-      return "readonly";
-   case AC_FUNC_ATTR_WRITEONLY:
-      return "writeonly";
-   case AC_FUNC_ATTR_INACCESSIBLE_MEM_ONLY:
-      return "inaccessiblememonly";
-   case AC_FUNC_ATTR_CONVERGENT:
-      return "convergent";
-   default:
-      fprintf(stderr, "Unhandled function attribute: %x\n", attr);
-      return 0;
-   }
+   return LLVMCreateEnumAttribute(ctx, LLVMGetEnumAttributeKindForName(str, strlen(str)), 0);
 }
 
 void ac_add_function_attr(LLVMContextRef ctx, LLVMValueRef function, int attr_idx,
-                          enum ac_func_attr attr)
+                          const char *attr)
 {
-   const char *attr_name = attr_to_str(attr);
-   unsigned kind_id = LLVMGetEnumAttributeKindForName(attr_name, strlen(attr_name));
-   LLVMAttributeRef llvm_attr = LLVMCreateEnumAttribute(ctx, kind_id, 0);
-
-   if (LLVMIsAFunction(function))
-      LLVMAddAttributeAtIndex(function, attr_idx, llvm_attr);
-   else
-      LLVMAddCallSiteAttribute(function, attr_idx, llvm_attr);
-}
-
-void ac_add_func_attributes(LLVMContextRef ctx, LLVMValueRef function, unsigned attrib_mask)
-{
-   attrib_mask |= AC_FUNC_ATTR_NOUNWIND;
-   attrib_mask &= ~AC_FUNC_ATTR_LEGACY;
-
-   while (attrib_mask) {
-      enum ac_func_attr attr = 1u << u_bit_scan(&attrib_mask);
-      ac_add_function_attr(ctx, function, -1, attr);
-   }
+   assert(LLVMIsAFunction(function));
+   LLVMAddAttributeAtIndex(function, attr_idx, ac_get_llvm_attribute(ctx, attr));
 }
 
 void ac_dump_module(LLVMModuleRef module)
@@ -310,16 +146,17 @@ void ac_llvm_set_workgroup_size(LLVMValueRef F, unsigned size)
    LLVMAddTargetDependentFunctionAttr(F, "amdgpu-flat-work-group-size", str);
 }
 
-void ac_llvm_set_target_features(LLVMValueRef F, struct ac_llvm_context *ctx)
+void ac_llvm_set_target_features(LLVMValueRef F, struct ac_llvm_context *ctx, bool wgp_mode)
 {
    char features[2048];
 
-   snprintf(features, sizeof(features), "+DumpCode%s%s",
+   snprintf(features, sizeof(features), "+DumpCode%s%s%s",
             /* GFX9 has broken VGPR indexing, so always promote alloca to scratch. */
-            ctx->chip_class == GFX9 ? ",-promote-alloca" : "",
+            ctx->gfx_level == GFX9 ? ",-promote-alloca" : "",
             /* Wave32 is the default. */
-            ctx->chip_class >= GFX10 && ctx->wave_size == 64 ?
-               ",+wavefrontsize64,-wavefrontsize32" : "");
+            ctx->gfx_level >= GFX10 && ctx->wave_size == 64 ?
+               ",+wavefrontsize64,-wavefrontsize32" : "",
+            ctx->gfx_level >= GFX10 && !wgp_mode ? ",+cumode" : "");
 
    LLVMAddTargetDependentFunctionAttr(F, "target-features", features);
 }
@@ -341,13 +178,9 @@ bool ac_init_llvm_compiler(struct ac_llvm_compiler *compiler, enum radeon_family
          goto fail;
    }
 
-   compiler->target_library_info = ac_create_target_library_info(triple);
-   if (!compiler->target_library_info)
-      goto fail;
-
-   compiler->passmgr =
-      ac_create_passmgr(compiler->target_library_info, tm_options & AC_TM_CHECK_IR);
-   if (!compiler->passmgr)
+   compiler->meo =
+      ac_create_midend_optimizer(compiler->tm, tm_options & AC_TM_CHECK_IR);
+   if (!compiler->meo)
       goto fail;
 
    return true;
@@ -358,13 +191,14 @@ fail:
 
 void ac_destroy_llvm_compiler(struct ac_llvm_compiler *compiler)
 {
-   ac_destroy_llvm_passes(compiler->passes);
-   ac_destroy_llvm_passes(compiler->low_opt_passes);
+   /* delete the codegen pass managers */
+   ac_destroy_backend_optimizer(compiler->beo);
+   ac_destroy_backend_optimizer(compiler->low_opt_beo);
 
-   if (compiler->passmgr)
-      LLVMDisposePassManager(compiler->passmgr);
-   if (compiler->target_library_info)
-      ac_dispose_target_library_info(compiler->target_library_info);
+   /* delete optimizer pass manager */
+   if (compiler->meo)
+      ac_destroy_midend_optimiser(compiler->meo);
+
    if (compiler->low_opt_tm)
       LLVMDisposeTargetMachine(compiler->low_opt_tm);
    if (compiler->tm)

@@ -50,6 +50,14 @@ We have two types of instructions:
 Each instruction can have operands (temporaries that it reads), and definitions (temporaries that it writes).
 Temporaries can be fixed to a specific register, or just specify a register class (either a single register, or a vector of several registers).
 
+#### Lower Phis
+
+After instructions selection, some phi instructions need further lowering. This includes booleans which are represented as scalar values. Because the scalar ALU doesn't respect the execution mask, divergent boolean phis need to be lowered to SALU shuffle code. This pass also inserts the necessary code in order to fix phis with subdword access and repairs phis in case of mismatches between logical and linear CFG.
+
+#### Lower Subdword
+
+For GFX6 and GFX7, this pass already lowers subdword pseudo instructions.
+
 #### Value Numbering
 
 The value numbering pass is necessary for two reasons: the lack of descriptor load representation in NIR,
@@ -88,14 +96,30 @@ Scheduling is another NP-complete problem where basically all known heuristics s
 
 The register allocator works on SSA (as opposed to LLVM's which works on virtual registers). The SSA properties guarantee that there are always as many registers available as needed. The problem is that some instructions require a vector of neighboring registers to be available, but the free regs might be scattered. In this case, the register allocator inserts shuffle code (moving some temporaries to other registers) to make space for the variable. The assumption is that it is (almost) always better to have a few more moves than to sacrifice a wave. The RA does SSA-reconstruction on the fly, which makes its runtime linear.
 
+#### Optimization (post-RA)
+
+Optimizations which depend on register assignment (like branching on VCCZ) are performed.
+
 #### SSA Elimination
 
 The next step is a pass out of SSA by inserting parallelcopies at the end of blocks to match the phi nodes' semantics.
+
+#### Jump Threading
+
+This pass aims to eliminate empty or unnecessary basic blocks. As this introduces critical edges, it can only be performed after SSA elimination.
 
 #### Lower to HW instructions
 
 Most pseudo instructions are lowered to actual machine instructions.
 These are mostly parallel copy instructions created by instruction selection or register allocation and spill/reload code.
+
+#### VOPD Scheduling
+
+This pass makes use of the VOPD instruction encoding on GFX11+. When using wave32 mode, this pass works on a partial dependency graph in order to combine two VALU instructions each into one VOPD instruction.
+
+#### ILP Scheduling
+
+This second scheduler works on registers rather than SSA-values to determine dependencies. It implements a forward list scheduling algorithm using a partial dependency graph of few instructions at a time and aims to create larger memory clauses and improve ILP.
 
 #### Insert wait states
 
@@ -105,7 +129,11 @@ This means that we need to insert `s_waitcnt` instructions (and its variants) so
 #### Resolve hazards and insert NOPs
 
 Some instructions require wait states or other instructions to resolve hazards which are not handled by the hardware.
-This pass makes sure that no known hazards occour.
+This pass makes sure that no known hazards occur.
+
+#### Insert delay_alu and form clauses
+
+These passes introduce optional instructions which provide performance hints to the hardware. `s_delay_alu` is available on GFX11+ and describes ALU dependencies in order to allow the hardware to execute instructions from a different wave in the meantime. `s_clause` is avilable on GFX10+ with the purpose to complete an entire set of memory instructions before switching to a different wave.
 
 #### Emit program - Assembler
 
@@ -118,7 +146,7 @@ Which software stage gets executed on which hardware stage depends on what kind 
 
 An important difference is that VS is always the first stage to run in SW models,
 whereas HW VS refers to the last HW stage before fragment shading in GCN/RDNA terminology.
-That's why, among other things, the HW VS is no longer used to execute the SW VS when tesselation or geometry shading are used.
+That's why, among other things, the HW VS is no longer used to execute the SW VS when tessellation or geometry shading are used.
 
 #### Glossary of software stages
 
@@ -245,11 +273,11 @@ We also have `ACO_DEBUG` options:
 
 * `validateir` - Validate the ACO IR between compilation stages. By default, enabled in debug builds and disabled in release builds.
 * `validatera` - Perform a RA (register allocation) validation.
-* `perfwarn` - Warn when sub-optimal instructions are found.
 * `force-waitcnt` - Forces ACO to emit a wait state after each instruction when there is something to wait for. Harms performance.
 * `novn` - Disables the ACO value numbering stage.
 * `noopt` - Disables the ACO optimizer.
-* `nosched` - Disables the ACO scheduler.
+* `nosched` - Disables the ACO pre-RA and post-RA scheduler.
+* `nosched-ilp` - Disables the ACO post-RA ILP scheduler.
 
 Note that you need to **combine these options into a comma-separated list**, for example: `RADV_DEBUG=nocache,shaders` otherwise only the last one will take effect. (This is how all environment variables work, yet this is an often made mistake.) Example:
 

@@ -35,6 +35,7 @@
 #include "pipe/p_state.h"
 #include "util/bitset.h"
 #include "util/slab.h"
+#include "util/u_dynarray.h"
 #include "xf86drm.h"
 #include "drm-uapi/v3d_drm.h"
 #include "v3d_screen.h"
@@ -50,12 +51,6 @@ void v3d_job_add_bo(struct v3d_job *job, struct v3d_bo *bo);
 #include "v3d_bufmgr.h"
 #include "v3d_resource.h"
 #include "v3d_cl.h"
-
-#ifdef USE_V3D_SIMULATOR
-#define using_v3d_simulator true
-#else
-#define using_v3d_simulator false
-#endif
 
 #define V3D_DIRTY_BLEND               (1ull <<  0)
 #define V3D_DIRTY_RASTERIZER          (1ull <<  1)
@@ -103,7 +98,9 @@ void v3d_job_add_bo(struct v3d_job *job, struct v3d_bo *bo);
 #define MAX_JOB_SCISSORS 16
 
 enum v3d_sampler_state_variant {
-        V3D_SAMPLER_STATE_BORDER_0,
+        V3D_SAMPLER_STATE_BORDER_0000,
+        V3D_SAMPLER_STATE_BORDER_0001,
+        V3D_SAMPLER_STATE_BORDER_1111,
         V3D_SAMPLER_STATE_F16,
         V3D_SAMPLER_STATE_F16_UNORM,
         V3D_SAMPLER_STATE_F16_SNORM,
@@ -146,6 +143,20 @@ enum v3d_flush_cond {
          * glMemoryBarrier(), such as SSBOs and shader images.
          */
         V3D_FLUSH_NOT_CURRENT_JOB,
+};
+
+/* bitmask */
+enum v3d_blitter_op {
+        V3D_SAVE_TEXTURES         = (1u << 1),
+        V3D_SAVE_FRAMEBUFFER      = (1u << 2),
+        V3D_DISABLE_RENDER_COND   = (1u << 3),
+
+        V3D_BLIT          = V3D_SAVE_FRAMEBUFFER | V3D_SAVE_TEXTURES,
+        V3D_BLIT_COND     = V3D_BLIT | V3D_DISABLE_RENDER_COND,
+        V3D_CLEAR         = 0,
+        V3D_CLEAR_COND    = V3D_CLEAR | V3D_DISABLE_RENDER_COND,
+        V3D_CLEAR_SURFACE = V3D_SAVE_FRAMEBUFFER,
+        V3D_CLEAR_SURFACE_COND = V3D_CLEAR_SURFACE | V3D_DISABLE_RENDER_COND
 };
 
 struct v3d_sampler_view {
@@ -213,6 +224,9 @@ struct v3d_uncompiled_shader {
         uint16_t tf_specs[16];
         uint16_t tf_specs_psiz[16];
         uint32_t num_tf_specs;
+
+        /* For caching */
+        unsigned char sha1[20];
 };
 
 struct v3d_compiled_shader {
@@ -247,15 +261,15 @@ struct v3d_program_stateobj {
 
 struct v3d_constbuf_stateobj {
         struct pipe_constant_buffer cb[PIPE_MAX_CONSTANT_BUFFERS];
-        uint32_t enabled_mask;
-        uint32_t dirty_mask;
+        BITSET_DECLARE(enabled_mask, PIPE_MAX_CONSTANT_BUFFERS);
+        BITSET_DECLARE(dirty_mask, PIPE_MAX_CONSTANT_BUFFERS);
 };
 
 struct v3d_vertexbuf_stateobj {
         struct pipe_vertex_buffer vb[PIPE_MAX_ATTRIBS];
         unsigned count;
-        uint32_t enabled_mask;
-        uint32_t dirty_mask;
+        BITSET_DECLARE(enabled_mask, PIPE_MAX_ATTRIBS);
+        BITSET_DECLARE(dirty_mask, PIPE_MAX_ATTRIBS);
 };
 
 struct v3d_vertex_stateobj {
@@ -263,6 +277,7 @@ struct v3d_vertex_stateobj {
         unsigned num_elements;
 
         uint8_t attrs[16 * (V3D_MAX_VS_INPUTS / 4)];
+        /* defaults can be NULL for some hw generation */
         struct pipe_resource *defaults;
         uint32_t defaults_offset;
 };
@@ -271,18 +286,18 @@ struct v3d_stream_output_target {
         struct pipe_stream_output_target base;
         /* Number of transform feedback vertices written to this target */
         uint32_t recorded_vertex_count;
+        /* Number of vertices we've written into the buffer so far */
+        uint32_t offset;
 };
 
 struct v3d_streamout_stateobj {
         struct pipe_stream_output_target *targets[PIPE_MAX_SO_BUFFERS];
-        /* Number of vertices we've written into the buffer so far. */
-        uint32_t offsets[PIPE_MAX_SO_BUFFERS];
         unsigned num_targets;
 };
 
 struct v3d_ssbo_stateobj {
         struct pipe_shader_buffer sb[PIPE_MAX_SHADER_BUFFERS];
-        uint32_t enabled_mask;
+        BITSET_DECLARE(enabled_mask, PIPE_MAX_SHADER_BUFFERS);
 };
 
 /* Hash table key for v3d->jobs */
@@ -308,7 +323,7 @@ struct v3d_image_view {
 
 struct v3d_shaderimg_stateobj {
         struct v3d_image_view si[PIPE_MAX_SHADER_IMAGES];
-        uint32_t enabled_mask;
+        BITSET_DECLARE(enabled_mask, PIPE_MAX_SHADER_IMAGES);
 };
 
 struct v3d_perfmon_state {
@@ -363,11 +378,14 @@ struct v3d_job {
          * Surfaces to submit rendering for.
          * For blit operations, bbuf is the source surface, and cbufs[0] is
          * the destination surface.
+         * For blit operations straight from the job's tile buffer, dbuf is the
+         * blit destination surface.
          */
         uint32_t nr_cbufs;
         struct pipe_surface *cbufs[V3D_MAX_DRAW_BUFFERS];
         struct pipe_surface *zsbuf;
         struct pipe_surface *bbuf;
+        struct pipe_surface *dbuf;
         /** @} */
         /** @{
          * Bounding box of the scissor across all queued drawing.
@@ -424,7 +442,16 @@ struct v3d_job {
         /* Bitmask of PIPE_CLEAR_* of buffers that were cleared before the
          * first rendering.
          */
-        uint32_t clear;
+        uint32_t clear_tlb;
+        /* Bitmask of PIPE_CLEAR_* of buffers that were cleared using a draw
+         * call (not necessarily before the first rendering) instead of a TLB
+         * clear.
+         */
+        uint32_t clear_draw;
+        /* Bitmask of PIPE_CLEAR_* of attached buffers that were invalidated
+         * by glInvalidateFramebuffer so we can avoid loading them.
+         */
+        uint32_t invalidated_load;
         /* Bitmask of PIPE_CLEAR_* of buffers that have been read by a draw
          * call without having been cleared first.
          */
@@ -433,6 +460,13 @@ struct v3d_job {
          * (either clears or draws) and should be stored.
          */
         uint32_t store;
+        /* Bitmask of PIPE_CLEAR_* of buffers that need to be blitted into
+         * a destination buffer other than the jobs RT. Used to implement
+         * blits from jobs that have not yet been flushed, including MSAA
+         * resolve.
+         */
+        uint32_t blit_tlb;
+
         uint32_t clear_color[V3D_MAX_DRAW_BUFFERS][4];
         float clear_z;
         uint8_t clear_s;
@@ -469,6 +503,24 @@ struct v3d_job {
          * direction (so either UNDECIDED, GT, or LT).
          */
         enum v3d_ez_state first_ez_state;
+
+        /**
+         * If we have already decided if we need to disable early Z/S
+         * completely for this job.
+         */
+        bool decided_global_ez_enable;
+
+        /**
+         * When we decide if we nee to disable early Z/S gobally, track the
+         * Z-state we used to make that decision so we can change the decision
+         * if the state changes.
+         */
+        struct v3d_depth_stencil_alpha_state *global_ez_zsa_decision_state;
+
+        /**
+         * If this job has been configured to use early Z/S clear.
+         */
+        bool early_zs_clear;
 
         /**
          * Number of draw calls (not counting full buffer clears) queued in
@@ -539,6 +591,8 @@ struct v3d_context {
         struct pipe_shader_state *sand8_blit_vs;
         struct pipe_shader_state *sand8_blit_fs_luma;
         struct pipe_shader_state *sand8_blit_fs_chroma;
+        struct pipe_shader_state *sand30_blit_vs;
+        struct pipe_shader_state *sand30_blit_fs;
 
         /** @{ Current pipeline state objects */
         struct pipe_scissor_state scissor;
@@ -548,7 +602,9 @@ struct v3d_context {
 
         struct v3d_program_stateobj prog;
         uint32_t compute_num_workgroups[3];
+        uint32_t compute_workgroup_size[3];
         struct v3d_bo *compute_shared_memory;
+        uint32_t shared_memory;
 
         struct v3d_vertex_stateobj *vtx;
 
@@ -585,6 +641,7 @@ struct v3d_context {
 
         uint32_t tf_prims_generated;
         uint32_t prims_generated;
+        bool prim_restart;
 
         uint32_t n_primitives_generated_queries_in_flight;
 
@@ -600,9 +657,18 @@ struct v3d_context {
         struct v3d_bo *current_oq;
         struct pipe_resource *prim_counts;
         uint32_t prim_counts_offset;
-        struct util_debug_callback debug;
         struct v3d_perfmon_state *active_perfmon;
         struct v3d_perfmon_state *last_perfmon;
+
+        struct pipe_query *cond_query;
+        bool cond_cond;
+        enum pipe_render_cond_flag cond_mode;
+
+        int in_fence_fd;
+        /** Handle of the syncobj that holds in_fence_fd for submission. */
+        uint32_t in_syncobj;
+
+        struct util_dynarray global_buffers;
         /** @} */
 };
 
@@ -632,10 +698,10 @@ struct v3d_blend_state {
 };
 
 #define perf_debug(...) do {                            \
-        if (unlikely(V3D_DEBUG & V3D_DEBUG_PERF))       \
+        if (V3D_DBG(PERF))                            \
                 fprintf(stderr, __VA_ARGS__);           \
-        if (unlikely(v3d->debug.debug_message))         \
-                util_debug_message(&v3d->debug, PERF_INFO, __VA_ARGS__);    \
+        if (unlikely(v3d->base.debug.debug_message))         \
+                util_debug_message(&v3d->base.debug, PERF_INFO, __VA_ARGS__); \
 } while (0)
 
 static inline struct v3d_context *
@@ -683,10 +749,11 @@ void v3d_query_init(struct pipe_context *pctx);
 static inline int
 v3d_ioctl(int fd, unsigned long request, void *arg)
 {
-        if (using_v3d_simulator)
-                return v3d_simulator_ioctl(fd, request, arg);
-        else
-                return drmIoctl(fd, request, arg);
+#if USE_V3D_SIMULATOR
+        return v3d_simulator_ioctl(fd, request, arg);
+#else
+        return drmIoctl(fd, request, arg);
+#endif
 }
 
 static inline bool
@@ -736,25 +803,17 @@ bool v3d_tex_format_supported(const struct v3d_device_info *devinfo,
 uint8_t v3d_get_rt_format(const struct v3d_device_info *devinfo, enum pipe_format f);
 uint8_t v3d_get_tex_format(const struct v3d_device_info *devinfo, enum pipe_format f);
 uint8_t v3d_get_tex_return_size(const struct v3d_device_info *devinfo,
-                                enum pipe_format f,
-                                enum pipe_tex_compare compare);
+                                enum pipe_format f);
 uint8_t v3d_get_tex_return_channels(const struct v3d_device_info *devinfo,
                                     enum pipe_format f);
 const uint8_t *v3d_get_format_swizzle(const struct v3d_device_info *devinfo,
                                       enum pipe_format f);
-void v3d_get_internal_type_bpp_for_output_format(const struct v3d_device_info *devinfo,
-                                                 uint32_t format,
-                                                 uint32_t *type,
-                                                 uint32_t *bpp);
-bool v3d_tfu_supports_tex_format(const struct v3d_device_info *devinfo,
-                                 uint32_t tex_format,
-                                 bool for_mipmap);
 bool v3d_format_supports_tlb_msaa_resolve(const struct v3d_device_info *devinfo,
                                           enum pipe_format f);
 
 void v3d_init_query_functions(struct v3d_context *v3d);
 void v3d_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info);
-void v3d_blitter_save(struct v3d_context *v3d, bool op_blit);
+void v3d_blitter_save(struct v3d_context *v3d, enum v3d_blitter_op op);
 bool v3d_generate_mipmap(struct pipe_context *pctx,
                          struct pipe_resource *prsc,
                          enum pipe_format format,
@@ -766,11 +825,14 @@ bool v3d_generate_mipmap(struct pipe_context *pctx,
 void
 v3d_fence_unreference(struct v3d_fence **fence);
 
-struct v3d_fence *v3d_fence_create(struct v3d_context *v3d);
+struct v3d_fence *v3d_fence_create(struct v3d_context *v3d, int fd);
 
 bool v3d_fence_wait(struct v3d_screen *screen,
                     struct v3d_fence *fence,
                     uint64_t timeout_ns);
+
+int v3d_fence_context_init(struct v3d_context *v3d);
+void v3d_fence_context_finish(struct v3d_context *v3d);
 
 void v3d_update_primitive_counters(struct v3d_context *v3d);
 
@@ -783,10 +845,8 @@ void v3d_ensure_prim_counts_allocated(struct v3d_context *ctx);
 void v3d_flag_dirty_sampler_state(struct v3d_context *v3d,
                                   enum pipe_shader_type shader);
 
-void v3d_create_texture_shader_state_bo(struct v3d_context *v3d,
-                                        struct v3d_sampler_view *so);
-
-void v3d_get_tile_buffer_size(bool is_msaa,
+void v3d_get_tile_buffer_size(const struct v3d_device_info *devinfo,
+                              bool is_msaa,
                               bool double_buffer,
                               uint32_t nr_cbufs,
                               struct pipe_surface **cbufs,
@@ -795,25 +855,45 @@ void v3d_get_tile_buffer_size(bool is_msaa,
                               uint32_t *tile_height,
                               uint32_t *max_bpp);
 
+bool v3d_render_condition_check(struct v3d_context *v3d);
+
 #ifdef ENABLE_SHADER_CACHE
 struct v3d_compiled_shader *v3d_disk_cache_retrieve(struct v3d_context *v3d,
-                                                    const struct v3d_key *key);
+                                                    const struct v3d_key *key,
+                                                    const struct v3d_uncompiled_shader *uncompiled);
 
 void v3d_disk_cache_store(struct v3d_context *v3d,
                           const struct v3d_key *key,
+                          const struct v3d_uncompiled_shader *uncompiled,
                           const struct v3d_compiled_shader *shader,
                           uint64_t *qpu_insts,
                           uint32_t qpu_size);
 #endif /* ENABLE_SHADER_CACHE */
 
+/* Helper to call hw ver specific functions */
+#define v3d_X(devinfo, thing) ({                                \
+        __typeof(&v3d42_##thing) v3d_X_thing;                   \
+        switch (devinfo->ver) {                                 \
+        case 42:                                                \
+                v3d_X_thing = &v3d42_##thing;                   \
+                break;                                          \
+        case 71:                                                \
+                v3d_X_thing = &v3d71_##thing;                   \
+                break;                                          \
+        default:                                                \
+                unreachable("Unsupported hardware generation"); \
+        }                                                       \
+        v3d_X_thing;                                            \
+})
+
 #ifdef v3dX
 #  include "v3dx_context.h"
 #else
-#  define v3dX(x) v3d33_##x
+#  define v3dX(x) v3d42_##x
 #  include "v3dx_context.h"
 #  undef v3dX
 
-#  define v3dX(x) v3d41_##x
+#  define v3dX(x) v3d71_##x
 #  include "v3dx_context.h"
 #  undef v3dX
 #endif

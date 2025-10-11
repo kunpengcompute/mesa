@@ -33,6 +33,7 @@
 #include "nv30/nv30_context.h"
 #include "nv30/nv30_resource.h"
 #include "nv30/nv30_transfer.h"
+#include "nv30/nv30_winsys.h"
 
 static inline unsigned
 layer_offset(struct pipe_resource *pt, unsigned level, unsigned layer)
@@ -247,7 +248,7 @@ nv30_blit(struct pipe_context *pipe,
 
    /* XXX turn off occlusion queries */
 
-   util_blitter_save_vertex_buffer_slot(nv30->blitter, nv30->vtxbuf);
+   util_blitter_save_vertex_buffers(nv30->blitter, nv30->vtxbuf, nv30->num_vtxbufs);
    util_blitter_save_vertex_elements(nv30->blitter, nv30->vertex);
    util_blitter_save_vertex_shader(nv30->blitter, nv30->vertprog.program);
    util_blitter_save_rasterizer(nv30->blitter, nv30->rast);
@@ -267,7 +268,7 @@ nv30_blit(struct pipe_context *pipe,
                      nv30->fragprog.num_textures, nv30->fragprog.textures);
    util_blitter_save_render_condition(nv30->blitter, nv30->render_cond_query,
                                       nv30->render_cond_cond, nv30->render_cond_mode);
-   util_blitter_blit(nv30->blitter, &info);
+   util_blitter_blit(nv30->blitter, &info, NULL);
 }
 
 void
@@ -359,7 +360,7 @@ nv30_miptree_transfer_map(struct pipe_context *pipe, struct pipe_resource *pt,
    if (usage & PIPE_MAP_WRITE)
       access |= NOUVEAU_BO_WR;
 
-   ret = nouveau_bo_map(tx->tmp.bo, access, nv30->base.client);
+   ret = BO_MAP(nv30->base.screen, tx->tmp.bo, access, nv30->base.client);
    if (ret) {
       pipe_resource_reference(&tx->base.resource, NULL);
       FREE(tx);
@@ -393,7 +394,7 @@ nv30_miptree_transfer_unmap(struct pipe_context *pipe,
       }
 
       /* Allow the copies above to finish executing before freeing the source */
-      nouveau_fence_work(nv30->screen->base.fence.current,
+      nouveau_fence_work(nv30->base.fence,
                          nouveau_fence_unref_bo, tx->tmp.bo);
    } else {
       nouveau_bo_ref(NULL, &tx->tmp.bo);

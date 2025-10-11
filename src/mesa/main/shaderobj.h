@@ -27,9 +27,8 @@
 #define SHADEROBJ_H
 
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "compiler/shader_enums.h"
-#include "program/link_program.h"
 #include "util/macros.h"
 
 
@@ -162,7 +161,7 @@ _mesa_shader_stage_to_subroutine_prefix(gl_shader_stage stage)
   case MESA_SHADER_TESS_EVAL:
     return "__subu_e";
   default:
-    return NULL;
+    unreachable("bad value in _mesa_shader_stage_to_subroutine_prefix()");
   }
 }
 

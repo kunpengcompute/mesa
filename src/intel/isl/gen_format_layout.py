@@ -165,7 +165,7 @@ class Channel(object):
 
 
 class Format(object):
-    """Class taht contains all values needed by the template."""
+    """Class that contains all values needed by the template."""
     def __init__(self, line):
         # pylint: disable=invalid-name
         self.name = line[0].strip()
@@ -253,12 +253,14 @@ def get_srgb_to_linear_map(formats):
             ('_SRGB',   ''),
             ('SRGB',    'RGB'),
             ('U8SRGB',  'FLT16'),
+            # Quirk: ETC2_EAC_SRGB8_A8 -> ETC2_EAC_RGBA8
+            ('SRGB8_A8', 'RGBA8'),
         ]
 
         found = False
         for rep in replacements:
             rgb_name = fmt.name.replace(rep[0], rep[1])
-            if rgb_name in names:
+            if rgb_name in names and rgb_name != fmt.name:
                 found = True
                 yield fmt.name, rgb_name
                 break
@@ -279,7 +281,7 @@ def main():
     # This generator opens and writes the file itself, and it does so in bytes
     # mode. This solves the locale problem: Unicode can be rendered even
     # if the shell calling this script doesn't.
-    with open(args.out, 'w') as f:
+    with open(args.out, 'w', encoding='utf-8') as f:
         formats = [Format(l) for l in reader(args.csv)]
         try:
             # This basically does lazy evaluation and initialization, which

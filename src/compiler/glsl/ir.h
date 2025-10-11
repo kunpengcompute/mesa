@@ -35,6 +35,19 @@
 #include "list.h"
 #include "ir_visitor.h"
 #include "ir_hierarchical_visitor.h"
+#include "util/glheader.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct _mesa_glsl_parse_state;
+struct gl_shader_program;
+struct gl_builtin_uniform_desc;
+
+#ifdef __cplusplus
+}
+#endif
 
 #ifdef __cplusplus
 
@@ -81,7 +94,8 @@ enum ir_node_type {
    ir_type_end_primitive,
    ir_type_barrier,
    ir_type_max, /**< maximum ir_type enum number, for validation */
-   ir_type_unset = ir_type_max
+   ir_type_unset = ir_type_max,
+   ir_type_error
 };
 
 
@@ -119,7 +133,8 @@ public:
              ir_type == ir_type_constant ||
              ir_type == ir_type_expression ||
              ir_type == ir_type_swizzle ||
-             ir_type == ir_type_texture;
+             ir_type == ir_type_texture ||
+             ir_type == ir_type_error;
    }
 
    bool is_dereference() const
@@ -147,12 +162,10 @@ public:
    #define AS_BASE(TYPE)                                \
    class ir_##TYPE *as_##TYPE()                         \
    {                                                    \
-      assume(this != NULL);                             \
       return is_##TYPE() ? (ir_##TYPE *) this : NULL;   \
    }                                                    \
    const class ir_##TYPE *as_##TYPE() const             \
    {                                                    \
-      assume(this != NULL);                             \
       return is_##TYPE() ? (ir_##TYPE *) this : NULL;   \
    }
 
@@ -164,12 +177,10 @@ public:
    #define AS_CHILD(TYPE) \
    class ir_##TYPE * as_##TYPE() \
    { \
-      assume(this != NULL);                                         \
       return ir_type == ir_type_##TYPE ? (ir_##TYPE *) this : NULL; \
    }                                                                      \
    const class ir_##TYPE * as_##TYPE() const                              \
    {                                                                      \
-      assume(this != NULL);                                               \
       return ir_type == ir_type_##TYPE ? (const ir_##TYPE *) this : NULL; \
    }
    AS_CHILD(variable)
@@ -233,8 +244,6 @@ public:
 
    virtual ir_constant *constant_expression_value(void *mem_ctx,
                                                   struct hash_table *variable_context = NULL);
-
-   ir_rvalue *as_rvalue_to_saturate();
 
    virtual bool is_lvalue(const struct _mesa_glsl_parse_state * = NULL) const
    {
@@ -400,23 +409,7 @@ depth_layout_string(ir_depth_layout layout);
  */
 struct ir_state_slot {
    gl_state_index16 tokens[STATE_LENGTH];
-   int swizzle;
 };
-
-
-/**
- * Get the string value for an interpolation qualifier
- *
- * \return The string that would be used in a shader to specify \c
- * mode will be returned.
- *
- * This function is used to generate error messages of the form "shader
- * uses %s interpolation qualifier", so in the case where there is no
- * interpolation qualifier, it returns "no".
- *
- * This function should only be used on a shader input or output variable.
- */
-const char *interpolation_string(unsigned interpolation);
 
 
 class ir_variable : public ir_instruction {
@@ -474,7 +467,7 @@ public:
     */
    inline bool is_interface_instance() const
    {
-      return this->type->without_array() == this->interface_type;
+      return glsl_without_array(this->type) == this->interface_type;
    }
 
    /**
@@ -482,7 +475,7 @@ public:
     */
    inline bool contains_bindless() const
    {
-      if (!this->type->contains_sampler() && !this->type->contains_image())
+      if (!glsl_contains_sampler(this->type) && !glsl_type_contains_image(this->type))
          return false;
 
       return this->data.bindless || this->data.mode != ir_var_uniform;
@@ -552,7 +545,7 @@ public:
 
    enum glsl_interface_packing get_interface_type_packing() const
    {
-     return this->interface_type->get_interface_packing();
+     return glsl_get_ifc_packing(this->interface_type);
    }
    /**
     * Get the max_ifc_array_access pointer
@@ -606,14 +599,21 @@ public:
    inline bool is_interpolation_flat() const
    {
       return this->data.interpolation == INTERP_MODE_FLAT ||
-             this->type->contains_integer() ||
-             this->type->contains_double();
+             glsl_contains_integer(this->type) ||
+             glsl_contains_double(this->type);
    }
 
    inline bool is_name_ralloced() const
    {
       return this->name != ir_variable::tmp_name &&
              this->name != this->name_storage;
+   }
+
+   inline bool is_fb_fetch_color_output() const
+   {
+      return this->data.fb_fetch_output &&
+             this->data.location != FRAG_RESULT_DEPTH &&
+             this->data.location != FRAG_RESULT_STENCIL;
    }
 
    /**
@@ -643,7 +643,7 @@ private:
     * If the name length fits into name_storage, it's used, otherwise
     * the name is ralloc'd. shader-db mining showed that 70% of variables
     * fit here. This is a win over ralloc where only ralloc_header has
-    * 20 bytes on 64-bit (28 bytes with DEBUG), and we can also skip malloc.
+    * 20 bytes on 64-bit (28 bytes with debug), and we can also skip malloc.
     */
    char name_storage[16];
 
@@ -697,13 +697,6 @@ public:
        * non-ast_to_hir.cpp (GLSL parsing) paths.
        */
       unsigned assigned:1;
-
-      /**
-       * When separate shader programs are enabled, only input/outputs between
-       * the stages of a multi-stage separate program can be safely removed
-       * from the shader interface. Other input/outputs must remains active.
-       */
-      unsigned always_active_io:1;
 
       /**
        * Enum indicating how the variable was declared.  See
@@ -762,15 +755,6 @@ public:
        * Is the initializer created by the compiler (glsl_zero_init)
        */
       unsigned is_implicit_initializer:1;
-
-      /**
-       * Is this variable a generic output or input that has not yet been matched
-       * up to a variable in another stage of the pipeline?
-       *
-       * This is used by the linker as scratch storage while assigning locations
-       * to generic inputs and outputs.
-       */
-      unsigned is_unmatched_generic_inout:1;
 
       /**
        * Is this varying used by transform feedback?
@@ -855,7 +839,7 @@ public:
        * This is not equal to \c ir_depth_layout_none if and only if this
        * variable is \c gl_FragDepth and a layout qualifier is specified.
        */
-      ir_depth_layout depth_layout:3;
+      unsigned depth_layout:3; /*ir_depth_layout*/
 
       /**
        * Memory qualifiers.
@@ -1078,12 +1062,6 @@ public:
  */
 typedef bool (*builtin_available_predicate)(const _mesa_glsl_parse_state *);
 
-#define MAKE_INTRINSIC_FOR_TYPE(op, t) \
-   ir_intrinsic_generic_ ## op - ir_intrinsic_generic_load + ir_intrinsic_ ## t ## _ ## load
-
-#define MAP_INTRINSIC_TO_TYPE(i, t) \
-   ir_intrinsic_id(int(i) - int(ir_intrinsic_generic_load) + int(ir_intrinsic_ ## t ## _ ## load))
-
 enum ir_intrinsic_id {
    ir_intrinsic_invalid = 0,
 
@@ -1134,17 +1112,6 @@ enum ir_intrinsic_id {
    ir_intrinsic_image_atomic_dec_wrap,
    ir_intrinsic_image_sparse_load,
 
-   ir_intrinsic_ssbo_load,
-   ir_intrinsic_ssbo_store = MAKE_INTRINSIC_FOR_TYPE(store, ssbo),
-   ir_intrinsic_ssbo_atomic_add = MAKE_INTRINSIC_FOR_TYPE(atomic_add, ssbo),
-   ir_intrinsic_ssbo_atomic_and = MAKE_INTRINSIC_FOR_TYPE(atomic_and, ssbo),
-   ir_intrinsic_ssbo_atomic_or = MAKE_INTRINSIC_FOR_TYPE(atomic_or, ssbo),
-   ir_intrinsic_ssbo_atomic_xor = MAKE_INTRINSIC_FOR_TYPE(atomic_xor, ssbo),
-   ir_intrinsic_ssbo_atomic_min = MAKE_INTRINSIC_FOR_TYPE(atomic_min, ssbo),
-   ir_intrinsic_ssbo_atomic_max = MAKE_INTRINSIC_FOR_TYPE(atomic_max, ssbo),
-   ir_intrinsic_ssbo_atomic_exchange = MAKE_INTRINSIC_FOR_TYPE(atomic_exchange, ssbo),
-   ir_intrinsic_ssbo_atomic_comp_swap = MAKE_INTRINSIC_FOR_TYPE(atomic_comp_swap, ssbo),
-
    ir_intrinsic_memory_barrier,
    ir_intrinsic_shader_clock,
    ir_intrinsic_group_memory_barrier,
@@ -1159,23 +1126,68 @@ enum ir_intrinsic_id {
    ir_intrinsic_vote_any,
    ir_intrinsic_vote_eq,
    ir_intrinsic_ballot,
+   ir_intrinsic_inverse_ballot,
+   ir_intrinsic_ballot_bit_extract,
+   ir_intrinsic_ballot_bit_count,
+   ir_intrinsic_ballot_inclusive_bit_count,
+   ir_intrinsic_ballot_exclusive_bit_count,
+   ir_intrinsic_ballot_find_lsb,
+   ir_intrinsic_ballot_find_msb,
    ir_intrinsic_read_invocation,
    ir_intrinsic_read_first_invocation,
 
    ir_intrinsic_helper_invocation,
 
-   ir_intrinsic_shared_load,
-   ir_intrinsic_shared_store = MAKE_INTRINSIC_FOR_TYPE(store, shared),
-   ir_intrinsic_shared_atomic_add = MAKE_INTRINSIC_FOR_TYPE(atomic_add, shared),
-   ir_intrinsic_shared_atomic_and = MAKE_INTRINSIC_FOR_TYPE(atomic_and, shared),
-   ir_intrinsic_shared_atomic_or = MAKE_INTRINSIC_FOR_TYPE(atomic_or, shared),
-   ir_intrinsic_shared_atomic_xor = MAKE_INTRINSIC_FOR_TYPE(atomic_xor, shared),
-   ir_intrinsic_shared_atomic_min = MAKE_INTRINSIC_FOR_TYPE(atomic_min, shared),
-   ir_intrinsic_shared_atomic_max = MAKE_INTRINSIC_FOR_TYPE(atomic_max, shared),
-   ir_intrinsic_shared_atomic_exchange = MAKE_INTRINSIC_FOR_TYPE(atomic_exchange, shared),
-   ir_intrinsic_shared_atomic_comp_swap = MAKE_INTRINSIC_FOR_TYPE(atomic_comp_swap, shared),
-
    ir_intrinsic_is_sparse_texels_resident,
+
+   ir_intrinsic_subgroup_barrier,
+   ir_intrinsic_subgroup_memory_barrier,
+   ir_intrinsic_subgroup_memory_barrier_buffer,
+   ir_intrinsic_subgroup_memory_barrier_shared,
+   ir_intrinsic_subgroup_memory_barrier_image,
+   ir_intrinsic_elect,
+
+   ir_intrinsic_shuffle,
+   ir_intrinsic_shuffle_xor,
+   ir_intrinsic_shuffle_up,
+   ir_intrinsic_shuffle_down,
+
+   ir_intrinsic_reduce_add,
+   ir_intrinsic_reduce_mul,
+   ir_intrinsic_reduce_min,
+   ir_intrinsic_reduce_max,
+   ir_intrinsic_reduce_and,
+   ir_intrinsic_reduce_or,
+   ir_intrinsic_reduce_xor,
+
+   ir_intrinsic_inclusive_add,
+   ir_intrinsic_inclusive_mul,
+   ir_intrinsic_inclusive_min,
+   ir_intrinsic_inclusive_max,
+   ir_intrinsic_inclusive_and,
+   ir_intrinsic_inclusive_or,
+   ir_intrinsic_inclusive_xor,
+
+   ir_intrinsic_exclusive_add,
+   ir_intrinsic_exclusive_mul,
+   ir_intrinsic_exclusive_min,
+   ir_intrinsic_exclusive_max,
+   ir_intrinsic_exclusive_and,
+   ir_intrinsic_exclusive_or,
+   ir_intrinsic_exclusive_xor,
+
+   ir_intrinsic_clustered_add,
+   ir_intrinsic_clustered_mul,
+   ir_intrinsic_clustered_min,
+   ir_intrinsic_clustered_max,
+   ir_intrinsic_clustered_and,
+   ir_intrinsic_clustered_or,
+   ir_intrinsic_clustered_xor,
+
+   ir_intrinsic_quad_broadcast,
+   ir_intrinsic_quad_swap_horizontal,
+   ir_intrinsic_quad_swap_vertical,
+   ir_intrinsic_quad_swap_diagonal,
 };
 
 /*@{*/
@@ -1357,6 +1369,8 @@ public:
     */
    ir_function_signature *matching_signature(_mesa_glsl_parse_state *state,
                                              const exec_list *actual_param,
+                                             bool has_implicit_conversions,
+                                             bool has_implicit_int_to_uint_conversion,
                                              bool allow_builtins,
 					     bool *match_is_exact);
 
@@ -1366,6 +1380,8 @@ public:
     */
    ir_function_signature *matching_signature(_mesa_glsl_parse_state *state,
                                              const exec_list *actual_param,
+                                             bool has_implicit_conversions,
+                                             bool has_implicit_int_to_uint_conversion,
                                              bool allow_builtins);
 
    /**
@@ -1596,7 +1612,6 @@ public:
              operation == ir_binop_dot ||
              operation == ir_binop_vector_extract ||
              operation == ir_triop_vector_insert ||
-             operation == ir_binop_ubo_load ||
              operation == ir_quadop_vector;
    }
 
@@ -2197,7 +2212,7 @@ public:
 
    virtual int precision() const
    {
-      glsl_struct_field *field = record->type->fields.structure + field_idx;
+      const glsl_struct_field *field = record->type->fields.structure + field_idx;
 
       return field->precision;
    }
@@ -2472,13 +2487,13 @@ public:
 void
 visit_exec_list(exec_list *list, ir_visitor *visitor);
 
+void
+visit_exec_list_safe(exec_list *list, ir_visitor *visitor);
+
 /**
  * Validate invariants on each IR node in a list
  */
 void validate_ir_tree(exec_list *instructions);
-
-struct _mesa_glsl_parse_state;
-struct gl_shader_program;
 
 /**
  * Detect whether an unlinked shader contains static recursion
@@ -2492,18 +2507,6 @@ detect_recursion_unlinked(struct _mesa_glsl_parse_state *state,
 			  exec_list *instructions);
 
 /**
- * Detect whether a linked shader contains static recursion
- *
- * If the list of instructions is determined to contain static recursion,
- * \c link_error_printf will be called to emit error messages for each function
- * that is in the recursion cycle.  In addition,
- * \c gl_shader_program::LinkStatus will be set to false.
- */
-void
-detect_recursion_linked(struct gl_shader_program *prog,
-			exec_list *instructions);
-
-/**
  * Make a clone of each IR instruction in a list
  *
  * \param in   List of IR instructions that are to be cloned
@@ -2513,15 +2516,7 @@ void
 clone_ir_list(void *mem_ctx, exec_list *out, const exec_list *in);
 
 extern void
-_mesa_glsl_initialize_variables(exec_list *instructions,
-				struct _mesa_glsl_parse_state *state);
-
-extern void
 reparent_ir(exec_list *list, void *mem_ctx);
-
-extern void
-do_set_program_inouts(exec_list *instructions, struct gl_program *prog,
-                      gl_shader_stage shader_stage);
 
 extern char *
 prototype_string(const glsl_type *return_type, const char *name,
@@ -2530,17 +2525,15 @@ prototype_string(const glsl_type *return_type, const char *name,
 const char *
 mode_string(const ir_variable *var);
 
-/**
- * Built-in / reserved GL variables names start with "gl_"
- */
-static inline bool
-is_gl_identifier(const char *s)
-{
-   return s && s[0] == 'g' && s[1] == 'l' && s[2] == '_';
-}
-
 extern "C" {
 #endif /* __cplusplus */
+
+extern void
+_mesa_glsl_initialize_types(struct _mesa_glsl_parse_state *state);
+
+extern void
+_mesa_glsl_initialize_variables(struct exec_list *instructions,
+                                struct _mesa_glsl_parse_state *state);
 
 extern void _mesa_print_ir(FILE *f, struct exec_list *instructions,
                            struct _mesa_glsl_parse_state *state);
@@ -2555,7 +2548,7 @@ _mesa_glsl_get_builtin_uniform_desc(const char *name);
 } /* extern "C" */
 #endif
 
-unsigned
-vertices_per_prim(GLenum prim);
+enum mesa_prim
+gl_to_mesa_prim(GLenum prim);
 
 #endif /* IR_H */

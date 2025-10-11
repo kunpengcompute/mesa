@@ -1,32 +1,14 @@
-/**********************************************************
- * Copyright 2008-2009 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- **********************************************************/
+/*
+ * Copyright (c) 2008-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
+ */
 
+#include "indices/u_indices.h"
 #include "util/u_inlines.h"
 #include "util/u_prim.h"
 #include "util/u_upload_mgr.h"
-#include "indices/u_indices.h"
 
 #include "svga_cmd.h"
 #include "svga_draw.h"
@@ -49,8 +31,8 @@
  * glDrawElements(GL_QUADS) commands (we can't draw quads natively).
  *
  * \param offset  offset in bytes to first index to translate in src buffer
- * \param orig_prim  original primitive type (like PIPE_PRIM_QUADS)
- * \param gen_prim  new/generated primitive type (like PIPE_PRIM_TRIANGLES)
+ * \param orig_prim  original primitive type (like MESA_PRIM_QUADS)
+ * \param gen_prim  new/generated primitive type (like MESA_PRIM_TRIANGLES)
  * \param orig_nr  number of indexes to translate in source buffer
  * \param gen_nr  number of indexes to write into new/dest buffer
  * \param index_size  bytes per index (2 or 4)
@@ -62,7 +44,7 @@ static enum pipe_error
 translate_indices(struct svga_hwtnl *hwtnl,
                   const struct pipe_draw_info *info,
                   const struct pipe_draw_start_count_bias *draw,
-                  enum pipe_prim_type gen_prim,
+                  enum mesa_prim gen_prim,
                   unsigned orig_nr, unsigned gen_nr,
                   unsigned gen_size,
                   u_translate_func translate,
@@ -184,11 +166,11 @@ svga_hwtnl_simple_draw_range_elements(struct svga_hwtnl *hwtnl,
                                       struct pipe_resource *index_buffer,
                                       unsigned index_size, int index_bias,
                                       unsigned min_index, unsigned max_index,
-                                      enum pipe_prim_type prim, unsigned start,
+                                      enum mesa_prim prim, unsigned start,
                                       unsigned count,
                                       unsigned start_instance,
                                       unsigned instance_count,
-                                      ubyte vertices_per_patch)
+                                      uint8_t vertices_per_patch)
 {
    SVGA3dPrimitiveRange range;
    unsigned hw_prim;
@@ -220,7 +202,7 @@ svga_hwtnl_draw_range_elements(struct svga_hwtnl *hwtnl,
                                unsigned count)
 {
    struct pipe_context *pipe = &hwtnl->svga->pipe;
-   enum pipe_prim_type gen_prim;
+   enum mesa_prim gen_prim;
    unsigned gen_size, gen_nr;
    enum indices_mode gen_type;
    u_translate_func gen_func;
@@ -244,7 +226,7 @@ svga_hwtnl_draw_range_elements(struct svga_hwtnl *hwtnl,
        * consider provoking vertex mode for the translation.
        * So use the same api_pv as the hw_pv.
        */
-      hw_pv = info->mode == PIPE_PRIM_PATCHES ? hwtnl->api_pv :
+      hw_pv = info->mode == MESA_PRIM_PATCHES ? hwtnl->api_pv :
                                                 hwtnl->hw_pv;
       gen_type = u_index_translator(svga_hw_prims,
                                     info->mode,

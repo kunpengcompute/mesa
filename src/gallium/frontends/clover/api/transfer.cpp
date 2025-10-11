@@ -521,7 +521,7 @@ clEnqueueFillBuffer(cl_command_queue d_queue, cl_mem d_mem,
    if (!pattern)
       return CL_INVALID_VALUE;
 
-   if (!util_is_power_of_two_nonzero(pattern_size) ||
+   if (!util_is_power_of_two_nonzero_uintptr(pattern_size) ||
       pattern_size > 128 || size % pattern_size
       || offset % pattern_size) {
       return CL_INVALID_VALUE;
@@ -970,6 +970,16 @@ clEnqueueMigrateMemObjects(cl_command_queue d_q,
    return e.get();
 }
 
+static void CL_CALLBACK
+free_queue(cl_command_queue d_q, cl_uint num_svm_pointers,
+                         void *svm_pointers[], void *) {
+   clover::context &ctx = obj(d_q).context();
+   for (void *p : range(svm_pointers, num_svm_pointers)) {
+      ctx.remove_svm_allocation(p);
+      free(p);
+   }
+}
+
 cl_int
 clover::EnqueueSVMFree(cl_command_queue d_q,
                        cl_uint num_svm_pointers,
@@ -1003,14 +1013,7 @@ clover::EnqueueSVMFree(cl_command_queue d_q,
          CLOVER_NOT_SUPPORTED_UNTIL("2.0");
          return CL_INVALID_VALUE;
       }
-      pfn_free_func = [](cl_command_queue d_q, cl_uint num_svm_pointers,
-                         void *svm_pointers[], void *) {
-         clover::context &ctx = obj(d_q).context();
-         for (void *p : range(svm_pointers, num_svm_pointers)) {
-            ctx.remove_svm_allocation(p);
-            free(p);
-         }
-      };
+      pfn_free_func = free_queue;
    }
 
    auto hev = create<hard_event>(q, cmd, deps,
@@ -1121,7 +1124,7 @@ clover::EnqueueSVMMemFill(cl_command_queue d_q,
       return CL_INVALID_OPERATION;
 
    if (svm_ptr == nullptr || pattern == nullptr ||
-       !util_is_power_of_two_nonzero(pattern_size) ||
+       !util_is_power_of_two_nonzero_uintptr(pattern_size) ||
        pattern_size > 128 ||
        !ptr_is_aligned(svm_ptr, pattern_size) ||
        size % pattern_size)

@@ -1,14 +1,11 @@
 #include "dxil_validator.h"
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN 1
-#endif
-
 #include <windows.h>
 #include <unknwn.h>
 
 #include "util/ralloc.h"
 #include "util/u_debug.h"
+#include "util/compiler.h"
 
 #include "dxcapi.h"
 
@@ -22,15 +19,25 @@ struct dxil_validator {
    IDxcValidator *dxc_validator;
    IDxcLibrary *dxc_library;
    IDxcCompiler *dxc_compiler;
+
+   enum dxil_validator_version version;
 };
 
-extern "C" extern IMAGE_DOS_HEADER __ImageBase;
+extern "C" {
+extern IMAGE_DOS_HEADER __ImageBase;
+}
 
 static HMODULE
 load_dxil_mod()
 {
    /* First, try to load DXIL.dll from the default search-path */
+#if defined(_GAMING_XBOX_SCARLETT)
+   HMODULE mod = LoadLibraryA("dxcompiler_xs.dll");
+#elif defined (_GAMING_XBOX)
+   HMODULE mod = LoadLibraryA("dxcompiler_x.dll");
+#else
    HMODULE mod = LoadLibraryA("DXIL.dll");
+#endif
    if (mod)
       return mod;
 
@@ -82,6 +89,85 @@ create_dxc_validator(HMODULE dxil_mod)
    return dxc_validator;
 }
 
+static enum dxil_validator_version
+get_validator_version(IDxcValidator *val)
+{
+   ComPtr<IDxcVersionInfo> version_info;
+   if (FAILED(val->QueryInterface(version_info.ReleaseAndGetAddressOf())))
+      return NO_DXIL_VALIDATION;
+
+   UINT32 major, minor;
+   if (FAILED(version_info->GetVersion(&major, &minor)))
+      return NO_DXIL_VALIDATION;
+
+   if (major == 1)
+      return (enum dxil_validator_version)(DXIL_VALIDATOR_1_0 + MIN2(minor, 8));
+   if (major > 1)
+      return DXIL_VALIDATOR_1_8;
+   return NO_DXIL_VALIDATION;
+}
+
+#ifndef _GAMING_XBOX
+static uint64_t
+get_dll_version(HMODULE mod)
+{
+   WCHAR filename[MAX_PATH];
+   DWORD filename_length = GetModuleFileNameW(mod, filename, ARRAY_SIZE(filename));
+
+   if (filename_length == 0 || filename_length == ARRAY_SIZE(filename))
+      return 0;
+
+   DWORD version_handle = 0;
+   DWORD version_size = GetFileVersionInfoSizeW(filename, &version_handle);
+   if (version_size == 0)
+      return 0;
+
+   void *version_data = malloc(version_size);
+   if (!version_data)
+      return 0;
+
+   if (!GetFileVersionInfoW(filename, version_handle, version_size, version_data)) {
+      free(version_data);
+      return 0;
+   }
+
+   UINT value_size = 0;
+   VS_FIXEDFILEINFO *version_info = nullptr;
+   if (!VerQueryValueW(version_data, L"\\", reinterpret_cast<void **>(&version_info), &value_size) ||
+       !value_size ||
+       version_info->dwSignature != VS_FFI_SIGNATURE) {
+      free(version_data);
+      return 0;
+   }
+
+   uint64_t ret =
+      ((uint64_t)version_info->dwFileVersionMS << 32ull) |
+      (uint64_t)version_info->dwFileVersionLS;
+   free(version_data);
+   return ret;
+}
+#endif
+
+static enum dxil_validator_version
+get_filtered_validator_version(HMODULE mod, enum dxil_validator_version raw)
+{
+   switch (raw) {
+#ifndef _GAMING_XBOX
+   case DXIL_VALIDATOR_1_6: {
+      uint64_t dxil_version = get_dll_version(mod);
+      static constexpr uint64_t known_bad_version =
+         // 101.5.2005.60
+         (101ull << 48ull) | (5ull << 32ull) | (2005ull << 16ull) | 60ull;
+      if (dxil_version == known_bad_version)
+         return DXIL_VALIDATOR_1_5;
+      FALLTHROUGH;
+   }
+#endif
+   default:
+      return raw;
+   }
+}
+
 struct dxil_validator *
 dxil_create_validator(const void *ctx)
 {
@@ -104,6 +190,10 @@ dxil_create_validator(const void *ctx)
    val->dxc_validator = create_dxc_validator(val->dxil_mod);
    if (!val->dxc_validator)
       goto fail;
+
+   val->version = get_filtered_validator_version(
+      val->dxil_mod,
+      get_validator_version(val->dxc_validator));
 
    /* Try to load dxcompiler.dll. This is just used for diagnostics, and
     * will fail on most end-users install. So we do not error out if this
@@ -147,6 +237,9 @@ fail:
 void
 dxil_destroy_validator(struct dxil_validator *val)
 {
+   if (!val)
+      return;
+
    /* if we have a validator, we have these */
    val->dxc_validator->Release();
    FreeLibrary(val->dxil_mod);
@@ -209,6 +302,9 @@ public:
 bool
 dxil_validate_module(struct dxil_validator *val, void *data, size_t size, char **error)
 {
+   if (!val)
+      return false;
+
    ShaderBlob source(data, size);
 
    ComPtr<IDxcOperationResult> result;
@@ -247,6 +343,9 @@ dxil_validate_module(struct dxil_validator *val, void *data, size_t size, char *
 char *
 dxil_disasm_module(struct dxil_validator *val, void *data, size_t size)
 {
+   if (!val)
+      return NULL;
+
    if (!val->dxc_compiler || !val->dxc_library) {
       fprintf(stderr, "DXIL: disassembly requires IDxcLibrary and "
               "IDxcCompiler from dxcompiler.dll\n");
@@ -269,4 +368,10 @@ dxil_disasm_module(struct dxil_validator *val, void *data, size_t size)
    char *str = reinterpret_cast<char*>(blob_utf8->GetBufferPointer());
    str[blob_utf8->GetBufferSize() - 1] = 0;
    return ralloc_strdup(val, str);
+}
+
+enum dxil_validator_version
+dxil_get_validator_version(struct dxil_validator *val)
+{
+   return val ? val->version : NO_DXIL_VALIDATION;
 }

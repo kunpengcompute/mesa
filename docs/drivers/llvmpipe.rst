@@ -4,11 +4,11 @@ LLVMpipe
 Introduction
 ------------
 
-The Gallium llvmpipe driver is a software rasterizer that uses LLVM to
+The Gallium LLVMpipe driver is a software rasterizer that uses LLVM to
 do runtime code generation. Shaders, point/line/triangle rasterization
 and vertex processing are implemented with LLVM IR which is translated
 to x86, x86-64, or ppc64le machine code. Also, the driver is
-multithreaded to take advantage of multiple CPU cores (up to 8 at this
+multithreaded to take advantage of multiple CPU cores (up to 32 at this
 time). It's the fastest software rasterizer for Mesa.
 
 Requirements
@@ -31,7 +31,7 @@ Requirements
 
    For Linux, on a recent Debian based distribution do:
 
-   .. code-block:: console
+   .. code-block:: sh
 
       aptitude install llvm-dev
 
@@ -42,9 +42,13 @@ Requirements
 
    For a RPM-based distribution do:
 
-   .. code-block:: console
+   .. code-block:: sh
 
       yum install llvm-devel
+
+   If you want development snapshot builds of LLVM for Fedora, you can
+   use the Copr repository at `fedora-llvm-team/llvm-snapshots <https://copr.fedorainfracloud.org/coprs/g/fedora-llvm-team/llvm-snapshots/>`__,
+   which is maintained by Red Hat's LLVM team.
 
    For Windows you will need to build LLVM from source with MSVC or
    MINGW (either natively or through cross compilers) and CMake, and set
@@ -65,23 +69,113 @@ Requirements
    +-----------------+--------------------------------+-------------------------------+
 
    You can build only the x86 target by passing
-   ``-DLLVM_TARGETS_TO_BUILD=X86`` to cmake.
+   ``-DLLVM_TARGETS_TO_BUILD=X86`` to CMake.
 
 Building
 --------
 
 To build everything on Linux invoke meson as:
 
-.. code-block:: console
+.. code-block:: sh
 
    mkdir build
    cd build
-   meson -D glx=gallium-xlib -D gallium-drivers=swrast
+   meson -D glx=xlib -D gallium-drivers=swrast
    ninja
 
+To build on Android requires the additional step of building LLVM
+for Android using the NDK. Before following the steps in
+:doc:`Android's documentation <../android>` you must build a version
+of LLVM that targets the NDK with all the required libraries for
+llvmpipe, and then create a wrap file so the meson knows where to
+find the LLVM libraries. It can be a bit tricky to get LLVM to build
+properly using the Android NDK, so the below cmake command can be
+used as a reference to configure LLVM to build with the NDK for x86.
+You need to set the ``ANDROID_NDK_ROOT`` and ``INSTALL_PREFIX``
+environment variable appropriately.
+
+.. code-block:: sh
+
+   cmake ../llvm-project-18.1.1.src/llvm \
+      -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake \
+      -DANDROID_ABI=x86_64 \
+      -DANDROID_PLATFORM=android-23 \
+      -DANDROID_NDK=${ANDROID_NDK_ROOT} \
+      -DCMAKE_ANDROID_ARCH_ABI=x86_64 \
+      -DCMAKE_ANDROID_NDK=${ANDROID_NDK_ROOT} \
+      -DCMAKE_BUILD_TYPE=MinSizeRel \
+      -DCMAKE_SYSTEM_NAME=Android \
+      -DCMAKE_SYSTEM_VERSION=23 \
+      -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} \
+      -DCMAKE_CXX_FLAGS='-march=x86-64 --target=x86_64-linux-android23 -fno-rtti' \
+      -DLLVM_HOST_TRIPLE=x86_64-linux-android23 \
+      -DLLVM_TARGETS_TO_BUILD=X86 \
+      -DLLVM_BUILD_LLVM_DYLIB=OFF \
+      -DLLVM_BUILD_TESTS=OFF \
+      -DLLVM_BUILD_EXAMPLES=OFF \
+      -DLLVM_BUILD_DOCS=OFF \
+      -DLLVM_BUILD_TOOLS=OFF \
+      -DLLVM_ENABLE_RTTI=OFF \
+      -DLLVM_BUILD_INSTRUMENTED_COVERAGE=OFF \
+      -DLLVM_NATIVE_TOOL_DIR=${ANDROID_NDK_ROOT}toolchains/llvm/prebuilt/linux-x86_64/bin \
+      -DLLVM_ENABLE_PIC=False
+
+   make -j$(nproc) install
+
+
+You will also need to create a wrap file, so that meson is able
+to find the LLVM libraries built with the NDK. The process for this
+is described in :doc:`meson documentation <../meson>`. For example a
+file like this would work ``subprojects/llvm/meson.build`` where
+``INSTALL_PREFIX`` is replaced with the path LLVM was installed to.
+
+.. code-block::
+
+   project('llvm', ['cpp'])
+
+   cpp = meson.get_compiler('cpp')
+
+   _deps = []
+   _search = join_paths('$INSTALL_PREFIX', 'lib')
+
+   foreach d: ['libLLVMAggressiveInstCombine', 'libLLVMAnalysis', 'libLLVMAsmParser', 'libLLVMAsmPrinter', 'libLLVMBinaryFormat', 'libLLVMBitReader', 'libLLVMBitstreamReader', 'libLLVMBitWriter', 'libLLVMCFGuard', 'libLLVMCFIVerify', 'libLLVMCodeGen', 'libLLVMCodeGenTypes', 'libLLVMCore', 'libLLVMCoroutines', 'libLLVMCoverage', 'libLLVMDebugInfoBTF', 'libLLVMDebugInfoCodeView', 'libLLVMDebuginfod', 'libLLVMDebugInfoDWARF', 'libLLVMDebugInfoGSYM', 'libLLVMDebugInfoLogicalView', 'libLLVMDebugInfoMSF', 'libLLVMDebugInfoPDB', 'libLLVMDemangle', 'libLLVMDiff', 'libLLVMDlltoolDriver', 'libLLVMDWARFLinker', 'libLLVMDWARFLinkerClassic', 'libLLVMDWARFLinkerParallel', 'libLLVMDWP', 'libLLVMExecutionEngine', 'libLLVMExegesis', 'libLLVMExegesisX86', 'libLLVMExtensions', 'libLLVMFileCheck', 'libLLVMFrontendDriver', 'libLLVMFrontendHLSL', 'libLLVMFrontendOffloading', 'libLLVMFrontendOpenACC', 'libLLVMFrontendOpenMP', 'libLLVMFuzzerCLI', 'libLLVMFuzzMutate', 'libLLVMGlobalISel', 'libLLVMHipStdPar', 'libLLVMInstCombine', 'libLLVMInstrumentation', 'libLLVMInterfaceStub', 'libLLVMInterpreter', 'libLLVMipo', 'libLLVMIRPrinter', 'libLLVMIRReader', 'libLLVMJITLink', 'libLLVMLibDriver', 'libLLVMLineEditor', 'libLLVMLinker', 'libLLVMLTO', 'libLLVMMC', 'libLLVMMCA', 'libLLVMMCDisassembler', 'libLLVMMCJIT', 'libLLVMMCParser', 'libLLVMMIRParser', 'libLLVMObjCARCOpts', 'libLLVMObjCopy', 'libLLVMObject', 'libLLVMObjectYAML', 'libLLVMOption', 'libLLVMOrcDebugging', 'libLLVMOrcJIT', 'libLLVMOrcShared', 'libLLVMOrcTargetProcess', 'libLLVMPasses', 'libLLVMProfileData', 'libLLVMRemarks', 'libLLVMRuntimeDyld', 'libLLVMScalarOpts', 'libLLVMSelectionDAG', 'libLLVMSupport', 'libLLVMSymbolize', 'libLLVMTableGen', 'libLLVMTableGenCommon', 'libLLVMTableGenGlobalISel', 'libLLVMTarget', 'libLLVMTargetParser', 'libLLVMTextAPI', 'libLLVMTextAPIBinaryReader', 'libLLVMTransformUtils', 'libLLVMVectorize', 'libLLVMWindowsDriver', 'libLLVMWindowsManifest', 'libLLVMX86AsmParser', 'libLLVMX86CodeGen', 'libLLVMX86Desc', 'libLLVMX86Disassembler', 'libLLVMX86Info', 'libLLVMX86TargetMCA', 'libLLVMXRay']
+     _deps += cpp.find_library(d, dirs : _search)
+   endforeach
+
+   dep_llvm = declare_dependency(
+     include_directories : include_directories('$INSTALL_PREFIX/include'),
+     dependencies : _deps,
+     version : '6.0.0',
+   )
+
+   has_rtti = false
+   irbuilder_h = files('$INSTALL_PREFIX/include/llvm/IR/IRBuilder.h')
+
+Afterwards you can continue following the instructors to build mesa
+on :doc:`Android <../android>` and follow the steps to add the driver
+directly to an Android OS image.
 
 Using
 -----
+
+Environment variables
+~~~~~~~~~~~~~~~~~~~~~
+
+.. envvar:: LP_NATIVE_VECTOR_WIDTH
+
+   We can use it to override vector bits. Because sometimes it turns
+   out LLVMpipe can be fastest by using 128 bit vectors,
+   yet use AVX instructions.
+
+.. envvar:: GALLIUM_NOSSE
+
+   Deprecated in favor of ``GALLIUM_OVERRIDE_CPU_CAPS``,
+   use ``GALLIUM_OVERRIDE_CPU_CAPS=nosse`` instead.
+
+.. envvar:: LP_FORCE_SSE2
+
+   Deprecated in favor of ``GALLIUM_OVERRIDE_CPU_CAPS``
+   use ``GALLIUM_OVERRIDE_CPU_CAPS=sse2`` instead.
 
 Linux
 ~~~~~
@@ -108,12 +202,12 @@ On Windows, building will create
 ``build/windows-x86-debug/gallium/targets/libgl-gdi/opengl32.dll`` which
 is a drop-in alternative for system's ``opengl32.dll``, which will use
 the Mesa ICD, ``build/windows-x86-debug/gallium/targets/wgl/libgallium_wgl.dll``.
-To use it put both dlls in the same directory as your application. It can also
+To use it put both DLLs in the same directory as your application. It can also
 be used by replacing the native ICD driver, but it's quite an advanced usage, so if
 you need to ask, don't even try it.
 
 There is however an easy way to replace the OpenGL software renderer
-that comes with Microsoft Windows 7 (or later) with llvmpipe (that is,
+that comes with Microsoft Windows 7 (or later) with LLVMpipe (that is,
 on systems without any OpenGL drivers):
 
 -  copy
@@ -143,14 +237,14 @@ Linux perf integration
 ~~~~~~~~~~~~~~~~~~~~~~
 
 On Linux, it is possible to have symbol resolution of JIT code with
-`Linux perf <https://perf.wiki.kernel.org/>`__:
+`Linux perf <https://perfwiki.github.io/main/>`__:
 
 ::
 
    perf record -g /my/application
    perf report
 
-When run inside Linux perf, llvmpipe will create a
+When run inside Linux perf, LLVMpipe will create a
 ``/tmp/perf-XXXXX.map`` file with symbol address table. It also dumps
 assembly code to ``/tmp/perf-XXXXX.map.asm``, which can be used by the
 ``bin/perf-annotate-jit.py`` script to produce disassembly of the
@@ -158,6 +252,25 @@ generated code annotated with the samples.
 
 You can obtain a call graph via
 `Gprof2Dot <https://github.com/jrfonseca/gprof2dot#linux-perf>`__.
+
+FlameGraph support
+~~~~~~~~~~~~~~~~~~~~~~
+
+Outside Linux, it is possible to generate a
+`FlameGraph <https://github.com/brendangregg/FlameGraph>`__
+with resolved JIT symbols.
+
+Set the environment variable ``JIT_SYMBOL_MAP_DIR`` to a directory path,
+and run your LLVMpipe program. Follow the FlameGraph instructions:
+capture traces using a supported tool (for example DTrace),
+and fold the stacks using the associated script
+(``stackcollapse.pl`` for DTrace stacks).
+
+LLVMpipe will create a ``jit-symbols-XXXXX.map`` file containing the symbol
+address table inside the chosen directory. It will also dump the JIT
+disassemblies to ``jit-symbols-XXXXX.map.asm``. Run your folded traces and
+both output files through the ``bin/flamegraph_map_lp_jit.py`` script to map
+addresses to JIT symbols, and annotate the disassembly with the sample counts.
 
 Unit testing
 ------------
@@ -200,59 +313,57 @@ Recommended Reading
 -  Rasterization
 
    -  `Triangle Scan Conversion using 2D Homogeneous
-      Coordinates <https://www.cs.unc.edu/~olano/papers/2dh-tri/>`__
+      Coordinates <https://userpages.cs.umbc.edu/olano/papers/2dh-tri/>`__
    -  `Rasterization on
-      Larrabee <http://www.drdobbs.com/parallel/rasterization-on-larrabee/217200602>`__
-      (`DevMaster
-      copy <http://devmaster.net/posts/2887/rasterization-on-larrabee>`__)
+      Larrabee <https://www.drdobbs.com/parallel/rasterization-on-larrabee/217200602>`__
    -  `Rasterization using half-space
-      functions <http://devmaster.net/posts/6133/rasterization-using-half-space-functions>`__
+      functions <http://web.archive.org/web/20110820052005/http://www.devmaster.net/codespotlight/show.php?id=17>`__
    -  `Advanced
-      Rasterization <http://devmaster.net/posts/6145/advanced-rasterization>`__
+      Rasterization <http://web.archive.org/web/20140514220546/http://devmaster.net/posts/6145/advanced-rasterization>`__
    -  `Optimizing Software Occlusion
       Culling <https://fgiesen.wordpress.com/2013/02/17/optimizing-sw-occlusion-culling-index/>`__
 
 -  Texture sampling
 
    -  `Perspective Texture
-      Mapping <http://chrishecker.com/Miscellaneous_Technical_Articles#Perspective_Texture_Mapping>`__
+      Mapping <https://chrishecker.com/Miscellaneous_Technical_Articles#Perspective_Texture_Mapping>`__
    -  `Texturing As In
       Unreal <https://www.flipcode.com/archives/Texturing_As_In_Unreal.shtml>`__
    -  `Run-Time MIP-Map
-      Filtering <http://www.gamasutra.com/view/feature/3301/runtime_mipmap_filtering.php>`__
+      Filtering <http://web.archive.org/web/20220709145555/http://www.gamasutra.com/view/feature/3301/runtime_mipmap_filtering.php>`__
    -  `Will "brilinear" filtering
-      persist? <http://alt.3dcenter.org/artikel/2003/10-26_a_english.php>`__
+      persist? <https://alt.3dcenter.org/artikel/2003/10-26_a_english.php>`__
    -  `Trilinear
       filtering <http://ixbtlabs.com/articles2/gffx/nv40-rx800-3.html>`__
-   -  `Texture
-      Swizzling <http://devmaster.net/posts/12785/texture-swizzling>`__
+   -  `Texture tiling and
+      swizzling <https://fgiesen.wordpress.com/2011/01/17/texture-tiling-and-swizzling/>`__
 
 -  SIMD
 
    -  `Whole-Function
-      Vectorization <http://www.cdl.uni-saarland.de/projects/wfv/#header4>`__
+      Vectorization <https://compilers.cs.uni-saarland.de/projects/wfv/#pubs>`__
 
 -  Optimization
 
    -  `Optimizing Pixomatic For Modern x86
-      Processors <http://www.drdobbs.com/optimizing-pixomatic-for-modern-x86-proc/184405807>`__
+      Processors <https://www.drdobbs.com/optimizing-pixomatic-for-modern-x86-proc/184405807>`__
    -  `Intel 64 and IA-32 Architectures Optimization Reference
-      Manual <http://www.intel.com/content/www/us/en/architecture-and-technology/64-ia-32-architectures-optimization-manual.html>`__
+      Manual <https://www.intel.com/content/www/us/en/content-details/779559/intel-64-and-ia-32-architectures-optimization-reference-manual.html>`__
    -  `Software optimization
-      resources <http://www.agner.org/optimize/>`__
+      resources <https://www.agner.org/optimize/>`__
    -  `Intel Intrinsics
-      Guide <https://software.intel.com/en-us/articles/intel-intrinsics-guide>`__
+      Guide <https://www.intel.com/content/www/us/en/docs/intrinsics-guide/index.html>`__
 
 -  LLVM
 
    -  `LLVM Language Reference
-      Manual <http://llvm.org/docs/LangRef.html>`__
+      Manual <https://llvm.org/docs/LangRef.html>`__
    -  `The secret of LLVM C
-      bindings <https://npcontemplation.blogspot.co.uk/2008/06/secret-of-llvm-c-bindings.html>`__
+      bindings <https://npcontemplation.blogspot.com/2008/06/secret-of-llvm-c-bindings.html>`__
 
 -  General
 
    -  `A trip through the Graphics
       Pipeline <https://fgiesen.wordpress.com/2011/07/09/a-trip-through-the-graphics-pipeline-2011-index/>`__
    -  `WARP Architecture and
-      Performance <https://msdn.microsoft.com/en-us/library/gg615082.aspx#architecture>`__
+      Performance <https://learn.microsoft.com/en-us/windows/win32/direct3darticles/directx-warp#warp-architecture-and-performance>`__

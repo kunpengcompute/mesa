@@ -1,132 +1,227 @@
-.vc4-rpi3-test:armhf:
+include:
+  - local: 'src/broadcom/ci/gitlab-ci-inc.yml'
+
+vc4-rpi3-gl:arm64:
   extends:
-    - .baremetal-test-armhf
+    - .igalia-bcm2837-rpi-3-b
+    - .broadcom-test:arm64
     - .vc4-rules
-    - .use-debian/arm_test
+  parallel: 4
   variables:
-    BM_BOOTFS: /boot/raspberrypi_armhf
-    GPU_VERSION: broadcom-rpi3
-    HWCI_KERNEL_MODULES: vc4
-    FLAKES_CHANNEL: "#videocore-ci"
-  script:
-    - ./install/bare-metal/poe-powered.sh
-  needs:
-    - job: debian/arm_test
-      artifacts: false
-    - debian-armhf
+    DEQP_SUITE: broadcom-rpi3
+    HWCI_START_WESTON: 1
+
+vc4-rpi3-gl-piglit-full:arm64:
+  extends:
+    - vc4-rpi3-gl:arm64
+    - .vc4-manual-rules
   tags:
     - igalia-rpi3
-
-vc4-rpi3-gles:armhf:
-  extends:
-    - .vc4-rpi3-test:armhf
-  parallel: 2
+    - igalia-fullrun
   variables:
-    HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
-    DEQP_SUITE: broadcom-rpi3
+    DEQP_SUITE: broadcom-rpi3-piglit-full
 
-vc4-rpi3-egl:armhf:
+vc4-rpi3-gl:arm32:
   extends:
-    - .vc4-rpi3-test:armhf
-    - .test-manual-mr
+    - .igalia-bcm2837-rpi-3-b
+    - .broadcom-test:arm32
+    - .vc4-manual-rules
+  tags:
+    - igalia-rpi3
+    - igalia-fullrun
   variables:
-    HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
-    HWCI_START_XORG: 1
-    DEQP_RUNNER_OPTIONS: "--tests-per-group 250"
-    DEQP_VER: egl
+    DEQP_SUITE: broadcom-rpi3-arm32
 
-.vc4-rpi3-piglit:armhf:
+vc4-rpi3-gl-asan:arm64:
   extends:
-    - .piglit-test
-    - .vc4-rpi3-test:armhf
-  variables:
-    BM_POE_TIMEOUT: 180
-    HWCI_START_XORG: 1
-    PIGLIT_PLATFORM: mixed_glx_egl
-
-vc4-rpi3-piglit-quick_gl:armhf:
-  extends:
-    - .vc4-rpi3-piglit:armhf
-  parallel: 4
+    - .igalia-bcm2837-rpi-3-b
+    - .broadcom-asan-test:arm64
+    - .vc4-manual-rules
   variables:
     FDO_CI_CONCURRENT: 1
-    PIGLIT_PROFILES: quick_gl
-
-vc4-rpi3-piglit-quick_shader:armhf:
-  extends:
-    - .vc4-rpi3-piglit:armhf
-  parallel: 2
-  variables:
-    FDO_CI_CONCURRENT: 2
-    PIGLIT_PROFILES: quick_shader
-
-.v3d-rpi4-test:armhf:
-  extends:
-    - .baremetal-test-armhf
-    - .v3d-rules
-    - .use-debian/arm_test
-  variables:
     HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
-    BM_BOOTFS: /boot/raspberrypi_armhf
-    BM_POE_TIMEOUT: 300
-    FLAKES_CHANNEL: "#videocore-ci"
-    GPU_VERSION: broadcom-rpi4
-    HWCI_KERNEL_MODULES: v3d,vc4
-  script:
-    - ./install/bare-metal/poe-powered.sh
-  needs:
-    - debian/arm_test
-    - debian-armhf
-  tags:
-    - igalia-rpi4
+    DEQP_SUITE: broadcom-rpi3-asan
+    DEQP_FRACTION: 10
 
-v3d-rpi4-gles:armhf:
+v3d-rpi4-gl:arm64:
   extends:
-    - .v3d-rpi4-test:armhf
+    - .igalia-bcm2711-rpi-4
+    - .broadcom-test:arm64
+    - .v3d-rules
   parallel: 8
   variables:
+    HWCI_START_WESTON: 1
     DEQP_SUITE: broadcom-rpi4
+    DEQP_FRACTION: 2
 
-v3d-rpi4-egl:armhf:
+v3d-rpi4-gl-full:arm64:
   extends:
-    - .v3d-rpi4-test:armhf
+    - v3d-rpi4-gl:arm64
+    - .broadcom-test-full:arm64
+    - .v3d-manual-rules
+  tags:
+    - igalia-rpi4
+    - igalia-fullrun
+  parallel: 6
+  timeout: 45m
   variables:
-    HWCI_START_XORG: 1
-    DEQP_VER: egl
+    DEQP_FRACTION: 1
 
-v3d-rpi4-piglit:armhf:
+v3d-rpi4-rusticl:arm64:
   extends:
-    - .piglit-test
-    - .v3d-rpi4-test:armhf
-  parallel: 4
+    - .igalia-bcm2711-rpi-4
+    - .broadcom-test:arm64
+    - .v3d-rusticl-manual-rules
+  timeout: 30m  # base run time = 17min test, 19min total
   variables:
-    HWCI_TEST_SCRIPT: "/install/piglit/piglit-runner.sh"
-    HWCI_START_XORG: 1
-    PIGLIT_PLATFORM: mixed_glx_egl
-    PIGLIT_PROFILES: all
+    DEQP_SUITE: v3d-rusticl
+
+v3d-rpi4-traces:arm64:
+  extends:
+    - .igalia-bcm2711-rpi-4
+    - .piglit-traces-test
+    - .broadcom-test:arm64
+    - .v3d-rules
+  variables:
+    HWCI_TEST_SCRIPT: "/install/piglit/piglit-traces.sh"
+    PIGLIT_TRACES_FILE: traces-broadcom.yml
+    PIGLIT_REPLAY_DEVICE_NAME: "broadcom-rpi4"
+    PIGLIT_RESULTS: "broadcom-rpi4-replay"
+
+v3d-rpi4-gl:arm32:
+  extends:
+    - .igalia-bcm2711-rpi-4
+    - .broadcom-test:arm32
+    - .v3d-manual-rules
+  tags:
+    - igalia-rpi4
+    - igalia-fullrun
+  timeout: 35m
+  variables:
+    DEQP_SUITE: broadcom-rpi4-arm32
+
+v3d-rpi4-gl-asan:arm64:
+  extends:
+    - .igalia-bcm2711-rpi-4
+    - .broadcom-asan-test:arm64
+    - .v3d-manual-rules
+  variables:
+    FDO_CI_CONCURRENT: 1
+    HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
+    DEQP_SUITE: broadcom-rpi4-asan
+    DEQP_FRACTION: 30
 
 v3dv-rpi4-vk:arm64:
   extends:
-    - .baremetal-test-arm64
-    - .use-debian/arm_test
+    - .igalia-bcm2711-rpi-4
+    - .broadcom-test:arm64
     - .v3dv-rules
-  parallel: 8
+  parallel: 10
   variables:
     HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
-    BM_BOOTFS: /boot/raspberrypi_arm64
-    BM_POE_TIMEOUT: 300
-    DEQP_EXPECTED_RENDERER: "V3D.4.2"
-    DEQP_FRACTION: 5
-    DEQP_VER: vk
+    HWCI_START_WESTON: 1
+    DEQP_SUITE: broadcom-rpi4-vk
+    DEQP_FRACTION: 3
     FLAKES_CHANNEL: "#videocore-ci"
-    GPU_VERSION: broadcom-rpi4
-    HWCI_KERNEL_MODULES: v3d,vc4
-    VK_DRIVER: broadcom
-  script:
-    - ./install/bare-metal/poe-powered.sh
-  needs:
-    - debian/arm_test
-    - job: debian-arm64
-      artifacts: false
+
+v3dv-rpi4-vk-full:arm64:
+  extends:
+    - v3dv-rpi4-vk:arm64
+    - .broadcom-test-full:arm64
+    - .v3dv-manual-rules
   tags:
     - igalia-rpi4
+    - igalia-fullrun
+  parallel: 6
+  timeout: 2h
+  variables:
+    # Keep 10 minutes for boot + setup + uploading the artifacts at the end
+    TEST_SETUP_AND_UPLOAD_MARGIN_MINUTES: 10
+    DEQP_FRACTION: 1
+
+v3dv-rpi4-vk-asan:arm64:
+  extends:
+    - .igalia-bcm2711-rpi-4
+    - .broadcom-asan-test:arm64
+    - .v3dv-manual-rules
+  variables:
+    FDO_CI_CONCURRENT: 1
+    HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
+    DEQP_SUITE: broadcom-rpi4-vk-asan
+    DEQP_FRACTION: 200
+
+v3d-rpi5-gl:arm64:
+  extends:
+    - .igalia-bcm2712-rpi-5
+    - .broadcom-test:arm64
+    - .v3d-rules
+  variables:
+    HWCI_START_WESTON: 1
+    DEQP_SUITE: broadcom-rpi5
+    DEQP_FRACTION: 3
+
+v3d-rpi5-gl-full:arm64:
+  extends:
+    - v3d-rpi5-gl:arm64
+    - .broadcom-test-full:arm64
+    - .v3d-manual-rules
+  tags:
+    - igalia-rpi5
+    - igalia-fullrun
+  timeout: 1h  # usually takes around 48min
+  variables:
+    TEST_SETUP_AND_UPLOAD_MARGIN_MINUTES: 10
+    DEQP_FRACTION: 1
+
+v3d-rpi5-rusticl:arm64:
+  extends:
+    - .igalia-bcm2712-rpi-5
+    - .broadcom-test:arm64
+    - .v3d-rusticl-manual-rules
+  tags:
+    - igalia-rpi5
+    - igalia-fullrun
+  timeout: 20m  # base run time = 7min test, 9min total
+  variables:
+    DEQP_SUITE: v3d-rusticl
+
+v3d-rpi5-traces:arm64:
+  extends:
+    - .igalia-bcm2712-rpi-5
+    - .piglit-traces-test
+    - .broadcom-test:arm64
+    - .v3d-rules
+  variables:
+    HWCI_TEST_SCRIPT: "/install/piglit/piglit-traces.sh"
+    PIGLIT_TRACES_FILE: traces-broadcom.yml
+    PIGLIT_REPLAY_DEVICE_NAME: "broadcom-rpi5"
+    PIGLIT_RESULTS: "broadcom-rpi5-replay"
+
+
+v3dv-rpi5-vk:arm64:
+  extends:
+    - .igalia-bcm2712-rpi-5
+    - .broadcom-test:arm64
+    - .v3dv-rules
+  parallel: 2
+  variables:
+    HWCI_TEST_SCRIPT: "/install/deqp-runner.sh"
+    HWCI_START_WESTON: 1
+    DEQP_SUITE: broadcom-rpi5-vk
+    DEQP_FRACTION: 5
+    FLAKES_CHANNEL: "#videocore-ci"
+
+v3dv-rpi5-vk-full:arm64:
+  extends:
+    - v3dv-rpi5-vk:arm64
+    - .broadcom-test-full:arm64
+    - .v3dv-manual-rules
+  tags:
+    - igalia-rpi5
+    - igalia-fullrun
+  parallel: null
+  timeout: 2h
+  variables:
+    # Keep 10 minutes for boot + setup + uploading the artifacts at the end
+    TEST_SETUP_AND_UPLOAD_MARGIN_MINUTES: 10
+    DEQP_FRACTION: 1

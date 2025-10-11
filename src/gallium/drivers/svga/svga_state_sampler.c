@@ -1,25 +1,8 @@
 /*
- * Copyright 2013 VMware, Inc.  All rights reserved.
- *
- * Permission is hereby granted, free of charge, to any person
- * obtaining a copy of this software and associated documentation
- * files (the "Software"), to deal in the Software without
- * restriction, including without limitation the rights to use, copy,
- * modify, merge, publish, distribute, sublicense, and/or sell copies
- * of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be
- * included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
- * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
- * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
- * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
- * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright (c) 2013-2024 Broadcom. All Rights Reserved.
+ * The term “Broadcom” refers to Broadcom Inc.
+ * and/or its subsidiaries.
+ * SPDX-License-Identifier: MIT
  */
 
 
@@ -63,7 +46,7 @@ svga_resource_handle(struct pipe_resource *res)
  * This helper function returns TRUE if the specified resource collides with
  * any of the resources bound to any of the currently bound sampler views.
  */
-boolean
+bool
 svga_check_sampler_view_resource_collision(const struct svga_context *svga,
                                            const struct svga_winsys_surface *res,
                                            enum pipe_shader_type shader)
@@ -72,19 +55,22 @@ svga_check_sampler_view_resource_collision(const struct svga_context *svga,
    unsigned i;
 
    if (svga_screen(screen)->debug.no_surface_view) {
-      return FALSE;
+      return false;
    }
+
+   if (!svga_curr_shader_use_samplers(svga, shader))
+      return false;
 
    for (i = 0; i < svga->curr.num_sampler_views[shader]; i++) {
       struct svga_pipe_sampler_view *sv =
          svga_pipe_sampler_view(svga->curr.sampler_views[shader][i]);
 
       if (sv && res == svga_resource_handle(sv->base.texture)) {
-         return TRUE;
+         return true;
       }
    }
 
-   return FALSE;
+   return false;
 }
 
 
@@ -92,7 +78,7 @@ svga_check_sampler_view_resource_collision(const struct svga_context *svga,
  * Check if there are any resources that are both bound to a render target
  * and bound as a shader resource for the given type of shader.
  */
-boolean
+bool
 svga_check_sampler_framebuffer_resource_collision(struct svga_context *svga,
                                                   enum pipe_shader_type shader)
 {
@@ -104,17 +90,17 @@ svga_check_sampler_framebuffer_resource_collision(struct svga_context *svga,
       if (surf &&
           svga_check_sampler_view_resource_collision(svga, surf->handle,
                                                      shader)) {
-         return TRUE;
+         return true;
       }
    }
 
    surf = svga_surface(svga->curr.framebuffer.zsbuf);
    if (surf &&
        svga_check_sampler_view_resource_collision(svga, surf->handle, shader)) {
-      return TRUE;
+      return true;
    }
 
-   return FALSE;
+   return false;
 }
 
 
@@ -245,7 +231,7 @@ update_sampler_resources(struct svga_context *svga, uint64_t dirty)
 
    assert(svga_have_vgpu10(svga));
 
-   for (shader = PIPE_SHADER_VERTEX; shader <= PIPE_SHADER_TESS_EVAL; shader++) {
+   for (shader = PIPE_SHADER_VERTEX; shader < PIPE_SHADER_COMPUTE; shader++) {
       SVGA3dShaderResourceViewId ids[PIPE_MAX_SAMPLERS];
       struct svga_winsys_surface *surfaces[PIPE_MAX_SAMPLERS];
       struct pipe_sampler_view *sampler_views[PIPE_MAX_SAMPLERS];
@@ -300,7 +286,7 @@ update_sampler_resources(struct svga_context *svga, uint64_t dirty)
              * shader resource list.
              */
             for (i = 0; i < nviews; i++) {
-                boolean emit;
+                bool emit;
 
                 emit = sampler_views[i] ==
                        svga->state.hw_draw.sampler_views[shader][i];
@@ -309,7 +295,7 @@ update_sampler_resources(struct svga_context *svga, uint64_t dirty)
                    /* Include the last sampler view in the next emit
                     * if it is different.
                     */
-                   emit = TRUE;
+                   emit = true;
                    numSR++;
                    i++;
                 }
@@ -396,12 +382,12 @@ update_samplers(struct svga_context *svga, uint64_t dirty )
 
    assert(svga_have_vgpu10(svga));
 
-   for (shader = PIPE_SHADER_VERTEX; shader <= PIPE_SHADER_TESS_EVAL; shader++) {
+   for (shader = PIPE_SHADER_VERTEX; shader < PIPE_SHADER_COMPUTE; shader++) {
       const unsigned count = svga->curr.num_samplers[shader];
       SVGA3dSamplerId ids[PIPE_MAX_SAMPLERS*2];
       unsigned i;
       unsigned nsamplers = 0;
-      boolean sampler_state_mapping =
+      bool sampler_state_mapping =
          svga_use_sampler_state_mapping(svga, count);
 
       for (i = 0; i < count; i++) {
@@ -551,8 +537,12 @@ update_cs_sampler_resources(struct svga_context *svga, uint64_t dirty)
    unsigned count;
    unsigned nviews;
    unsigned i;
+   struct svga_compute_shader *cs = svga->curr.cs;
 
    count = svga->curr.num_sampler_views[shader];
+   if (!cs || !cs->base.info.uses_samplers)
+      count = 0;
+
    for (i = 0; i < count; i++) {
       struct svga_pipe_sampler_view *sv =
          svga_pipe_sampler_view(svga->curr.sampler_views[shader][i]);
@@ -598,7 +588,7 @@ update_cs_sampler_resources(struct svga_context *svga, uint64_t dirty)
           * shader resource list.
           */
          for (i = 0; i < nviews; i++) {
-            boolean emit;
+            bool emit;
 
             emit = sampler_views[i] ==
                    svga->state.hw_draw.sampler_views[shader][i];
@@ -607,7 +597,7 @@ update_cs_sampler_resources(struct svga_context *svga, uint64_t dirty)
                /* Include the last sampler view in the next emit
                 * if it is different.
                 */
-               emit = TRUE;
+               emit = true;
                numSR++;
                i++;
             }

@@ -171,13 +171,14 @@ dd_screen_flush_frontbuffer(struct pipe_screen *_screen,
                             struct pipe_resource *resource,
                             unsigned level, unsigned layer,
                             void *context_private,
+                            unsigned nboxes,
                             struct pipe_box *sub_box)
 {
    struct pipe_screen *screen = dd_screen(_screen)->screen;
    struct pipe_context *pipe = _pipe ? dd_context(_pipe)->pipe : NULL;
 
    screen->flush_frontbuffer(screen, pipe, resource, level, layer, context_private,
-                             sub_box);
+                             nboxes, sub_box);
 }
 
 static int
@@ -249,6 +250,34 @@ dd_screen_resource_from_handle(struct pipe_screen *_screen,
    res->screen = _screen;
    return res;
 }
+
+static struct pipe_resource *
+dd_screen_resource_create_with_modifiers(struct pipe_screen *_screen,
+                                         const struct pipe_resource *templat,
+                                         const uint64_t *modifiers, int count)
+{
+   struct pipe_screen *screen = dd_screen(_screen)->screen;
+   struct pipe_resource *res =
+      screen->resource_create_with_modifiers(screen, templat,
+                                             modifiers, count);
+
+   if (!res)
+      return NULL;
+   res->screen = _screen;
+   return res;
+}
+
+static void
+dd_screen_query_dmabuf_modifiers(struct pipe_screen *_screen,
+                                 enum pipe_format format, int max,
+                                 uint64_t *modifiers,
+                                 unsigned int *external_only, int *count)
+{
+   struct pipe_screen *screen = dd_screen(_screen)->screen;
+   screen->query_dmabuf_modifiers(screen, format, max, modifiers,
+                                  external_only, count);
+}
+
 
 static struct pipe_resource *
 dd_screen_resource_from_user_memory(struct pipe_screen *_screen,
@@ -402,6 +431,38 @@ dd_screen_fence_get_fd(struct pipe_screen *_screen,
 }
 
 /********************************************************************
+ * vertex state
+ */
+
+static struct pipe_vertex_state *
+dd_screen_create_vertex_state(struct pipe_screen *_screen,
+                              struct pipe_vertex_buffer *buffer,
+                              const struct pipe_vertex_element *elements,
+                              unsigned num_elements,
+                              struct pipe_resource *indexbuf,
+                              uint32_t full_velem_mask)
+{
+   struct pipe_screen *screen = dd_screen(_screen)->screen;
+   struct pipe_vertex_state *state =
+      screen->create_vertex_state(screen, buffer, elements, num_elements,
+                                  indexbuf, full_velem_mask);
+
+   if (!state)
+      return NULL;
+   state->screen = _screen;
+   return state;
+}
+
+static void
+dd_screen_vertex_state_destroy(struct pipe_screen *_screen,
+                               struct pipe_vertex_state *state)
+{
+   struct pipe_screen *screen = dd_screen(_screen)->screen;
+
+   screen->vertex_state_destroy(screen, state);
+}
+
+/********************************************************************
  * memobj
  */
 
@@ -482,6 +543,15 @@ match_uint(const char **cur, unsigned *value)
    *cur = end;
    *value = v;
    return true;
+}
+
+static struct pipe_screen * dd_get_driver_pipe_screen(struct pipe_screen *_screen)
+{
+   struct pipe_screen * screen = dd_screen(_screen)->screen;
+
+   if (screen->get_driver_pipe_screen)
+      return screen->get_driver_pipe_screen(screen);
+   return screen;
 }
 
 struct pipe_screen *
@@ -601,6 +671,8 @@ ddebug_screen_create(struct pipe_screen *screen)
    /* is_video_format_supported */
    SCR_INIT(can_create_resource);
    dscreen->base.resource_create = dd_screen_resource_create;
+   dscreen->base.resource_create_with_modifiers = dd_screen_resource_create_with_modifiers;
+   dscreen->base.query_dmabuf_modifiers = dd_screen_query_dmabuf_modifiers;
    dscreen->base.resource_from_handle = dd_screen_resource_from_handle;
    SCR_INIT(resource_from_memobj);
    SCR_INIT(resource_from_user_memory);
@@ -623,6 +695,9 @@ ddebug_screen_create(struct pipe_screen *screen)
    SCR_INIT(get_device_uuid);
    SCR_INIT(finalize_nir);
    SCR_INIT(get_sparse_texture_virtual_page_size);
+   SCR_INIT(create_vertex_state);
+   SCR_INIT(vertex_state_destroy);
+   dscreen->base.get_driver_pipe_screen = dd_get_driver_pipe_screen;
 
 #undef SCR_INIT
 

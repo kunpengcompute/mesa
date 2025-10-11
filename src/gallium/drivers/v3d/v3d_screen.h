@@ -26,7 +26,7 @@
 
 #include "pipe/p_screen.h"
 #include "renderonly/renderonly.h"
-#include "os/os_thread.h"
+#include "util/u_thread.h"
 #include "frontend/drm_driver.h"
 #include "util/disk_cache.h"
 #include "util/list.h"
@@ -58,6 +58,9 @@ struct v3d_screen {
 
         const char *name;
 
+        /** Stores performance counters names **/
+        char **perfcnt_names;
+
         struct slab_parent_pool transfer_pool;
 
         struct v3d_bo_cache {
@@ -84,7 +87,9 @@ struct v3d_screen {
         bool has_perfmon;
         bool nonmsaa_texture_size_limit;
 
+#if USE_V3D_SIMULATOR
         struct v3d_simulator_file *sim_file;
+#endif
 
 #ifdef ENABLE_SHADER_CACHE
         struct disk_cache *disk_cache;
@@ -101,8 +106,10 @@ struct pipe_screen *v3d_screen_create(int fd,
                                       const struct pipe_screen_config *config,
                                       struct renderonly *ro);
 
+const char *v3d_screen_get_name(struct pipe_screen *pscreen);
+
 void
-v3d_fence_init(struct v3d_screen *screen);
+v3d_fence_screen_init(struct v3d_screen *screen);
 
 #ifdef ENABLE_SHADER_CACHE
 void

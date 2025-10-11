@@ -26,7 +26,7 @@
 
 #include "util/perf/u_trace.h"
 
-#ifdef  __cplusplus
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -38,8 +38,12 @@ struct pipe_framebuffer_state;
 void
 u_trace_pipe_context_init(struct u_trace_context *utctx,
                           struct pipe_context *pctx,
+                          uint32_t timestamp_size_B,
+                          uint32_t max_indirect_size_B,
                           u_trace_record_ts record_timestamp,
                           u_trace_read_ts read_timestamp,
+                          u_trace_capture_data capture_data,
+                          u_trace_get_data get_data,
                           u_trace_delete_flush_data delete_flush_data);
 
 /*
@@ -50,7 +54,7 @@ u_trace_pipe_context_init(struct u_trace_context *utctx,
 void
 trace_framebuffer_state(struct u_trace *ut, void *cs, const struct pipe_framebuffer_state *pfb);
 
-#ifdef  __cplusplus
+#ifdef __cplusplus
 }
 #endif
 

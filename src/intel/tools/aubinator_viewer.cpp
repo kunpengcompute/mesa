@@ -39,7 +39,10 @@
 #include "aub_read.h"
 #include "aub_mem.h"
 
-#include "common/intel_disasm.h"
+#include "compiler/brw_disasm.h"
+#include "compiler/brw_isa_info.h"
+#include "compiler/elk/elk_disasm.h"
+#include "compiler/elk/elk_isa_info.h"
 
 #define xtzalloc(name) ((decltype(&name)) calloc(1, sizeof(name)))
 #define xtalloc(name) ((decltype(&name)) malloc(sizeof(name)))
@@ -62,6 +65,8 @@ struct aub_file {
 
    /* Device state */
    struct intel_device_info devinfo;
+   struct brw_isa_info brw;
+   struct elk_isa_info elk;
    struct intel_spec *spec;
 };
 
@@ -96,7 +101,7 @@ handle_mem_write(void *user_data, uint64_t phys_addr,
 }
 
 static void
-handle_ring_write(void *user_data, enum drm_i915_gem_engine_class engine,
+handle_ring_write(void *user_data, enum intel_engine_class engine,
                   const void *ring_data, uint32_t ring_data_len)
 {
    struct aub_file *file = (struct aub_file *) user_data;
@@ -129,6 +134,10 @@ handle_info(void *user_data, int pci_id, const char *app_name)
       fprintf(stderr, "can't find device information: pci_id=0x%x\n", file->pci_id);
       exit(EXIT_FAILURE);
    }
+   if (file->devinfo.ver >= 9)
+      brw_init_isa_info(&file->brw, &file->devinfo);
+   else
+      elk_init_isa_info(&file->elk, &file->devinfo);
    file->spec = intel_spec_load(&file->devinfo);
 }
 
@@ -392,9 +401,15 @@ new_shader_window(struct aub_mem *mem, uint64_t address, const char *desc)
    if (shader_bo.map) {
       FILE *f = open_memstream(&window->shader, &window->shader_size);
       if (f) {
-         intel_disassemble(&context.file->devinfo,
-                           (const uint8_t *) shader_bo.map +
-                           (address - shader_bo.addr), 0, f);
+         if (context.file->devinfo.ver >= 9) {
+            brw_disassemble_with_errors(&context.file->brw,
+                                        (const uint8_t *) shader_bo.map +
+                                        (address - shader_bo.addr), 0, f);
+         } else {
+            elk_disassemble_with_errors(&context.file->elk,
+                                        (const uint8_t *) shader_bo.map +
+                                        (address - shader_bo.addr), 0, f);
+         }
          fclose(f);
       }
    }
@@ -693,7 +708,7 @@ update_batch_window(struct batch_window *window, bool reset, int exec_idx)
 }
 
 static void
-display_batch_ring_write(void *user_data, enum drm_i915_gem_engine_class engine,
+display_batch_ring_write(void *user_data, enum intel_engine_class engine,
                          const void *data, uint32_t data_len)
 {
    struct batch_window *window = (struct batch_window *) user_data;
@@ -705,7 +720,7 @@ display_batch_ring_write(void *user_data, enum drm_i915_gem_engine_class engine,
 
 static void
 display_batch_execlist_write(void *user_data,
-                             enum drm_i915_gem_engine_class engine,
+                             enum intel_engine_class engine,
                              uint64_t context_descriptor)
 {
    struct batch_window *window = (struct batch_window *) user_data;
@@ -1178,7 +1193,7 @@ int main(int argc, char *argv[])
       { NULL,            0,                 NULL,                          0 }
    };
 
-   memset(&context, 0, sizeof(context));
+   context = {};
 
    i = 0;
    while ((c = getopt_long(argc, argv, "x:s:", aubinator_opts, &i)) != -1) {

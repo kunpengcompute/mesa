@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2013 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2013 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -86,7 +68,7 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 
    /* points + psize -> spritelist: */
    if (ctx->rasterizer->point_size_per_vertex &&
-       fd3_emit_get_vp(emit)->writes_psize && (info->mode == PIPE_PRIM_POINTS))
+       fd3_emit_get_vp(emit)->writes_psize && (info->mode == MESA_PRIM_POINTS))
       primtype = DI_PT_POINTLIST_PSIZE;
 
    fd_draw_emit(ctx->batch, ring, primtype,
@@ -117,7 +99,7 @@ fd3_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
       .sprite_coord_mode = ctx->rasterizer->sprite_coord_mode,
    };
 
-   if (info->mode != PIPE_PRIM_MAX && !indirect && !info->primitive_restart &&
+   if (info->mode != MESA_PRIM_COUNT && !indirect && !info->primitive_restart &&
        !u_trim_pipe_prim(info->mode, (unsigned *)&draw->count))
       return false;
 
@@ -134,6 +116,8 @@ fd3_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
    /* bail if compile failed: */
    if (!emit.prog)
       return false;
+
+   fd_blend_tracking(ctx);
 
    const struct ir3_shader_variant *vp = fd3_emit_get_vp(&emit);
    const struct ir3_shader_variant *fp = fd3_emit_get_fp(&emit);
@@ -160,12 +144,27 @@ fd3_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info,
 
    fd_context_all_clean(ctx);
 
+   ctx->batch->num_vertices += draw->count * info->instance_count;
+
    return true;
+}
+
+static void
+fd3_draw_vbos(struct fd_context *ctx, const struct pipe_draw_info *info,
+              unsigned drawid_offset,
+              const struct pipe_draw_indirect_info *indirect,
+              const struct pipe_draw_start_count_bias *draws,
+              unsigned num_draws,
+              unsigned index_offset)
+   assert_dt
+{
+   for (unsigned i = 0; i < num_draws; i++)
+      fd3_draw_vbo(ctx, info, drawid_offset, indirect, &draws[i], index_offset);
 }
 
 void
 fd3_draw_init(struct pipe_context *pctx) disable_thread_safety_analysis
 {
    struct fd_context *ctx = fd_context(pctx);
-   ctx->draw_vbo = fd3_draw_vbo;
+   ctx->draw_vbos = fd3_draw_vbos;
 }

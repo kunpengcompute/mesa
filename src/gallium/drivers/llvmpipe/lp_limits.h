@@ -66,7 +66,7 @@
 
 #define LP_MAX_SAMPLES 4
 
-#define LP_MAX_THREADS 16
+#define LP_MAX_THREADS 32
 
 
 /**
@@ -94,5 +94,5 @@
 /*
  * Max point size reported. Cap vertex shader point sizes to this.
  */
-#define LP_MAX_POINT_WIDTH 255.0f
+#define LP_MAX_POINT_WIDTH 256.0f
 #endif /* LP_LIMITS_H */

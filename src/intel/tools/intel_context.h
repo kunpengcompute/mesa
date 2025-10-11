@@ -26,6 +26,8 @@
 
 #include <stdint.h>
 
+#include "util/macros.h"
+
 #define RING_SIZE         (1 * 4096)
 #define PPHWSP_SIZE         (1 * 4096)
 
@@ -43,37 +45,37 @@
 
 #define MI_BATCH_BUFFER_END (0xA << 23)
 
-#define HWS_PGA_RCSUNIT      0x02080
-#define HWS_PGA_VCSUNIT0   0x12080
-#define HWS_PGA_BCSUNIT      0x22080
+#define RCSUNIT_START        0x2000
+#define RCSUNIT_END          0x3fff
 
-#define GFX_MODE_RCSUNIT   0x0229c
-#define GFX_MODE_VCSUNIT0   0x1229c
-#define GFX_MODE_BCSUNIT   0x2229c
+#define VCSUNIT0_START       0x12000
+#define VCSUNIT0_END         0x13fff
 
-#define EXECLIST_SUBMITPORT_RCSUNIT   0x02230
-#define EXECLIST_SUBMITPORT_VCSUNIT0   0x12230
-#define EXECLIST_SUBMITPORT_BCSUNIT   0x22230
+#define GFX12_VCSUNIT0_START 0x1c0000
+#define GFX12_VCSUNIT0_END   0x1c07ff
 
-#define EXECLIST_STATUS_RCSUNIT      0x02234
-#define EXECLIST_STATUS_VCSUNIT0   0x12234
-#define EXECLIST_STATUS_BCSUNIT      0x22234
+#define BCSUNIT0_START       0x22000
+#define BCSUNIT0_END         0x23fff
 
-#define EXECLIST_SQ_CONTENTS0_RCSUNIT   0x02510
-#define EXECLIST_SQ_CONTENTS0_VCSUNIT0   0x12510
-#define EXECLIST_SQ_CONTENTS0_BCSUNIT   0x22510
+#define HWS_PGA              0x080
+#define EXECLIST_SUBMITPORT  0x230
+#define EXECLIST_STATUS      0x234
+#define GFX_MODE             0x29c
+#define EXECLIST_SQ_CONTENTS 0x510
+#define EXECLIST_CONTROL     0x550
 
-#define EXECLIST_CONTROL_RCSUNIT   0x02550
-#define EXECLIST_CONTROL_VCSUNIT0   0x12550
-#define EXECLIST_CONTROL_BCSUNIT   0x22550
+#define RCSUNIT(reg)                  (RCSUNIT_START  + reg)
+#define VCSUNIT0(reg)                 (VCSUNIT0_START + reg)
+#define GFX12_VCSUNIT0(reg)     (GFX12_VCSUNIT0_START + reg)
+#define BCSUNIT0(reg)                 (BCSUNIT0_START + reg)
 
 #define MEMORY_MAP_SIZE (64 /* MiB */ * 1024 * 1024)
 
 #define PTE_SIZE 4
 #define GFX8_PTE_SIZE 8
 
-#define NUM_PT_ENTRIES (ALIGN(MEMORY_MAP_SIZE, 4096) / 4096)
-#define PT_SIZE ALIGN(NUM_PT_ENTRIES * GFX8_PTE_SIZE, 4096)
+#define NUM_PT_ENTRIES (ALIGN_POT(MEMORY_MAP_SIZE, 4096) / 4096)
+#define PT_SIZE ALIGN_POT(NUM_PT_ENTRIES * GFX8_PTE_SIZE, 4096)
 
 #define CONTEXT_FLAGS (0x339)   /* Normal Priority | L3-LLC Coherency |
                                  * PPGTT Enabled |

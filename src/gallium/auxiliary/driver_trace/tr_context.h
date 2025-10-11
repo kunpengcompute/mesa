@@ -29,10 +29,11 @@
 #define TR_CONTEXT_H_
 
 
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 #include "util/u_debug.h"
 #include "util/hash_table.h"
 #include "pipe/p_context.h"
+#include "pipe/p_video_codec.h"
 #include "util/u_threaded_context.h"
 
 #include "tr_screen.h"
@@ -72,7 +73,7 @@ static inline struct trace_context *
 trace_context(struct pipe_context *pipe)
 {
    assert(pipe);
-#ifdef DEBUG
+#if MESA_DEBUG
    trace_context_check(pipe);
 #endif
    return (struct trace_context *)pipe;

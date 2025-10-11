@@ -30,7 +30,7 @@
  */
 
 
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/hash.h"
@@ -60,14 +60,14 @@ _mesa_lookup_samplerobj(struct gl_context *ctx, GLuint name)
       return NULL;
    else
       return (struct gl_sampler_object *)
-         _mesa_HashLookup(ctx->Shared->SamplerObjects, name);
+         _mesa_HashLookup(&ctx->Shared->SamplerObjects, name);
 }
 
 static inline struct gl_sampler_object *
 lookup_samplerobj_locked(struct gl_context *ctx, GLuint name)
 {
    return (struct gl_sampler_object *)
-         _mesa_HashLookupLocked(ctx->Shared->SamplerObjects, name);
+         _mesa_HashLookupLocked(&ctx->Shared->SamplerObjects, name);
 }
 
 static void
@@ -176,9 +176,9 @@ create_samplers(struct gl_context *ctx, GLsizei count, GLuint *samplers,
    if (!samplers)
       return;
 
-   _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
+   _mesa_HashLockMutex(&ctx->Shared->SamplerObjects);
 
-   _mesa_HashFindFreeKeys(ctx->Shared->SamplerObjects, samplers, count);
+   _mesa_HashFindFreeKeys(&ctx->Shared->SamplerObjects, samplers, count);
 
    /* Insert the ID and pointer to new sampler object into hash table */
    for (i = 0; i < count; i++) {
@@ -186,16 +186,16 @@ create_samplers(struct gl_context *ctx, GLsizei count, GLuint *samplers,
 
       sampObj = _mesa_new_sampler_object(ctx, samplers[i]);
       if (!sampObj) {
-         _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
+         _mesa_HashUnlockMutex(&ctx->Shared->SamplerObjects);
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "%s", caller);
          return;
       }
 
-      _mesa_HashInsertLocked(ctx->Shared->SamplerObjects, samplers[i],
-                             sampObj, true);
+      _mesa_HashInsertLocked(&ctx->Shared->SamplerObjects, samplers[i],
+                             sampObj);
    }
 
-   _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
+   _mesa_HashUnlockMutex(&ctx->Shared->SamplerObjects);
 }
 
 static void
@@ -248,7 +248,7 @@ delete_samplers(struct gl_context *ctx, GLsizei count, const GLuint *samplers)
 {
    FLUSH_VERTICES(ctx, 0, 0);
 
-   _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
+   _mesa_HashLockMutex(&ctx->Shared->SamplerObjects);
 
    for (GLsizei i = 0; i < count; i++) {
       if (samplers[i]) {
@@ -266,14 +266,14 @@ delete_samplers(struct gl_context *ctx, GLsizei count, const GLuint *samplers)
             }
 
             /* The ID is immediately freed for re-use */
-            _mesa_HashRemoveLocked(ctx->Shared->SamplerObjects, samplers[i]);
+            _mesa_HashRemoveLocked(&ctx->Shared->SamplerObjects, samplers[i]);
             /* But the object exists until its reference count goes to zero */
             _mesa_reference_sampler_object(ctx, &sampObj, NULL);
          }
       }
    }
 
-   _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
+   _mesa_HashUnlockMutex(&ctx->Shared->SamplerObjects);
 }
 
 
@@ -393,7 +393,7 @@ bind_samplers(struct gl_context *ctx, GLuint first, GLsizei count,
        *       their parameters are valid and no other error occurs."
        */
 
-      _mesa_HashLockMutex(ctx->Shared->SamplerObjects);
+      _mesa_HashLockMutex(&ctx->Shared->SamplerObjects);
 
       for (i = 0; i < count; i++) {
          const GLuint unit = first + i;
@@ -434,7 +434,7 @@ bind_samplers(struct gl_context *ctx, GLuint first, GLsizei count,
          }
       }
 
-      _mesa_HashUnlockMutex(ctx->Shared->SamplerObjects);
+      _mesa_HashUnlockMutex(&ctx->Shared->SamplerObjects);
    } else {
       /* Unbind all samplers in the range <first> through <first>+<count>-1 */
       for (i = 0; i < count; i++) {
@@ -492,6 +492,15 @@ validate_texture_wrap_mode(struct gl_context *ctx, GLenum wrap)
 {
    const struct gl_extensions * const e = &ctx->Extensions;
 
+   bool mirror_clamp =
+      _mesa_has_ATI_texture_mirror_once(ctx) ||
+      _mesa_has_EXT_texture_mirror_clamp(ctx);
+
+   bool mirror_clamp_to_edge =
+      _mesa_has_ARB_texture_mirror_clamp_to_edge(ctx) ||
+      _mesa_has_EXT_texture_mirror_clamp_to_edge(ctx) ||
+      mirror_clamp;
+
    switch (wrap) {
    case GL_CLAMP:
       /* From GL 3.0 specification section E.1 "Profiles and Deprecated
@@ -501,16 +510,16 @@ validate_texture_wrap_mode(struct gl_context *ctx, GLenum wrap)
        *   texture parameters TEXTURE_WRAP_S, TEXTURE_WRAP_T, or
        *   TEXTURE_WRAP_R.
        */
-      return ctx->API == API_OPENGL_COMPAT;
+      return _mesa_is_desktop_gl_compat(ctx);
    case GL_CLAMP_TO_EDGE:
    case GL_REPEAT:
    case GL_MIRRORED_REPEAT:
    case GL_CLAMP_TO_BORDER:
       return GL_TRUE;
    case GL_MIRROR_CLAMP_EXT:
-      return e->ATI_texture_mirror_once || e->EXT_texture_mirror_clamp;
+      return mirror_clamp;
    case GL_MIRROR_CLAMP_TO_EDGE_EXT:
-      return e->ATI_texture_mirror_once || e->EXT_texture_mirror_clamp || e->ARB_texture_mirror_clamp_to_edge;
+      return mirror_clamp_to_edge;
    case GL_MIRROR_CLAMP_TO_BORDER_EXT:
       return e->EXT_texture_mirror_clamp;
    default:
@@ -532,12 +541,6 @@ flush(struct gl_context *ctx)
 #define INVALID_PNAME 0x101
 #define INVALID_VALUE 0x102
 
-static inline GLboolean
-is_wrap_gl_clamp(GLint param)
-{
-   return param == GL_CLAMP || param == GL_MIRROR_CLAMP_EXT;
-}
-
 static GLuint
 set_sampler_wrap_s(struct gl_context *ctx, struct gl_sampler_object *samp,
                    GLint param)
@@ -546,8 +549,7 @@ set_sampler_wrap_s(struct gl_context *ctx, struct gl_sampler_object *samp,
       return GL_FALSE;
    if (validate_texture_wrap_mode(ctx, param)) {
       flush(ctx);
-      if (is_wrap_gl_clamp(samp->Attrib.WrapS) != is_wrap_gl_clamp(param))
-         ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
+      update_sampler_gl_clamp(ctx, samp, is_wrap_gl_clamp(samp->Attrib.WrapS), is_wrap_gl_clamp(param), WRAP_S);
       samp->Attrib.WrapS = param;
       samp->Attrib.state.wrap_s = wrap_to_gallium(param);
       _mesa_lower_gl_clamp(ctx, samp);
@@ -565,8 +567,7 @@ set_sampler_wrap_t(struct gl_context *ctx, struct gl_sampler_object *samp,
       return GL_FALSE;
    if (validate_texture_wrap_mode(ctx, param)) {
       flush(ctx);
-      if (is_wrap_gl_clamp(samp->Attrib.WrapT) != is_wrap_gl_clamp(param))
-         ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
+      update_sampler_gl_clamp(ctx, samp, is_wrap_gl_clamp(samp->Attrib.WrapT), is_wrap_gl_clamp(param), WRAP_T);
       samp->Attrib.WrapT = param;
       samp->Attrib.state.wrap_t = wrap_to_gallium(param);
       _mesa_lower_gl_clamp(ctx, samp);
@@ -584,8 +585,7 @@ set_sampler_wrap_r(struct gl_context *ctx, struct gl_sampler_object *samp,
       return GL_FALSE;
    if (validate_texture_wrap_mode(ctx, param)) {
       flush(ctx);
-      if (is_wrap_gl_clamp(samp->Attrib.WrapR) != is_wrap_gl_clamp(param))
-         ctx->NewDriverState |= ctx->DriverFlags.NewSamplersWithClamp;
+      update_sampler_gl_clamp(ctx, samp, is_wrap_gl_clamp(samp->Attrib.WrapR), is_wrap_gl_clamp(param), WRAP_R);
       samp->Attrib.WrapR = param;
       samp->Attrib.state.wrap_r = wrap_to_gallium(param);
       _mesa_lower_gl_clamp(ctx, samp);

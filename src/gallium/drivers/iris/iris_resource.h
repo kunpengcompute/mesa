@@ -44,7 +44,7 @@ struct iris_format_info {
 #define IRIS_RESOURCE_FLAG_SHADER_MEMZONE   (PIPE_RESOURCE_FLAG_DRV_PRIV << 0)
 #define IRIS_RESOURCE_FLAG_SURFACE_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 1)
 #define IRIS_RESOURCE_FLAG_DYNAMIC_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 2)
-#define IRIS_RESOURCE_FLAG_BINDLESS_MEMZONE (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
+#define IRIS_RESOURCE_FLAG_SCRATCH_MEMZONE  (PIPE_RESOURCE_FLAG_DRV_PRIV << 3)
 #define IRIS_RESOURCE_FLAG_DEVICE_MEM       (PIPE_RESOURCE_FLAG_DRV_PRIV << 4)
 
 /**
@@ -106,12 +106,8 @@ struct iris_resource {
       /** Offset into 'bo' where the auxiliary surface starts. */
       uint32_t offset;
 
-      struct {
-         struct isl_surf surf;
-
-         /** Offset into 'bo' where the auxiliary surface starts. */
-         uint32_t offset;
-      } extra_aux;
+      /** Offset into 'bo' where the compression control surface starts. */
+      uint32_t comp_ctrl_surf_offset;
 
       /**
        * When importing resources with a clear color, we may not know the
@@ -281,8 +277,6 @@ struct iris_transfer {
    struct blorp_context *blorp;
    struct iris_batch *batch;
 
-   bool dest_had_defined_contents;
-
    void (*unmap)(struct iris_transfer *);
 };
 
@@ -311,7 +305,10 @@ iris_mocs(const struct iris_bo *bo,
           const struct isl_device *dev,
           isl_surf_usage_flags_t usage)
 {
-   return isl_mocs(dev, usage, bo && iris_bo_is_external(bo));
+   return isl_mocs(dev,
+                   usage |
+                   ((bo && bo->real.protected) ? ISL_SURF_USAGE_PROTECTED_BIT : 0),
+                   bo && iris_bo_is_external(bo));
 }
 
 struct iris_format_info iris_format_for_usage(const struct intel_device_info *,
@@ -353,8 +350,7 @@ iris_hiz_exec(struct iris_context *ice,
               struct iris_batch *batch,
               struct iris_resource *res,
               unsigned int level, unsigned int start_layer,
-              unsigned int num_layers, enum isl_aux_op op,
-              bool update_clear_depth);
+              unsigned int num_layers, enum isl_aux_op op);
 
 /**
  * Prepare a miptree for access
@@ -461,7 +457,9 @@ iris_resource_access_raw(struct iris_context *ice,
 
 enum isl_aux_usage iris_resource_texture_aux_usage(struct iris_context *ice,
                                                    const struct iris_resource *res,
-                                                   enum isl_format view_fmt);
+                                                   enum isl_format view_fmt,
+                                                   unsigned start_level,
+                                                   unsigned num_levels);
 void iris_resource_prepare_texture(struct iris_context *ice,
                                    struct iris_resource *res,
                                    enum isl_format view_format,
@@ -481,14 +479,12 @@ bool iris_has_invalid_primary(const struct iris_resource *res,
 void iris_resource_check_level_layer(const struct iris_resource *res,
                                      uint32_t level, uint32_t layer);
 
-bool iris_resource_level_has_hiz(const struct iris_resource *res,
+bool iris_resource_level_has_hiz(const struct intel_device_info *devinfo,
+                                 const struct iris_resource *res,
                                  uint32_t level);
 
 bool iris_sample_with_depth_aux(const struct intel_device_info *devinfo,
                                 const struct iris_resource *res);
-
-bool iris_can_sample_mcs_with_clear(const struct intel_device_info *devinfo,
-                                    const struct iris_resource *res);
 
 bool iris_has_color_unresolved(const struct iris_resource *res,
                                unsigned start_level, unsigned num_levels,
@@ -498,13 +494,16 @@ bool iris_render_formats_color_compatible(enum isl_format a,
                                           enum isl_format b,
                                           union isl_color_value color,
                                           bool clear_color_unknown);
+void iris_resource_update_indirect_color(struct iris_batch *batch,
+                                         struct iris_resource *res);
 enum isl_aux_usage iris_resource_render_aux_usage(struct iris_context *ice,
                                                   struct iris_resource *res,
-                                                  uint32_t level,
                                                   enum isl_format render_fmt,
+                                                  uint32_t level,
                                                   bool draw_aux_disabled);
 void iris_resource_prepare_render(struct iris_context *ice,
-                                  struct iris_resource *res, uint32_t level,
+                                  struct iris_resource *res,
+                                  enum isl_format render_fmt, uint32_t level,
                                   uint32_t start_layer, uint32_t layer_count,
                                   enum isl_aux_usage aux_usage);
 void iris_resource_finish_render(struct iris_context *ice,

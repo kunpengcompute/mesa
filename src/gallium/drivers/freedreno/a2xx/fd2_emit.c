@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2012-2013 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012-2013 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -203,15 +185,17 @@ fd2_emit_state_binning(struct fd_context *ctx,
    }
 
    if (dirty & FD_DIRTY_VIEWPORT) {
+      struct pipe_viewport_state *vp = & ctx->viewport[0];
+
       OUT_PKT3(ring, CP_SET_CONSTANT, 9);
       OUT_RING(ring, 0x00000184);
-      OUT_RING(ring, fui(ctx->viewport.translate[0]));
-      OUT_RING(ring, fui(ctx->viewport.translate[1]));
-      OUT_RING(ring, fui(ctx->viewport.translate[2]));
+      OUT_RING(ring, fui(vp->translate[0]));
+      OUT_RING(ring, fui(vp->translate[1]));
+      OUT_RING(ring, fui(vp->translate[2]));
       OUT_RING(ring, fui(0.0f));
-      OUT_RING(ring, fui(ctx->viewport.scale[0]));
-      OUT_RING(ring, fui(ctx->viewport.scale[1]));
-      OUT_RING(ring, fui(ctx->viewport.scale[2]));
+      OUT_RING(ring, fui(vp->scale[0]));
+      OUT_RING(ring, fui(vp->scale[1]));
+      OUT_RING(ring, fui(vp->scale[2]));
       OUT_RING(ring, fui(0.0f));
    }
 
@@ -333,27 +317,29 @@ fd2_emit_state(struct fd_context *ctx, const enum fd_dirty_3d_state dirty)
    }
 
    if (dirty & FD_DIRTY_VIEWPORT) {
+      struct pipe_viewport_state *vp = & ctx->viewport[0];
+
       OUT_PKT3(ring, CP_SET_CONSTANT, 7);
       OUT_RING(ring, CP_REG(REG_A2XX_PA_CL_VPORT_XSCALE));
-      OUT_RING(ring, fui(ctx->viewport.scale[0]));     /* PA_CL_VPORT_XSCALE */
-      OUT_RING(ring, fui(ctx->viewport.translate[0])); /* PA_CL_VPORT_XOFFSET */
-      OUT_RING(ring, fui(ctx->viewport.scale[1]));     /* PA_CL_VPORT_YSCALE */
-      OUT_RING(ring, fui(ctx->viewport.translate[1])); /* PA_CL_VPORT_YOFFSET */
-      OUT_RING(ring, fui(ctx->viewport.scale[2]));     /* PA_CL_VPORT_ZSCALE */
-      OUT_RING(ring, fui(ctx->viewport.translate[2])); /* PA_CL_VPORT_ZOFFSET */
+      OUT_RING(ring, fui(vp->scale[0]));     /* PA_CL_VPORT_XSCALE */
+      OUT_RING(ring, fui(vp->translate[0])); /* PA_CL_VPORT_XOFFSET */
+      OUT_RING(ring, fui(vp->scale[1]));     /* PA_CL_VPORT_YSCALE */
+      OUT_RING(ring, fui(vp->translate[1])); /* PA_CL_VPORT_YOFFSET */
+      OUT_RING(ring, fui(vp->scale[2]));     /* PA_CL_VPORT_ZSCALE */
+      OUT_RING(ring, fui(vp->translate[2])); /* PA_CL_VPORT_ZOFFSET */
 
       /* set viewport in C65/C66, for a20x hw binning and fragcoord.z */
       OUT_PKT3(ring, CP_SET_CONSTANT, 9);
       OUT_RING(ring, 0x00000184);
 
-      OUT_RING(ring, fui(ctx->viewport.translate[0]));
-      OUT_RING(ring, fui(ctx->viewport.translate[1]));
-      OUT_RING(ring, fui(ctx->viewport.translate[2]));
+      OUT_RING(ring, fui(vp->translate[0]));
+      OUT_RING(ring, fui(vp->translate[1]));
+      OUT_RING(ring, fui(vp->translate[2]));
       OUT_RING(ring, fui(0.0f));
 
-      OUT_RING(ring, fui(ctx->viewport.scale[0]));
-      OUT_RING(ring, fui(ctx->viewport.scale[1]));
-      OUT_RING(ring, fui(ctx->viewport.scale[2]));
+      OUT_RING(ring, fui(vp->scale[0]));
+      OUT_RING(ring, fui(vp->scale[1]));
+      OUT_RING(ring, fui(vp->scale[2]));
       OUT_RING(ring, fui(0.0f));
    }
 

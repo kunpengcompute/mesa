@@ -21,6 +21,9 @@
  * IN THE SOFTWARE.
  */
 
+#include <wrl/client.h>
+using Microsoft::WRL::ComPtr;
+
 #include "d3d12_root_signature.h"
 #include "d3d12_compiler.h"
 #include "d3d12_screen.h"
@@ -28,9 +31,6 @@
 #include "util/u_memory.h"
 
 #include <dxguids/dxguids.h>
-
-#include <wrl/client.h>
-using Microsoft::WRL::ComPtr;
 
 struct d3d12_root_signature {
    struct d3d12_root_signature_key key;
@@ -83,11 +83,15 @@ init_range(D3D12_DESCRIPTOR_RANGE1 *range,
    range->NumDescriptors = num_descs;
    range->BaseShaderRegister = base_shader_register;
    range->RegisterSpace = register_space;
+#ifdef _GAMING_XBOX
+   range->Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+#else
    if (type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER ||
        type == D3D12_DESCRIPTOR_RANGE_TYPE_UAV)
       range->Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
    else
       range->Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_STATIC_KEEPING_BUFFER_BOUNDS_CHECKS;
+#endif
    range->OffsetInDescriptorsFromTableStart = offset_from_start;
 }
 
@@ -121,13 +125,13 @@ create_root_signature(struct d3d12_context *ctx, struct d3d12_root_signature_key
       unsigned stage = key->compute ? PIPE_SHADER_COMPUTE : i;
       D3D12_SHADER_VISIBILITY visibility = get_shader_visibility((enum pipe_shader_type)stage);
 
-      if (key->stages[i].num_cb_bindings > 0) {
+      if (key->stages[i].end_cb_bindings - key->stages[i].begin_cb_bindings > 0) {
          init_range_root_param(&root_params[num_params++],
                                &desc_ranges[num_ranges++],
                                D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-                               key->stages[i].num_cb_bindings,
+                               key->stages[i].end_cb_bindings - key->stages[i].begin_cb_bindings,
                                visibility,
-                               key->stages[i].has_default_ubo0 ? 0 : 1,
+                               key->stages[i].begin_cb_bindings,
                                0);
       }
 
@@ -184,7 +188,7 @@ create_root_signature(struct d3d12_context *ctx, struct d3d12_root_signature_key
 
       if (key->stages[i].state_vars_size > 0) {
          init_constant_root_param(&root_params[num_params++],
-            key->stages[i].num_cb_bindings + (key->stages[i].has_default_ubo0 ? 0 : 1),
+            key->stages[i].end_cb_bindings,
             key->stages[i].state_vars_size,
             visibility);
       }
@@ -208,10 +212,21 @@ create_root_signature(struct d3d12_context *ctx, struct d3d12_root_signature_key
       root_sig_desc.Desc_1_1.Flags |= D3D12_ROOT_SIGNATURE_FLAG_ALLOW_STREAM_OUTPUT;
 
    ComPtr<ID3DBlob> sig, error;
-   if (FAILED(ctx->D3D12SerializeVersionedRootSignature(&root_sig_desc,
-                                                        &sig, &error))) {
-      debug_printf("D3D12SerializeRootSignature failed\n");
-      return NULL;
+#ifndef _GAMING_XBOX
+   if (ctx->dev_config) {
+      if (FAILED(ctx->dev_config->SerializeVersionedRootSignature(&root_sig_desc,
+                                                                  &sig, &error))) {
+         debug_printf("D3D12SerializeRootSignature failed: %s\n", (char *)error->GetBufferPointer());
+         return NULL;
+      }
+   } else
+#endif
+   {
+      if (FAILED(ctx->D3D12SerializeVersionedRootSignature(&root_sig_desc,
+                                                           &sig, &error))) {
+         debug_printf("D3D12SerializeRootSignature failed: %s\n", (char *)error->GetBufferPointer());
+         return NULL;
+      }
    }
 
    ID3D12RootSignature *ret;
@@ -238,11 +253,11 @@ fill_key(struct d3d12_context *ctx, struct d3d12_root_signature_key *key, bool c
          ctx->gfx_pipeline_state.stages[i];
 
       if (shader) {
-         key->stages[i].num_cb_bindings = shader->num_cb_bindings;
+         key->stages[i].begin_cb_bindings = shader->begin_ubo_binding;
+         key->stages[i].end_cb_bindings = shader->end_ubo_binding;
          key->stages[i].end_srv_binding = shader->end_srv_binding;
          key->stages[i].begin_srv_binding = shader->begin_srv_binding;
          key->stages[i].state_vars_size = shader->state_vars_size;
-         key->stages[i].has_default_ubo0 = shader->has_default_ubo0;
          key->stages[i].num_ssbos = shader->nir->info.num_ssbos;
          key->stages[i].num_images = shader->nir->info.num_images;
 

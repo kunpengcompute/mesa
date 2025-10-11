@@ -36,11 +36,44 @@ TEMPLATE_H = Template(COPYRIGHT + """\
 
 #include "vk_dispatch_table.h"
 
+% for i in includes:
+#include "${i}"
+% endfor
+
 #ifndef ${guard}
 #define ${guard}
 
+% if not tmpl_prefix:
 #ifdef __cplusplus
 extern "C" {
+#endif
+% endif
+
+/* Entrypoint symbols are optional, and resolves to NULL if undefined.
+ * On Unix, this semantics is achieved through weak symbols.
+ * Note that we only declare the symbols as weak when it needs to be optional;
+ * otherwise, the symbol is declared as a regular symbol.
+ * This is to workaround a MinGW limitation: on MinGW, the definition for a
+ * weak symbol must be regular, or the linker will end up resolving to one of
+ * the fallback symbols with the absolute value of 0.
+ * On MSVC, weak symbols are not well supported, so we use the functionally
+ * equivalent /alternatename.
+ */
+#if !defined(_MSC_VER) && defined(VK_ENTRY_USE_WEAK)
+#define VK_ENTRY_WEAK __attribute__ ((weak))
+#else
+#define VK_ENTRY_WEAK
+#endif
+
+/* On Unix, we explicitly declare the symbols as hidden, as -fvisibility=hidden
+ * only applies to definitions, not declarations.
+ * Windows uses hidden visibility by default (requiring dllexport for public
+ * symbols), so we don't need to deal with visibility there.
+ */
+#ifndef _WIN32
+#define VK_ENTRY_HIDDEN __attribute__ ((visibility("hidden")))
+#else
+#define VK_ENTRY_HIDDEN
 #endif
 
 % for p in instance_prefixes:
@@ -55,13 +88,17 @@ extern const struct vk_physical_device_entrypoint_table ${p}_physical_device_ent
 extern const struct vk_device_entrypoint_table ${p}_device_entrypoints;
 % endfor
 
+% for v in tmpl_variants_sanitized:
+extern const struct vk_device_entrypoint_table ${tmpl_prefix}_device_entrypoints_${v};
+% endfor
+
 % if gen_proto:
 % for e in instance_entrypoints:
   % if e.guard is not None:
 #ifdef ${e.guard}
   % endif
   % for p in physical_device_prefixes:
-  VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()});
+  VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()}) VK_ENTRY_WEAK VK_ENTRY_HIDDEN;
   % endfor
   % if e.guard is not None:
 #endif // ${e.guard}
@@ -73,7 +110,7 @@ extern const struct vk_device_entrypoint_table ${p}_device_entrypoints;
 #ifdef ${e.guard}
   % endif
   % for p in physical_device_prefixes:
-  VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()});
+  VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()}) VK_ENTRY_WEAK VK_ENTRY_HIDDEN;
   % endfor
   % if e.guard is not None:
 #endif // ${e.guard}
@@ -85,17 +122,28 @@ extern const struct vk_device_entrypoint_table ${p}_device_entrypoints;
 #ifdef ${e.guard}
   % endif
   % for p in device_prefixes:
-  VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()});
+  VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()}) VK_ENTRY_WEAK VK_ENTRY_HIDDEN;
   % endfor
+
+  % if tmpl_prefix:
+  template <${tmpl_param}>
+  VKAPI_ATTR ${e.return_type} VKAPI_CALL ${tmpl_prefix}_${e.name}(${e.decl_params()});
+
+  #define ${tmpl_prefix}_${e.name}_GENS(X) \
+  template VKAPI_ATTR ${e.return_type} VKAPI_CALL ${tmpl_prefix}_${e.name}<X>(${e.decl_params()});
+  % endif
+
   % if e.guard is not None:
 #endif // ${e.guard}
   % endif
 % endfor
 % endif
 
+% if not tmpl_prefix:
 #ifdef __cplusplus
 }
 #endif
+% endif
 
 #endif /* ${guard} */
 """)
@@ -103,6 +151,11 @@ extern const struct vk_device_entrypoint_table ${p}_device_entrypoints;
 TEMPLATE_C = Template(COPYRIGHT + """
 /* This file generated from ${filename}, don't edit directly. */
 
+/* This file is the only place we rely on undefined symbols to fall back to
+ * NULL. Other files use regular symbol declarations.
+ * See also comments on VK_ENTRY_WEAK.
+ */
+#define VK_ENTRY_USE_WEAK 1
 #include "${header}"
 
 /* Weak aliases for all potential implementations. These will resolve to
@@ -128,11 +181,20 @@ TEMPLATE_C = Template(COPYRIGHT + """
       % endfor
 #else
     #pragma comment(linker, "/alternatename:${p}_${e.name}=vk_entrypoint_stub")
+#if defined(_M_ARM64EC)
+    #pragma comment(linker, "/alternatename:#${p}_${e.name}=#vk_entrypoint_stub")
+#endif
 #endif
 #else
-    VKAPI_ATTR ${e.return_type} VKAPI_CALL ${p}_${e.name}(${e.decl_params()}) __attribute__ ((weak));
+    % if entrypoints == device_entrypoints:
+      % for v in tmpl_variants:
+    extern template
+    VKAPI_ATTR __attribute__ ((weak)) ${e.return_type} VKAPI_CALL ${tmpl_prefix}_${e.name}${v}(${e.decl_params()});
+      % endfor
+    % endif
 #endif
     % endfor
+
     % if e.guard is not None:
 #endif // ${e.guard}
     % endif
@@ -154,6 +216,24 @@ const struct vk_${type}_entrypoint_table ${p}_${type}_entrypoints = {
   % endfor
 };
 % endfor
+
+% if entrypoints == device_entrypoints:
+% for v, entrypoint_v in zip(tmpl_variants, tmpl_variants_sanitized):
+const struct vk_${type}_entrypoint_table ${tmpl_prefix}_${type}_entrypoints_${entrypoint_v} = {
+  % for e in entrypoints:
+    % if e.guard is not None:
+#ifdef ${e.guard}
+    % endif
+    .${e.name} = ${tmpl_prefix}_${e.name}${v},
+    % if e.guard is not None:
+#elif defined(_MSC_VER)
+    .${e.name} = (PFN_vkVoidFunction)vk_entrypoint_stub,
+#endif // ${e.guard}
+    % endif
+  % endfor
+};
+% endfor
+% endif
 </%def>
 
 ${entrypoint_table('instance', instance_entrypoints, instance_prefixes)}
@@ -161,31 +241,12 @@ ${entrypoint_table('physical_device', physical_device_entrypoints, physical_devi
 ${entrypoint_table('device', device_entrypoints, device_prefixes)}
 """)
 
-def get_entrypoints_defines(doc):
-    """Maps entry points to extension defines."""
-    entrypoints_to_defines = {}
-
-    platform_define = {}
-    for platform in doc.findall('./platforms/platform'):
-        name = platform.attrib['name']
-        define = platform.attrib['protect']
-        platform_define[name] = define
-
-    for extension in doc.findall('./extensions/extension[@platform]'):
-        platform = extension.attrib['platform']
-        define = platform_define[platform]
-
-        for entrypoint in extension.findall('./require/command'):
-            fullname = entrypoint.attrib['name']
-            entrypoints_to_defines[fullname] = define
-
-    return entrypoints_to_defines
-
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--out-c', required=True, help='Output C file.')
     parser.add_argument('--out-h', required=True, help='Output H file.')
+    parser.add_argument('--beta', required=True, help='Enable beta extensions.')
     parser.add_argument('--xml',
                         help='Vulkan API XML file.',
                         required=True, action='append', dest='xml_files')
@@ -199,13 +260,28 @@ def main():
     parser.add_argument('--device-prefix',
                         help='Prefix to use for device dispatch tables.',
                         action='append', default=[], dest='device_prefixes')
+    parser.add_argument('--include',
+                        help='Includes to add to the H file.',
+                        action='append', default=[], dest='includes')
+    parser.add_argument('--tmpl-prefix',
+                        help='Prefix to use for templated device dispatch tables.',
+                        dest='tmpl_prefix')
+    parser.add_argument('--tmpl-param',
+                        help='Param to use for templated device dispatch tables.',
+                        dest='tmpl_param')
+    parser.add_argument('--tmpl-variants',
+                      help='All template specializations.',
+                      nargs='+', default=[], dest='tmpl_variants')
     args = parser.parse_args()
 
     instance_prefixes = args.prefixes
     physical_device_prefixes = args.prefixes
     device_prefixes = args.prefixes + args.device_prefixes
 
-    entrypoints = get_entrypoints_from_xml(args.xml_files)
+    tmpl_variants_sanitized = [
+        ''.join(filter(str.isalnum, v)).lower() for v in args.tmpl_variants]
+
+    entrypoints = get_entrypoints_from_xml(args.xml_files, args.beta)
 
     device_entrypoints = []
     physical_device_entrypoints = []
@@ -230,6 +306,11 @@ def main():
         'physical_device_prefixes': physical_device_prefixes,
         'device_entrypoints': device_entrypoints,
         'device_prefixes': device_prefixes,
+        'includes': args.includes,
+        'tmpl_prefix': args.tmpl_prefix,
+        'tmpl_param': args.tmpl_param,
+        'tmpl_variants': args.tmpl_variants,
+        'tmpl_variants_sanitized': tmpl_variants_sanitized,
         'filename': os.path.basename(__file__),
     }
 

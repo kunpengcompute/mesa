@@ -23,11 +23,27 @@
 
 #include "vk_shader_module.h"
 
-#include "util/mesa-sha1.h"
+#include "vk_alloc.h"
 #include "vk_common_entrypoints.h"
 #include "vk_device.h"
 #include "vk_log.h"
 #include "vk_nir.h"
+#include "vk_pipeline.h"
+#include "vk_util.h"
+
+void vk_shader_module_init(struct vk_device *device,
+                           struct vk_shader_module *module,
+                           const VkShaderModuleCreateInfo *create_info)
+{
+   vk_object_base_init(device, &module->base, VK_OBJECT_TYPE_SHADER_MODULE);
+
+   module->nir = NULL;
+
+   module->size = create_info->codeSize;
+   memcpy(module->data, create_info->pCode, module->size);
+
+   _mesa_blake3_compute(module->data, module->size, module->hash);
+}
 
 VKAPI_ATTR VkResult VKAPI_CALL
 vk_common_CreateShaderModule(VkDevice _device,
@@ -41,21 +57,39 @@ vk_common_CreateShaderModule(VkDevice _device,
     assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO);
     assert(pCreateInfo->flags == 0);
 
-    module = vk_object_alloc(device, pAllocator,
-                             sizeof(*module) + pCreateInfo->codeSize,
-                             VK_OBJECT_TYPE_SHADER_MODULE);
+    module = vk_alloc2(&device->alloc, pAllocator,
+                       sizeof(*module) + pCreateInfo->codeSize, 8,
+                       VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
     if (module == NULL)
        return VK_ERROR_OUT_OF_HOST_MEMORY;
 
-    module->size = pCreateInfo->codeSize;
-    module->nir = NULL;
-    memcpy(module->data, pCreateInfo->pCode, module->size);
-
-    _mesa_sha1_compute(module->data, module->size, module->sha1);
+    vk_shader_module_init(device, module, pCreateInfo);
 
     *pShaderModule = vk_shader_module_to_handle(module);
 
     return VK_SUCCESS;
+}
+
+const uint8_t vk_shaderModuleIdentifierAlgorithmUUID[VK_UUID_SIZE] = "MESA-BLAKE3";
+
+VKAPI_ATTR void VKAPI_CALL
+vk_common_GetShaderModuleIdentifierEXT(VkDevice _device,
+                                       VkShaderModule _module,
+                                       VkShaderModuleIdentifierEXT *pIdentifier)
+{
+   VK_FROM_HANDLE(vk_shader_module, module, _module);
+   memcpy(pIdentifier->identifier, module->hash, sizeof(module->hash));
+   pIdentifier->identifierSize = sizeof(module->hash);
+}
+
+VKAPI_ATTR void VKAPI_CALL
+vk_common_GetShaderModuleCreateInfoIdentifierEXT(VkDevice _device,
+                                                 const VkShaderModuleCreateInfo *pCreateInfo,
+                                                 VkShaderModuleIdentifierEXT *pIdentifier)
+{
+   _mesa_blake3_compute(pCreateInfo->pCode, pCreateInfo->codeSize,
+                        pIdentifier->identifier);
+   pIdentifier->identifierSize = sizeof(blake3_hash);
 }
 
 VKAPI_ATTR void VKAPI_CALL
@@ -88,46 +122,4 @@ vk_shader_module_spirv_version(const struct vk_shader_module *mod)
       return 0;
 
    return vk_spirv_version((uint32_t *)mod->data, mod->size);
-}
-
-VkResult
-vk_shader_module_to_nir(struct vk_device *device,
-                        const struct vk_shader_module *mod,
-                        gl_shader_stage stage,
-                        const char *entrypoint_name,
-                        const VkSpecializationInfo *spec_info,
-                        const struct spirv_to_nir_options *spirv_options,
-                        const nir_shader_compiler_options *nir_options,
-                        void *mem_ctx, nir_shader **nir_out)
-{
-   if (mod->nir != NULL) {
-      assert(mod->nir->info.stage == stage);
-      assert(exec_list_length(&mod->nir->functions) == 1);
-      ASSERTED const char *nir_name =
-         nir_shader_get_entrypoint(mod->nir)->function->name;
-      assert(strcmp(nir_name, entrypoint_name) == 0);
-
-      nir_validate_shader(mod->nir, "internal shader");
-
-      nir_shader *clone = nir_shader_clone(mem_ctx, mod->nir);
-      if (clone == NULL)
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-      assert(clone->options == NULL || clone->options == nir_options);
-      clone->options = nir_options;
-
-      *nir_out = clone;
-      return VK_SUCCESS;
-   } else {
-      nir_shader *nir = vk_spirv_to_nir(device,
-                                        (uint32_t *)mod->data, mod->size,
-                                        stage, entrypoint_name, spec_info,
-                                        spirv_options, nir_options,
-                                        mem_ctx);
-      if (nir == NULL)
-         return vk_errorf(device, VK_ERROR_UNKNOWN, "spirv_to_nir failed");
-
-      *nir_out = nir;
-      return VK_SUCCESS;
-   }
 }

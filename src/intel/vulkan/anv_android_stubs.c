@@ -24,6 +24,14 @@
 #include "anv_android.h"
 
 VkResult
+anv_android_get_tiling(struct anv_device *device,
+                       struct u_gralloc_buffer_handle *gr_handle,
+                       enum isl_tiling *tiling_out)
+{
+   return VK_ERROR_EXTENSION_NOT_PRESENT;
+}
+
+VkResult
 anv_image_init_from_gralloc(struct anv_device *device,
                             struct anv_image *image,
                             const VkImageCreateInfo *base_info,
@@ -39,17 +47,14 @@ VkResult anv_image_bind_from_gralloc(struct anv_device *device,
    return VK_ERROR_EXTENSION_NOT_PRESENT;
 }
 
-uint64_t
-anv_ahw_usage_from_vk_usage(const VkImageCreateFlags vk_create,
-                            const VkImageUsageFlags vk_usage)
+unsigned anv_ahb_format_for_vk_format(VkFormat vk_format)
 {
    return 0;
 }
 
 VkResult
 anv_import_ahw_memory(VkDevice device_h,
-                      struct anv_device_memory *mem,
-                      const VkImportAndroidHardwareBufferInfoANDROID *info)
+                      struct anv_device_memory *mem)
 {
    return VK_ERROR_EXTENSION_NOT_PRESENT;
 }
@@ -57,7 +62,7 @@ anv_import_ahw_memory(VkDevice device_h,
 VkResult
 anv_create_ahw_memory(VkDevice device_h,
                       struct anv_device_memory *mem,
-                      const VkMemoryAllocateInfo *pAllocateInfo)
+                      const VkMemoryDedicatedAllocateInfo *dedicated_info)
 {
    return VK_ERROR_EXTENSION_NOT_PRESENT;
 }

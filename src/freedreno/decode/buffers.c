@@ -1,24 +1,6 @@
 /*
- * Copyright (c) 2012 Rob Clark <robdclark@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2012 Rob Clark <robdclark@gmail.com>
+ * SPDX-License-Identifier: MIT
  */
 
 /*
@@ -28,6 +10,7 @@
 
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "util/rb_tree.h"
 #include "buffers.h"
@@ -44,7 +27,7 @@ struct buffer {
    struct {
       unsigned offset;
       unsigned dumped_mask;
-   } offsets[64];
+   } offsets[256];
    unsigned noffsets;
 };
 
@@ -191,7 +174,20 @@ add_buffer(uint64_t gpuaddr, unsigned int len, void *hostptr)
       rb_tree_insert(&buffers, &buf->node, buffer_insert_cmp);
    }
 
-   assert(buf->gpuaddr == gpuaddr);
+   /* We can end up in scenarios where we capture parts of a buffer that
+    * has been suballocated from twice, once as a dumped buffer and once
+    * as a cmd.. possibly the kernel should get more clever about this,
+    * but we need to tolerate it:
+    */
+   if (buf->gpuaddr != gpuaddr) {
+      assert(gpuaddr > buf->gpuaddr);
+      assert((gpuaddr + len) <= (buf->gpuaddr + buf->len));
+
+      void *ptr = ((uint8_t *)buf->hostptr) + (gpuaddr - buf->gpuaddr);
+      assert(!memcmp(ptr, hostptr, len));
+
+      return;
+   }
 
    buf->hostptr = hostptr;
    buf->len = len;

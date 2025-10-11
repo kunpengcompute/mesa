@@ -16,8 +16,6 @@
 #include <sys/ioctl.h>
 #include <unistd.h>
 
-#include "drm-uapi/i915_drm.h"
-
 #include "common/intel_gem.h"
 #include "dev/intel_device_info.h"
 #include "perf/intel_perf.h"
@@ -161,6 +159,9 @@ void IntelDriver::enable_perfcnt(uint64_t sampling_period_ns)
 {
    this->sampling_period_ns = sampling_period_ns;
 
+   intel_gem_read_render_timestamp(drm_device.fd, perf->devinfo.kmd_type,
+                                   &gpu_timestamp_udw);
+   gpu_timestamp_udw &= ~perf->cfg->oa_timestamp_mask;
    if (!perf->open(sampling_period_ns, selected_query)) {
       PPS_LOG_FATAL("Failed to open intel perf");
    }
@@ -199,23 +200,28 @@ std::vector<PerfRecord> IntelDriver::parse_perf_records(const std::vector<uint8_
 
    while (iter < end) {
       // Iterate a record at a time
-      auto header = reinterpret_cast<const drm_i915_perf_record_header *>(iter);
+      auto header = reinterpret_cast<const intel_perf_record_header *>(iter);
 
-      if (header->type == DRM_I915_PERF_RECORD_SAMPLE) {
+      if (header->type == INTEL_PERF_RECORD_TYPE_SAMPLE) {
          // Report is next to the header
          const uint32_t *report = reinterpret_cast<const uint32_t *>(header + 1);
          uint64_t gpu_timestamp_ldw =
-            intel_perf_report_timestamp(selected_query, report);
+            intel_perf_report_timestamp(selected_query, &perf->devinfo, report);
 
          /* Our HW only provides us with the lower 32 bits of the 36bits
           * timestamp counter value. If we haven't captured the top bits yet,
           * do it now. If we see a roll over the lower 32bits capture it
           * again.
           */
-         if (gpu_timestamp_udw == 0 || (gpu_timestamp_udw + gpu_timestamp_ldw) < last_gpu_timestamp)
-            gpu_timestamp_udw = intel_read_gpu_timestamp(drm_device.fd) & 0xffffffff00000000;
+         if (gpu_timestamp_udw == 0 ||
+             (gpu_timestamp_udw | gpu_timestamp_ldw) < last_gpu_timestamp) {
+            intel_gem_read_render_timestamp(drm_device.fd,
+                                            perf->devinfo.kmd_type,
+                                            &gpu_timestamp_udw);
+            gpu_timestamp_udw &= ~perf->cfg->oa_timestamp_mask;
+         }
 
-         uint64_t gpu_timestamp = gpu_timestamp_udw + gpu_timestamp_ldw;
+         uint64_t gpu_timestamp = gpu_timestamp_udw | gpu_timestamp_ldw;
 
          auto duration = intel_device_info_timebase_scale(&perf->devinfo,
                                                           gpu_timestamp - prev_gpu_timestamp);
@@ -245,17 +251,19 @@ void IntelDriver::read_data_from_metric_set()
 {
    assert(metric_buffer.size() >= 1024 && "Metric buffer should have space for reading");
 
-   ssize_t bytes_read = 0;
-   while ((bytes_read = perf->read_oa_stream(metric_buffer.data() + total_bytes_read,
-              metric_buffer.size() - total_bytes_read)) > 0 ||
-      errno == EINTR) {
+   do {
+      ssize_t bytes_read = perf->read_oa_stream(metric_buffer.data() + total_bytes_read,
+                                                metric_buffer.size() - total_bytes_read);
+      if (bytes_read <= 0)
+         break;
+
       total_bytes_read += std::max(ssize_t(0), bytes_read);
 
       // Increase size of the buffer for the next read
       if (metric_buffer.size() / 2 < total_bytes_read) {
          metric_buffer.resize(metric_buffer.size() * 2);
       }
-   }
+   } while (true);
 
    assert(total_bytes_read < metric_buffer.size() && "Buffer not big enough");
 }
@@ -296,12 +304,11 @@ uint64_t IntelDriver::gpu_next()
    }
 
    // Get first and second
-   auto record_a = reinterpret_cast<const drm_i915_perf_record_header *>(records[0].data.data());
-   auto record_b = reinterpret_cast<const drm_i915_perf_record_header *>(records[1].data.data());
+   auto record_a = reinterpret_cast<const intel_perf_record_header *>(records[0].data.data());
+   auto record_b = reinterpret_cast<const intel_perf_record_header *>(records[1].data.data());
 
    intel_perf_query_result_accumulate_fields(&perf->result,
                                              selected_query,
-                                             &perf->devinfo,
                                              record_a + 1,
                                              record_b + 1,
                                              false /* no_oa_accumulate */);
@@ -329,8 +336,27 @@ uint32_t IntelDriver::gpu_clock_id() const
 
 uint64_t IntelDriver::gpu_timestamp() const
 {
-   return intel_device_info_timebase_scale(&perf->devinfo,
-                                           intel_read_gpu_timestamp(drm_device.fd));
+   uint64_t timestamp;
+   intel_gem_read_render_timestamp(drm_device.fd, perf->devinfo.kmd_type,
+                                   &timestamp);
+   return intel_device_info_timebase_scale(&perf->devinfo, timestamp);
+}
+
+bool IntelDriver::cpu_gpu_timestamp(uint64_t &cpu_timestamp,
+                                    uint64_t &gpu_timestamp) const
+{
+   if (!intel_gem_read_correlate_cpu_gpu_timestamp(drm_device.fd,
+                                                   perf->devinfo.kmd_type,
+                                                   INTEL_ENGINE_CLASS_RENDER, 0,
+                                                   CLOCK_BOOTTIME,
+                                                   &cpu_timestamp,
+                                                   &gpu_timestamp,
+                                                   NULL))
+      return false;
+
+   gpu_timestamp =
+      intel_device_info_timebase_scale(&perf->devinfo, gpu_timestamp);
+   return true;
 }
 
 } // namespace pps

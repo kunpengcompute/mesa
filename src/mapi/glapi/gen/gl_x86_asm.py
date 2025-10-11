@@ -128,9 +128,9 @@ class PrintGenericStubs(gl_XML.gl_print_base):
         print('#endif')
         print('')
 
-        print('#if defined( USE_ELF_TLS ) && !defined( GLX_X86_READONLY_TEXT )')
+        print('#if !defined( GLX_X86_READONLY_TEXT )')
         print('\t\t.section\twtext, "awx", @progbits')
-        print('#endif /* defined( USE_ELF_TLS ) */')
+        print('#endif /* !defined( GLX_X86_READONLY_TEXT ) */')
 
         print('')
         print('\t\tALIGNTEXT16')
@@ -178,7 +178,7 @@ class PrintGenericStubs(gl_XML.gl_print_base):
                         text = '\tGL_STUB_ALIAS(%s, %d, %s, %s, %s)' % (n, f.offset, alt2, name, alt)
 
                         if f.has_different_protocol(n):
-                            print('#ifndef GLX_INDIRECT_RENDERING')
+                            print('#if GLAPI_EXPORT_PROTO_ENTRY_POINTS')
                             print(text)
                             print('#endif')
                         else:

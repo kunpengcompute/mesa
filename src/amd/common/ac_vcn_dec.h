@@ -1,27 +1,8 @@
 /**************************************************************************
  *
  * Copyright 2017 Advanced Micro Devices, Inc.
- * All Rights Reserved.
  *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the
- * "Software"), to deal in the Software without restriction, including
- * without limitation the rights to use, copy, modify, merge, publish,
- * distribute, sub license, and/or sell copies of the Software, and to
- * permit persons to whom the Software is furnished to do so, subject to
- * the following conditions:
- *
- * The above copyright notice and this permission notice (including the
- * next paragraph) shall be included in all copies or substantial portions
- * of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
- * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
- * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
- * IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR
- * ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
- * TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
- * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ * SPDX-License-Identifier: MIT
  *
  **************************************************************************/
 
@@ -51,6 +32,38 @@
    (RDECODE_PKT_REG_J(reg) | RDECODE_PKT_RES_J(0) | RDECODE_PKT_COND_J(cond) |                     \
     RDECODE_PKT_TYPE_J(type))
 
+#define RDECODE_IB_PARAM_DECODE_BUFFER                               (0x00000001)
+#define RDECODE_IB_PARAM_QUERY_BUFFER                                (0x00000002)
+#define RDECODE_IB_PARAM_PREDICATION_BUFFER                          (0x00000003)
+#define RDECODE_IB_PARAM_UMD_64BIT_FENCE                             (0x00000005)
+#define RDECODE_IB_PARAM_UMD_RECORD_TIMESTAMP                        (0x00000006)
+#define RDECODE_IB_PARAM_UMD_REPORT_EVENT_STATUS                     (0x00000007)
+#define RDECODE_IB_PARAM_UMD_COPY_MEMORY                             (0x00000008)
+#define RDECODE_IB_PARAM_UMD_WRITE_MEMORY                            (0x00000009)
+#define RDECODE_IB_PARAM_FEEDBACK_BUFFER                             (0x0000000A)
+
+#define RDECODE_CMDBUF_FLAGS_MSG_BUFFER                              (0x00000001)
+#define RDECODE_CMDBUF_FLAGS_DPB_BUFFER                              (0x00000002)
+#define RDECODE_CMDBUF_FLAGS_BITSTREAM_BUFFER                        (0x00000004)
+#define RDECODE_CMDBUF_FLAGS_DECODING_TARGET_BUFFER                  (0x00000008)
+#define RDECODE_CMDBUF_FLAGS_FEEDBACK_BUFFER                         (0x00000010)
+#define RDECODE_CMDBUF_FLAGS_PICTURE_PARAM_BUFFER                    (0x00000020)
+#define RDECODE_CMDBUF_FLAGS_MB_CONTROL_BUFFER                       (0x00000040)
+#define RDECODE_CMDBUF_FLAGS_IDCT_COEF_BUFFER                        (0x00000080)
+#define RDECODE_CMDBUF_FLAGS_PREEMPT_BUFFER                          (0x00000100)
+#define RDECODE_CMDBUF_FLAGS_IT_SCALING_BUFFER                       (0x00000200)
+#define RDECODE_CMDBUF_FLAGS_SCALER_TARGET_BUFFER                    (0x00000400)
+#define RDECODE_CMDBUF_FLAGS_CONTEXT_BUFFER                          (0x00000800)
+#define RDECODE_CMDBUF_FLAGS_PROB_TBL_BUFFER                         (0x00001000)
+#define RDECODE_CMDBUF_FLAGS_QUERY_BUFFER                            (0x00002000)
+#define RDECODE_CMDBUF_FLAGS_PREDICATION_BUFFER                      (0x00004000)
+#define RDECODE_CMDBUF_FLAGS_SCLR_COEF_BUFFER                        (0x00008000)
+#define RDECODE_CMDBUF_FLAGS_RECORD_TIMESTAMP                        (0x00010000)
+#define RDECODE_CMDBUF_FLAGS_REPORT_EVENT_STATUS                     (0x00020000)
+#define RDECODE_CMDBUF_FLAGS_RESERVED_SIZE_INFO_BUFFER               (0x00040000)
+#define RDECODE_CMDBUF_FLAGS_LUMA_HIST_BUFFER                        (0x00080000)
+#define RDECODE_CMDBUF_FLAGS_SESSION_CONTEXT_BUFFER                  (0x00100000)
+
 #define RDECODE_CMD_MSG_BUFFER                              0x00000000
 #define RDECODE_CMD_DPB_BUFFER                              0x00000001
 #define RDECODE_CMD_DECODING_TARGET_BUFFER                  0x00000002
@@ -74,6 +87,7 @@
 #define RDECODE_CODEC_H265                                  0x00000010
 #define RDECODE_CODEC_VP9                                   0x00000011
 #define RDECODE_CODEC_AV1                                   0x00000013
+#define RDECODE_MESSAGE_HEVC_DIRECT_REF_LIST                0x00000015
 
 #define RDECODE_ARRAY_MODE_LINEAR                           0x00000000
 #define RDECODE_ARRAY_MODE_MACRO_LINEAR_MICRO_TILED         0x00000001
@@ -81,6 +95,11 @@
 #define RDECODE_ARRAY_MODE_2D_THIN                          0x00000004
 #define RDECODE_ARRAY_MODE_MACRO_TILED_MICRO_LINEAR         0x00000004
 #define RDECODE_ARRAY_MODE_MACRO_TILED_MICRO_TILED          0x00000005
+
+#define RDECODE_ARRAY_MODE_ADDRLIB_SEL_GFX10                0x00000000
+#define RDECODE_ARRAY_MODE_ADDRLIB_SEL_GFX9                 0x00000001
+#define RDECODE_ARRAY_MODE_ADDRLIB_SEL_GFX8                 0x00000002
+#define RDECODE_ARRAY_MODE_ADDRLIB_SEL_GFX11                0x00000003
 
 #define RDECODE_H264_PROFILE_BASELINE                       0x00000000
 #define RDECODE_H264_PROFILE_MAIN                           0x00000001
@@ -93,6 +112,7 @@
 #define RDECODE_VC1_PROFILE_ADVANCED                        0x00000002
 
 #define RDECODE_SW_MODE_LINEAR                              0x00000000
+/* for legacy VCN generations */
 #define RDECODE_256B_S                                      0x00000001
 #define RDECODE_256B_D                                      0x00000002
 #define RDECODE_4KB_S                                       0x00000005
@@ -103,6 +123,8 @@
 #define RDECODE_4KB_D_X                                     0x00000016
 #define RDECODE_64KB_S_X                                    0x00000019
 #define RDECODE_64KB_D_X                                    0x0000001A
+/* for VCN5 */
+#define RDECODE_VCN5_256B_D                                 0x00000001
 
 #define RDECODE_MESSAGE_NOT_SUPPORTED                       0x00000000
 #define RDECODE_MESSAGE_CREATE                              0x00000001
@@ -122,6 +144,11 @@
 #define RDECODE_SPS_INFO_H264_EXTENSION_SUPPORT_FLAG_SHIFT  7
 
 #define RDECODE_VP9_PROBS_DATA_SIZE                         2304
+
+/* *** decode flags *** */
+#define RDECODE_FLAGS_USE_DYNAMIC_DPB_MASK                  0x00000001
+#define RDECODE_FLAGS_USE_PAL_MASK                          0x00000008
+#define RDECODE_FLAGS_DPB_RESIZE_MASK                       0x00000100
 
 #define mmUVD_JPEG_CNTL                                     0x0200
 #define mmUVD_JPEG_CNTL_BASE_IDX                            1
@@ -192,6 +219,41 @@
 #define vcnipUVD_JPEG_CNTL                                  0x4000
 #define vcnipUVD_JPEG_RB_RPTR                               0x4003
 #define vcnipUVD_JPEG_OUTBUF_WPTR                           0x401d
+#define vcnipUVD_JPEG_DEC_SOFT_RST_1                        0x4051
+#define vcnipUVD_JPEG_PITCH_1                               0x4043
+#define vcnipUVD_JPEG_UV_PITCH_1                            0x4044
+#define vcnipJPEG_DEC_ADDR_MODE_1                           0x404B
+#define vcnipUVD_JPEG_TIER_CNTL2_1                          0x400E
+#define vcnipUVD_JPEG_OUTBUF_CNTL_1                         0x4040
+#define vcnipUVD_JPEG_OUTBUF_WPTR_1                         0x4041
+#define vcnipUVD_JPEG_OUTBUF_RPTR_1                         0x4042
+#define vcnipUVD_JPEG_LUMA_BASE0_0                          0x41C0
+#define vcnipUVD_JPEG_CHROMA_BASE0_0                        0x41C1
+#define vcnipUVD_JPEG_CHROMAV_BASE0_0                       0x41C2
+#define vcnipJPEG_DEC_Y_GFX10_TILING_SURFACE_1              0x4048
+#define vcnipJPEG_DEC_UV_GFX10_TILING_SURFACE_1             0x4049
+#define vcnipUVD_LMI_JPEG_WRITE_64BIT_BAR_HIGH_1            0x40B5
+#define vcnipUVD_LMI_JPEG_WRITE_64BIT_BAR_LOW_1             0x40B4
+#define vcnipUVD_LMI_JPEG_READ_64BIT_BAR_HIGH_1             0x40B3
+#define vcnipUVD_LMI_JPEG_READ_64BIT_BAR_LOW_1              0x40B2
+#define vcnipUVD_JPEG_ROI_CROP_POS_START                    0x401B
+#define vcnipUVD_JPEG_ROI_CROP_POS_STRIDE                   0x401C
+#define vcnipUVD_JPEG_INT_STAT                              0x400B
+#define vcnipUVD_JPEG_FC_SPS_INFO                           0x4052
+#define vcnipUVD_JPEG_SPS_INFO                              0x4006
+#define vcnipUVD_JPEG_FC_R_COEF                             0x4018
+#define vcnipUVD_JPEG_FC_G_COEF                             0x4019
+#define vcnipUVD_JPEG_FC_B_COEF                             0x401A
+#define vcnipUVD_JPEG_FC_VUP_COEF_CNTL0                     0x4010
+#define vcnipUVD_JPEG_FC_VUP_COEF_CNTL1                     0x4011
+#define vcnipUVD_JPEG_FC_VUP_COEF_CNTL2                     0x4012
+#define vcnipUVD_JPEG_FC_VUP_COEF_CNTL3                     0x4013
+#define vcnipUVD_JPEG_FC_HUP_COEF_CNTL0                     0x4014
+#define vcnipUVD_JPEG_FC_HUP_COEF_CNTL1                     0x4015
+#define vcnipUVD_JPEG_FC_HUP_COEF_CNTL2                     0x4016
+#define vcnipUVD_JPEG_FC_HUP_COEF_CNTL3                     0x4017
+#define vcnipUVD_JPEG_FC_TMEOUT_CNT                         0x4183
+#define vcnipUVD_JPEG_SPS1_INFO                             0x4007
 
 #define UVD_BASE_INST0_SEG0                                 0x00007800
 #define UVD_BASE_INST0_SEG1                                 0x00007E00
@@ -363,6 +425,50 @@
 #define RDECODE_FRAME_HDR_INFO_AV1_DISABLE_CDF_UPDATE_MASK            (0x00000002)
 #define RDECODE_FRAME_HDR_INFO_AV1_SHOW_FRAME_MASK                    (0x00000001)
 
+#define RDECODE_AV1_VER_0  0
+#define RDECODE_AV1_VER_1  1
+
+typedef struct rvcn_decode_buffer_s {
+   unsigned int valid_buf_flag;
+   unsigned int msg_buffer_address_hi;
+   unsigned int msg_buffer_address_lo;
+   unsigned int dpb_buffer_address_hi;
+   unsigned int dpb_buffer_address_lo;
+   unsigned int target_buffer_address_hi;
+   unsigned int target_buffer_address_lo;
+   unsigned int session_contex_buffer_address_hi;
+   unsigned int session_contex_buffer_address_lo;
+   unsigned int bitstream_buffer_address_hi;
+   unsigned int bitstream_buffer_address_lo;
+   unsigned int context_buffer_address_hi;
+   unsigned int context_buffer_address_lo;
+   unsigned int feedback_buffer_address_hi;
+   unsigned int feedback_buffer_address_lo;
+   unsigned int luma_hist_buffer_address_hi;
+   unsigned int luma_hist_buffer_address_lo;
+   unsigned int prob_tbl_buffer_address_hi;
+   unsigned int prob_tbl_buffer_address_lo;
+   unsigned int sclr_coeff_buffer_address_hi;
+   unsigned int sclr_coeff_buffer_address_lo;
+   unsigned int it_sclr_table_buffer_address_hi;
+   unsigned int it_sclr_table_buffer_address_lo;
+   unsigned int sclr_target_buffer_address_hi;
+   unsigned int sclr_target_buffer_address_lo;
+   unsigned int reserved_size_info_buffer_address_hi;
+   unsigned int reserved_size_info_buffer_address_lo;
+   unsigned int mpeg2_pic_param_buffer_address_hi;
+   unsigned int mpeg2_pic_param_buffer_address_lo;
+   unsigned int mpeg2_mb_control_buffer_address_hi;
+   unsigned int mpeg2_mb_control_buffer_address_lo;
+   unsigned int mpeg2_idct_coeff_buffer_address_hi;
+   unsigned int mpeg2_idct_coeff_buffer_address_lo;
+} rvcn_decode_buffer_t;
+
+typedef struct rvcn_decode_ib_package_s {
+   unsigned int package_size;
+   unsigned int package_type;
+} rvcn_decode_ib_package_t;
+
 typedef struct rvcn_dec_message_index_s {
    unsigned int message_id;
    unsigned int offset;
@@ -479,6 +585,11 @@ typedef struct rvcn_dec_message_dynamic_dpb_t2_s {
     unsigned int dpbAddrLo[16];
     unsigned int dpbAddrHi[16];
 } rvcn_dec_message_dynamic_dpb_t2_t;
+
+typedef struct rvcn_dec_message_hevc_direct_ref_list_s {
+   unsigned int num_direct_reflist;
+   unsigned char multi_direct_reflist[128][2][15];
+} rvcn_dec_message_hevc_direct_ref_list_t;
 
 typedef struct {
    unsigned short viewOrderIndex;
@@ -747,6 +858,7 @@ typedef struct rvcn_dec_message_hevc_s {
 
    unsigned char direct_reflist[2][15];
    unsigned int st_rps_bits;
+   unsigned char reserved_1[15];
 } rvcn_dec_message_hevc_t;
 
 typedef struct rvcn_dec_message_vp9_s {
@@ -788,6 +900,7 @@ typedef struct rvcn_dec_message_vp9_s {
    unsigned int vp9_frame_size;
    unsigned int compressed_header_size;
    unsigned int uncompressed_header_size;
+   unsigned char reserved[2];
 } rvcn_dec_message_vp9_t;
 
 typedef enum {
@@ -918,6 +1031,7 @@ typedef struct rvcn_dec_message_av1_s {
    unsigned int uncompressed_header_size;
    rvcn_dec_warped_motion_params_t global_motion[8];
    rvcn_dec_av1_tile_info_t tile_info[256];
+   unsigned char reserved[3];
 } rvcn_dec_message_av1_t;
 
 typedef struct rvcn_dec_feature_index_s {
@@ -1066,7 +1180,11 @@ struct jpeg_params {
    unsigned dt_uv_pitch;
    unsigned dt_luma_top_offset;
    unsigned dt_chroma_top_offset;
-   bool direct_reg;
+   unsigned dt_chromav_top_offset;
+   uint16_t crop_x;
+   uint16_t crop_y;
+   uint16_t crop_width;
+   uint16_t crop_height;
 };
 
 #define RDECODE_VCN1_GPCOM_VCPU_CMD   0x2070c
@@ -1085,5 +1203,9 @@ struct jpeg_params {
 #define RDECODE_VCN2_5_ENGINE_CNTL      0x9b4
 
 #define RDECODE_SESSION_CONTEXT_SIZE (128 * 1024)
+
+unsigned ac_vcn_dec_calc_ctx_size_av1(unsigned av1_version);
+void ac_vcn_av1_init_probs(unsigned av1_version, uint8_t *prob);
+void ac_vcn_av1_init_film_grain_buffer(rvcn_dec_film_grain_params_t *fg_params, rvcn_dec_av1_fg_init_buf_t *fg_buf);
 
 #endif

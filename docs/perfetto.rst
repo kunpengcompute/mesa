@@ -14,14 +14,14 @@ data-sources for things like:
 
 As well as various domain specific producers.
 
-The mesa perfetto support adds additional producers, to allow for visualizing
+The mesa Perfetto support adds additional producers, to allow for visualizing
 GPU performance (frequency, utilization, performance counters, etc) on the
 same timeline, to better understand and tune/debug system level performance:
 
 - pps-producer: A systemwide daemon that can collect global performance
   counters.
 - mesa: Per-process producer within mesa to capture render-stage traces
-  on the GPU timeline, track events, etc.
+  on the GPU timeline, track events on the CPU timeline, etc.
 
 The exact supported features vary per driver:
 
@@ -36,10 +36,10 @@ The exact supported features vary per driver:
      - ``gpu.renderstages.msm``
    * - Turnip
      - ``gpu.counters.msm``
-     -
+     - ``gpu.renderstages.msm``
    * - Intel
      - ``gpu.counters.i915``
-     -
+     - ``gpu.renderstages.intel``
    * - Panfrost
      - ``gpu.counters.panfrost``
      -
@@ -47,21 +47,21 @@ The exact supported features vary per driver:
 Run
 ---
 
-To capture a trace with perfetto you need to take the following steps:
+To capture a trace with Perfetto you need to take the following steps:
 
-1. Build perfetto from sources available at ``subprojects/perfetto`` following
+1. Build Perfetto from sources available at ``subprojects/perfetto`` following
    `this guide <https://perfetto.dev/docs/quickstart/linux-tracing>`__.
 
-2. Create a `trace config <https://perfetto.dev/#/trace-config.md>`__, which is
+2. Create a `trace config <https://perfetto.dev/docs/concepts/config>`__, which is
    a json formatted text file with extension ``.cfg``, or use one of the config
    files under the ``src/tool/pps/cfg`` directory. More examples of config files
    can be found in ``subprojects/perfetto/test/configs``.
 
 3. Change directory to ``subprojects/perfetto`` and run a
-   `convenience script <https://perfetto.dev/#/running.md>`__ to start the
-   tracing service:
+   `convenience script <https://perfetto.dev/docs/quickstart/linux-tracing#capturing-a-trace>`__
+   to start the tracing service:
 
-   .. code-block:: console
+   .. code-block:: sh
 
       cd subprojects/perfetto
       CONFIG=<path/to/gpu.cfg> OUT=out/linux_clang_release ./tools/tmux -n
@@ -83,12 +83,12 @@ To capture a trace with perfetto you need to take the following steps:
 To be a bit more explicit, here is a listing of commands reproducing
 the steps above :
 
-.. code-block:: console
+.. code-block:: sh
 
    # Configure Mesa with perfetto
    mesa $ meson . build -Dperfetto=true -Dvulkan-drivers=intel,broadcom -Dgallium-drivers=
    # Build mesa
-   mesa $ ninja -C build
+   mesa $ meson compile -C build
 
    # Within the Mesa repo, build perfetto
    mesa $ cd subprojects/perfetto
@@ -104,21 +104,33 @@ the steps above :
 
    # Back in the perfetto tmux, press enter to start the capture
 
+CPU Tracing
+~~~~~~~~~~~
+
+Mesa's CPU tracepoints (``MESA_TRACE_*``) use Perfetto track events when
+Perfetto is enabled.  They use ``mesa.default`` and ``mesa.slow`` categories.
+
+Currently, only EGL and the following drivers have have CPU tracepoints.
+
+- Freedreno
+- V3D
+- VC4
+
 Vulkan data sources
 ~~~~~~~~~~~~~~~~~~~
 
 The Vulkan API gives the application control over recording of command
 buffers as well as when they are submitted to the hardware. As a
 consequence, we need to ensure command buffers are properly
-instrumented for the perfetto driver data sources prior to Perfetto
+instrumented for the Perfetto driver data sources prior to Perfetto
 actually collecting traces.
 
-This can be achieved by setting the ``GPU_TRACE_INSTRUMENT``
+This can be achieved by setting the :envvar:`MESA_GPU_TRACES`
 environment variable before starting a Vulkan application :
 
-.. code-block:: console
+.. code-block:: sh
 
-   GPU_TRACE_INSTRUMENT=1 ./build/my_vulkan_app
+   MESA_GPU_TRACES=perfetto ./build/my_vulkan_app
 
 Driver Specifics
 ~~~~~~~~~~~~~~~~
@@ -131,7 +143,7 @@ Freedreno / Turnip
 The Freedreno PPS driver needs root access to read system-wide
 performance counters, so you can simply run it with sudo:
 
-.. code-block:: console
+.. code-block:: sh
 
    sudo ./build/src/tool/pps/pps-producer
 
@@ -139,16 +151,16 @@ Intel
 ^^^^^
 
 The Intel PPS driver needs root access to read system-wide
-`RenderBasic <https://software.intel.com/content/www/us/en/develop/documentation/vtune-help/top/reference/gpu-metrics-reference.html>`__
+`RenderBasic <https://www.intel.com/content/www/us/en/docs/vtune-profiler/user-guide/2023-0/gpu-metrics-reference.html>`__
 performance counters, so you can simply run it with sudo:
 
-.. code-block:: console
+.. code-block:: sh
 
    sudo ./build/src/tool/pps/pps-producer
 
 Another option to enable access wide data without root permissions would be running the following:
 
-.. code-block:: console
+.. code-block:: sh
 
    sudo sysctl dev.i915.perf_stream_paranoid=0
 
@@ -157,7 +169,7 @@ Alternatively using the ``CAP_PERFMON`` permission on the binary should work too
 A particular metric set can also be selected to capture a different
 set of HW counters :
 
-.. code-block:: console
+.. code-block:: sh
 
    INTEL_PERFETTO_METRIC_SET=RasterizerAndPixelBackend ./build/src/tool/pps/pps-producer
 
@@ -165,7 +177,7 @@ Vulkan applications can also be instrumented to be Perfetto producers.
 To enable this for given application, set the environment variable as
 follow :
 
-.. code-block:: console
+.. code-block:: sh
 
    PERFETTO_TRACE=1 my_vulkan_app
 
@@ -180,7 +192,7 @@ To run the producer, follow these two simple steps:
 
 1. Enable Panfrost unstable ioctls via kernel parameter:
 
-   .. code-block:: console
+   .. code-block:: sh
 
       modprobe panfrost unstable_ioctls=1
 
@@ -188,7 +200,7 @@ To run the producer, follow these two simple steps:
 
 2. Run the producer:
 
-   .. code-block:: console
+   .. code-block:: sh
 
       ./build/pps-producer
 
@@ -202,7 +214,7 @@ If the convenience script ``tools/tmux`` keeps copying artifacts to your
 ``SSH_TARGET`` without starting the tmux session, make sure you have ``tmux``
 installed in your system.
 
-.. code-block:: console
+.. code-block:: sh
 
    apt install tmux
 

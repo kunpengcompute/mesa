@@ -24,7 +24,7 @@
  */
 
 #include <xf86drm.h>
-#include <nouveau_drm.h>
+#include "drm-uapi/nouveau_drm.h"
 #include "util/format/u_format.h"
 #include "util/format/u_format_s3tc.h"
 #include "util/u_screen.h"
@@ -39,6 +39,7 @@
 #include "nv30/nv30_context.h"
 #include "nv30/nv30_resource.h"
 #include "nv30/nv30_format.h"
+#include "nv30/nv30_winsys.h"
 
 #define RANKINE_0397_CHIPSET 0x00000003
 #define RANKINE_0497_CHIPSET 0x000001e0
@@ -84,7 +85,6 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 
    /* supported capabilities */
    case PIPE_CAP_ANISOTROPIC_FILTER:
-   case PIPE_CAP_POINT_SPRITE:
    case PIPE_CAP_OCCLUSION_QUERY:
    case PIPE_CAP_QUERY_TIME_ELAPSED:
    case PIPE_CAP_QUERY_TIMESTAMP:
@@ -96,11 +96,12 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FS_COORD_PIXEL_CENTER_INTEGER:
    case PIPE_CAP_TGSI_TEXCOORD:
    case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
-   case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
-   case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
-   case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
+   case PIPE_CAP_CLEAR_SCISSORED:
    case PIPE_CAP_ALLOW_MAPPED_BUFFERS_DURING_EXECUTION:
+   case PIPE_CAP_QUERY_MEMORY_INFO:
       return 1;
+   case PIPE_CAP_VERTEX_INPUT_ALIGNMENT:
+      return PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE;
    case PIPE_CAP_TEXTURE_TRANSFER_MODES:
       return PIPE_TEXTURE_TRANSFER_BLIT;
    /* nv35 capabilities */
@@ -108,7 +109,7 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return eng3d->oclass == NV35_3D_CLASS || eng3d->oclass >= NV40_3D_CLASS;
    case PIPE_CAP_SUPPORTED_PRIM_MODES_WITH_RESTART:
    case PIPE_CAP_SUPPORTED_PRIM_MODES:
-      return BITFIELD_MASK(PIPE_PRIM_MAX);
+      return BITFIELD_MASK(MESA_PRIM_COUNT);
    /* nv4x capabilities */
    case PIPE_CAP_BLEND_EQUATION_SEPARATE:
    case PIPE_CAP_NPOT_TEXTURES:
@@ -124,7 +125,6 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_MAX_DUAL_SOURCE_RENDER_TARGETS:
    case PIPE_CAP_FRAGMENT_SHADER_TEXTURE_LOD:
    case PIPE_CAP_FRAGMENT_SHADER_DERIVATIVES:
-   case PIPE_CAP_VERTEX_SHADER_SATURATE:
    case PIPE_CAP_INDEP_BLEND_ENABLE:
    case PIPE_CAP_INDEP_BLEND_FUNC:
    case PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS:
@@ -159,7 +159,7 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
    case PIPE_CAP_QUERY_PIPELINE_STATISTICS:
    case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
-   case PIPE_CAP_MAX_TEXTURE_BUFFER_SIZE:
+   case PIPE_CAP_MAX_TEXEL_BUFFER_ELEMENTS_UINT:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
    case PIPE_CAP_VS_LAYER_VIEWPORT:
    case PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS:
@@ -178,7 +178,6 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
    case PIPE_CAP_SAMPLER_VIEW_TARGET:
    case PIPE_CAP_CLIP_HALFZ:
-   case PIPE_CAP_VERTEXID_NOBASE:
    case PIPE_CAP_POLYGON_OFFSET_CLAMP:
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
@@ -190,7 +189,6 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
    case PIPE_CAP_SHAREABLE_SHADERS:
-   case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_SHADER_PACK_HALF_FLOAT:
    case PIPE_CAP_FS_POSITION_IS_SYSVAL:
@@ -202,11 +200,6 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
    case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
-   case PIPE_CAP_QUERY_MEMORY_INFO:
-   case PIPE_CAP_PCI_GROUP:
-   case PIPE_CAP_PCI_BUS:
-   case PIPE_CAP_PCI_DEVICE:
-   case PIPE_CAP_PCI_FUNCTION:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
    case PIPE_CAP_CULL_DISTANCE:
@@ -216,14 +209,11 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
    case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
    case PIPE_CAP_SHADER_ARRAY_COMPONENTS:
-   case PIPE_CAP_SHADER_CAN_READ_OUTPUTS:
    case PIPE_CAP_NATIVE_FENCE_FD:
-   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
    case PIPE_CAP_FBFETCH:
-   case PIPE_CAP_TGSI_MUL_ZERO_WINS:
+   case PIPE_CAP_LEGACY_MATH_RULES:
    case PIPE_CAP_DOUBLES:
    case PIPE_CAP_INT64:
-   case PIPE_CAP_INT64_DIVMOD:
    case PIPE_CAP_TGSI_TEX_TXF_LZ:
    case PIPE_CAP_SHADER_CLOCK:
    case PIPE_CAP_POLYGON_MODE_FILL_RECTANGLE:
@@ -258,20 +248,23 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_IMAGE_STORE_FORMATTED:
       return 0;
 
+   case PIPE_CAP_PCI_GROUP:
+      return dev->info.pci.domain;
+   case PIPE_CAP_PCI_BUS:
+      return dev->info.pci.bus;
+   case PIPE_CAP_PCI_DEVICE:
+      return dev->info.pci.dev;
+   case PIPE_CAP_PCI_FUNCTION:
+      return dev->info.pci.func;
+
    case PIPE_CAP_MAX_GS_INVOCATIONS:
       return 32;
-   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE:
+   case PIPE_CAP_MAX_SHADER_BUFFER_SIZE_UINT:
       return 1 << 27;
    case PIPE_CAP_VENDOR_ID:
       return 0x10de;
-   case PIPE_CAP_DEVICE_ID: {
-      uint64_t device_id;
-      if (nouveau_getparam(dev, NOUVEAU_GETPARAM_PCI_DEVICE, &device_id)) {
-         NOUVEAU_ERR("NOUVEAU_GETPARAM_PCI_DEVICE failed.\n");
-         return -1;
-      }
-      return device_id;
-   }
+   case PIPE_CAP_DEVICE_ID:
+      return dev->info.device_id;
    case PIPE_CAP_ACCELERATED:
       return 1;
    case PIPE_CAP_VIDEO_MEMORY:
@@ -340,20 +333,16 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_MAX_INPUTS:
       case PIPE_SHADER_CAP_MAX_OUTPUTS:
          return 16;
-      case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+      case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
          return ((eng3d->oclass >= NV40_3D_CLASS) ? (468 - 6): (256 - 6)) * sizeof(float[4]);
       case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
          return 1;
       case PIPE_SHADER_CAP_MAX_TEMPS:
          return (eng3d->oclass >= NV40_3D_CLASS) ? 32 : 13;
-      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-         return 32;
-      case PIPE_SHADER_CAP_PREFERRED_IR:
-         return (NOUVEAU_DEBUG & NOUVEAU_DEBUG_USE_TGSI) ? PIPE_SHADER_IR_TGSI : PIPE_SHADER_IR_NIR;
       case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
          return 0;
-      case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+      case PIPE_SHADER_CAP_CONT_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
       case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
@@ -367,15 +356,9 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
       case PIPE_SHADER_CAP_INT16:
       case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
-      case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-      case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
          return 0;
@@ -399,7 +382,7 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
          return 8; /* should be possible to do 10 with nv4x */
       case PIPE_SHADER_CAP_MAX_OUTPUTS:
          return 4;
-      case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
+      case PIPE_SHADER_CAP_MAX_CONST_BUFFER0_SIZE:
          return ((eng3d->oclass >= NV40_3D_CLASS) ? 224 : 32) * sizeof(float[4]);
       case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
          return 1;
@@ -408,11 +391,7 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
          return 16;
-      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-         return 32;
-      case PIPE_SHADER_CAP_PREFERRED_IR:
-         return (NOUVEAU_DEBUG & NOUVEAU_DEBUG_USE_TGSI) ? PIPE_SHADER_IR_TGSI : PIPE_SHADER_IR_NIR;
-      case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+      case PIPE_SHADER_CAP_CONT_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
       case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
       case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
@@ -425,15 +404,9 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen,
       case PIPE_SHADER_CAP_FP16_CONST_BUFFERS:
       case PIPE_SHADER_CAP_INT16:
       case PIPE_SHADER_CAP_GLSL_16BIT_CONSTS:
-      case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_LDEXP_SUPPORTED:
-      case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
-      case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
-      case PIPE_SHADER_CAP_TGSI_SKIP_MERGE_REGISTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTERS:
       case PIPE_SHADER_CAP_MAX_HW_ATOMIC_COUNTER_BUFFERS:
          return 0;
@@ -501,10 +474,12 @@ static const nir_shader_compiler_options nv30_base_compiler_options = {
    .lower_flrp64 = true,
    .lower_fmod = true,
    .lower_fpow = true, /* In hardware as of nv40 FS */
-   .lower_rotate = true,
    .lower_uniforms_to_ubo = true,
    .lower_vector_cmp = true,
+   .force_indirect_unrolling = nir_var_all,
+   .force_indirect_unrolling_sampler = true,
    .max_unroll_iterations = 32,
+   .no_integers = true,
 
    .use_interpolated_input_intrinsics = true,
 };
@@ -527,10 +502,13 @@ nv30_screen_get_compiler_options(struct pipe_screen *pscreen,
 }
 
 static void
-nv30_screen_fence_emit(struct pipe_screen *pscreen, uint32_t *sequence)
+nv30_screen_fence_emit(struct pipe_context *pcontext, uint32_t *sequence,
+                       struct nouveau_bo *wait)
 {
-   struct nv30_screen *screen = nv30_screen(pscreen);
-   struct nouveau_pushbuf *push = screen->base.pushbuf;
+   struct nv30_context *nv30 = nv30_context(pcontext);
+   struct nv30_screen *screen = nv30->screen;
+   struct nouveau_pushbuf *push = nv30->base.pushbuf;
+   struct nouveau_pushbuf_refn ref = { wait, NOUVEAU_BO_GART | NOUVEAU_BO_RDWR };
 
    *sequence = ++screen->base.fence.sequence;
 
@@ -539,6 +517,8 @@ nv30_screen_fence_emit(struct pipe_screen *pscreen, uint32_t *sequence)
               (2 /* size */ << 18) | (7 /* subchan */ << 13));
    PUSH_DATA (push, 0);
    PUSH_DATA (push, *sequence);
+
+   nouveau_pushbuf_refn(push, &ref, 1);
 }
 
 static uint32_t
@@ -554,10 +534,8 @@ nv30_screen_destroy(struct pipe_screen *pscreen)
 {
    struct nv30_screen *screen = nv30_screen(pscreen);
 
-   if (!nouveau_drm_screen_unref(&screen->base))
+   if (!screen->base.initialized)
       return;
-
-   nouveau_fence_cleanup(&screen->base);
 
    nouveau_bo_ref(NULL, &screen->notify);
 
@@ -738,9 +716,9 @@ nv30_screen_create(struct nouveau_device *dev)
       nouveau_heap_init(&screen->vp_data_heap, 6, 468 - 6);
    }
 
-   ret = nouveau_bo_wrap(screen->base.device, fifo->notify, &screen->notify);
+   ret = nouveau_bo_wrap(screen->base.device, fifo->base.notify, &screen->notify);
    if (ret == 0)
-      ret = nouveau_bo_map(screen->notify, 0, screen->base.client);
+      ret = BO_MAP(&screen->base, screen->notify, 0, screen->base.client);
    if (ret)
       FAIL_SCREEN_INIT("error mapping notifier memory: %d\n", ret);
 
@@ -867,9 +845,7 @@ nv30_screen_create(struct nouveau_device *dev)
    PUSH_DATA (push, screen->ntfy->handle);
    BEGIN_NV04(push, NV05_SIFM(COLOR_CONVERSION), 1);
    PUSH_DATA (push, NV05_SIFM_COLOR_CONVERSION_TRUNCATE);
+   PUSH_KICK (push);
 
-   nouveau_pushbuf_kick(push, push->channel);
-
-   nouveau_fence_new(&screen->base, &screen->base.fence.current);
    return &screen->base;
 }

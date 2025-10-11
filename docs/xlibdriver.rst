@@ -85,7 +85,7 @@ Hardware overlay planes are supported by the Xlib driver. To determine
 if your X server has overlay support you can test for the
 SERVER_OVERLAY_VISUALS property:
 
-.. code-block:: console
+.. code-block:: sh
 
    xprop -root | grep SERVER_OVERLAY_VISUALS
 
@@ -169,7 +169,4 @@ Summary of X-related environment variables
 +-----------------------------+--------------------------------------+
 | :envvar:`MESA_BACK_BUFFER`  | specifies how to implement the back  |
 |                             | color buffer (X only)                |
-+-----------------------------+--------------------------------------+
-| :envvar:`MESA_GAMMA`        | gamma correction coefficients        |
-|                             | (X only)                             |
 +-----------------------------+--------------------------------------+

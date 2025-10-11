@@ -16,46 +16,93 @@
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
  */
 
 #ifndef __NEEDS_TRACE_PRIV
-#  error "Do not use this header!"
+#error "Do not use this header!"
 #endif
 
 #ifndef _U_TRACE_PRIV_H
 #define _U_TRACE_PRIV_H
 
-#include <stdio.h>
-
 #include "u_trace.h"
+#include <stdio.h>
 
 /*
  * Internal interface used by generated tracepoints
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * Tracepoint descriptor.
  */
 struct u_tracepoint {
-   unsigned payload_sz;
    const char *name;
-   bool end_of_pipe;
-   void (*print)(FILE *out, const void *payload);
+   /**
+    * Size of the CPU data associated with this tracepoint.
+    */
+   uint16_t payload_sz;
+   /**
+    * Size of the GPU data associated with this tracepoint.
+    */
+   uint16_t indirect_sz;
+   /**
+    * A bitfield of driver agnostic flags
+    */
+   uint16_t flags;
+   /**
+    * Index of this tracepoint in <basename>_tracepoint_names in the generated
+    * u_trace perfetto header. By associating these names with iids in setup,
+    * tracepoints can be presented with with their own names by passing that
+    * to event->set_stage_iid().
+    */
+   uint16_t tp_idx;
+   void (*print)(FILE *out, const void *payload, const void *indirect);
+   void (*print_json)(FILE *out, const void *payload, const void *indirect);
 #ifdef HAVE_PERFETTO
    /**
     * Callback to emit a perfetto event, such as render-stage trace
     */
-   void (*perfetto)(void *pctx, uint64_t ts_ns, const void *flush_data, const void *payload);
+   void (*perfetto)(void *pctx,
+                    uint64_t ts_ns,
+                    uint16_t tp_idx,
+                    const void *flush_data,
+                    const void *payload,
+                    const void *indirect);
 #endif
 };
 
 /**
- * Append a tracepoint, returning pointer that can be filled with trace
- * payload.
+ * Append a tracepoint followed by some amount of memory specified by
+ * variable_sz, returning pointer that can be filled with trace payload.
  */
-void * u_trace_append(struct u_trace *ut, void *cs, const struct u_tracepoint *tp);
+void *u_trace_appendv(struct u_trace *ut,
+                      void *cs,
+                      const struct u_tracepoint *tp,
+                      unsigned variable_sz,
+                      unsigned n_indirects,
+                      const struct u_trace_address *addresses,
+                      const uint8_t *indirect_sizes_B);
 
-#endif  /* _U_TRACE_PRIV_H */
+/**
+ * Append a trace event, returning pointer to buffer of tp->payload_sz
+ * to be filled in with trace payload.  Called by generated tracepoint
+ * functions.
+ */
+static inline void *
+u_trace_append(struct u_trace *ut, void *cs, const struct u_tracepoint *tp)
+{
+   return u_trace_appendv(ut, cs, tp, 0, 0, NULL, NULL);
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* _U_TRACE_PRIV_H */

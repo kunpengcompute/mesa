@@ -26,7 +26,7 @@
 #ifndef FBOBJECT_H
 #define FBOBJECT_H
 
-#include "glheader.h"
+#include "util/glheader.h"
 #include <stdbool.h>
 
 struct gl_context;
@@ -122,7 +122,7 @@ _mesa_framebuffer_texture(struct gl_context *ctx, struct gl_framebuffer *fb,
                           struct gl_renderbuffer_attachment *att,
                           struct gl_texture_object *texObj, GLenum textarget,
                           GLint level, GLsizei samples,
-                          GLuint layer, GLboolean layered);
+                          GLuint layer, GLboolean layered, GLsizei numviews);
 
 extern GLenum
 _mesa_check_framebuffer_status(struct gl_context *ctx,
@@ -132,5 +132,8 @@ extern void
 _mesa_bind_framebuffers(struct gl_context *ctx,
                         struct gl_framebuffer *newDrawFb,
                         struct gl_framebuffer *newReadFb);
+
+void GLAPIENTRY
+_mesa_InternalInvalidateFramebufferAncillaryMESA(void);
 
 #endif /* FBOBJECT_H */

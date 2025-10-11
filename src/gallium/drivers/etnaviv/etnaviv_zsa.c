@@ -32,8 +32,6 @@
 #include "util/half_float.h"
 #include "util/u_memory.h"
 
-#include "hw/common.xml.h"
-
 void *
 etna_zsa_state_create(struct pipe_context *pctx,
                       const struct pipe_depth_stencil_alpha_state *so)
@@ -48,7 +46,7 @@ etna_zsa_state_create(struct pipe_context *pctx,
    cs->base = *so;
 
    cs->z_test_enabled = so->depth_enabled && so->depth_func != PIPE_FUNC_ALWAYS;
-   cs->z_write_enabled = so->depth_enabled && so->depth_writemask;
+   cs->z_write_enabled = so->depth_writemask;
 
    /* XXX does stencil[0] / stencil[1] order depend on rs->front_ccw? */
 
@@ -92,7 +90,7 @@ etna_zsa_state_create(struct pipe_context *pctx,
    /* calculate extra_reference value */
    uint32_t extra_reference = 0;
 
-   if (VIV_FEATURE(screen, chipMinorFeatures1, HALF_FLOAT))
+   if (VIV_FEATURE(screen, ETNA_FEATURE_HALF_FLOAT))
       extra_reference = _mesa_float_to_half(SATURATE(so->alpha_ref_value));
 
    cs->PE_STENCIL_CONFIG_EXT =
@@ -101,7 +99,7 @@ etna_zsa_state_create(struct pipe_context *pctx,
    cs->PE_ALPHA_OP =
       COND(so->alpha_enabled, VIVS_PE_ALPHA_OP_ALPHA_TEST) |
       VIVS_PE_ALPHA_OP_ALPHA_FUNC(so->alpha_func) |
-      VIVS_PE_ALPHA_OP_ALPHA_REF(etna_cfloat_to_uint8(so->alpha_ref_value));
+      VIVS_PE_ALPHA_OP_ALPHA_REF(float_to_ubyte(so->alpha_ref_value));
 
    for (unsigned i = 0; i < 2; i++) {
       const struct pipe_stencil_state *stencil_front = (so->stencil[1].enabled && so->stencil[1].valuemask) ? &so->stencil[i] : &so->stencil[0];

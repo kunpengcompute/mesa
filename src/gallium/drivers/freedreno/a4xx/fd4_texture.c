@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2014 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2014 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -104,7 +86,7 @@ fd4_sampler_state_create(struct pipe_context *pctx,
    so->texsamp1 =
       //		COND(miplinear, A4XX_TEX_SAMP_1_MIPFILTER_LINEAR_FAR) |
       COND(!cso->seamless_cube_map, A4XX_TEX_SAMP_1_CUBEMAPSEAMLESSFILTOFF) |
-      COND(!cso->normalized_coords, A4XX_TEX_SAMP_1_UNNORM_COORDS);
+      COND(cso->unnormalized_coords, A4XX_TEX_SAMP_1_UNNORM_COORDS);
 
    if (cso->min_mip_filter != PIPE_TEX_MIPFILTER_NONE) {
       so->texsamp1 |= A4XX_TEX_SAMP_1_MIN_LOD(cso->min_lod) |
@@ -250,7 +232,7 @@ fd4_set_sampler_views(struct pipe_context *pctx, enum pipe_shader_type shader,
    } else if (shader == PIPE_SHADER_COMPUTE) {
       sampler_swizzles = fd4_ctx->csampler_swizzles;
    } else {
-      debug_assert(0);
+      assert(0);
       sampler_swizzles = fd4_ctx->csampler_swizzles;
    }
 
@@ -279,7 +261,7 @@ fd4_set_sampler_views(struct pipe_context *pctx, enum pipe_shader_type shader,
                sampler_swizzles[start + i] |= 0x4000;
                break;
             default:
-               debug_assert(0);
+               assert(0);
             }
          }
       }

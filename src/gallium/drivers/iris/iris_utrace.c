@@ -39,50 +39,140 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static void
-iris_utrace_record_ts(struct u_trace *trace, void *_batch,
-                      void *timestamps, unsigned idx,
-                      bool end_of_pipe)
+/** Timestamp structure format */
+union iris_utrace_timestamp {
+   /* Timestamp writtem by either 2 * MI_STORE_REGISTER_MEM or
+    * PIPE_CONTROL.
+    */
+   uint64_t timestamp;
+
+   /* Timestamp written by COMPUTE_WALKER::PostSync
+    *
+    * Layout is described in PRMs.
+    * ATSM PRMs, Volume 2d: Command Reference: Structures, POSTSYNC_DATA:
+    *
+    *    "The timestamp layout :
+    *        [0] = 32b Context Timestamp Start
+    *        [1] = 32b Global Timestamp Start
+    *        [2] = 32b Context Timestamp End
+    *        [3] = 32b Global Timestamp End"
+    */
+   uint32_t gfx125_postsync_data[4];
+
+   /* Timestamp written by COMPUTE_WALKER::PostSync
+    *
+    * BSpec 56591:
+    *
+    *    "The timestamp layout :
+    *       [0] = 64b Context Timestamp Start
+    *       [1] = 64b Global Timestamp Start
+    *       [2] = 64b Context Timestamp End
+    *       [3] = 64b Global Timestamp End"
+    */
+   uint64_t gfx20_postsync_data[4];
+};
+
+static void *
+iris_utrace_create_buffer(struct u_trace_context *utctx, uint64_t size_B)
 {
-   struct iris_batch *batch = _batch;
-   struct iris_resource *res = (void *) timestamps;
-   struct iris_bo *bo = res->bo;
+   struct iris_context *ice =
+      container_of(utctx, struct iris_context, ds.trace_context);
+   struct pipe_context *ctx = &ice->ctx;
+   struct iris_screen *screen = (struct iris_screen *)ctx->screen;
+
+   struct iris_bo *bo =
+      iris_bo_alloc(screen->bufmgr, "utrace timestamps",
+                    size_B, 16 /* alignment */,
+                    IRIS_MEMZONE_OTHER,
+                    BO_ALLOC_COHERENT | BO_ALLOC_SMEM);
+
+   void *ptr = iris_bo_map(NULL, bo, MAP_READ | MAP_WRITE);
+   memset(ptr, 0, size_B);
+
+   return bo;
+}
+
+static void
+iris_utrace_delete_buffer(struct u_trace_context *utctx, void *timestamps)
+{
+   struct iris_bo *bo = timestamps;
+   iris_bo_unreference(bo);
+}
+
+static void
+iris_utrace_record_ts(struct u_trace *trace, void *cs,
+                      void *timestamps, uint64_t offset_B,
+                      uint32_t flags)
+{
+   struct iris_batch *batch = container_of(trace, struct iris_batch, trace);
+   struct iris_context *ice = batch->ice;
+   struct iris_bo *bo = timestamps;
 
    iris_use_pinned_bo(batch, bo, true, IRIS_DOMAIN_NONE);
 
-   if (end_of_pipe) {
+   const bool is_end_compute =
+      cs == NULL &&
+      (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE_CS);
+   if (is_end_compute) {
+      assert(ice->utrace.last_compute_walker != NULL);
+      batch->screen->vtbl.rewrite_compute_walker_pc(
+         batch, ice->utrace.last_compute_walker, bo, offset_B);
+      ice->utrace.last_compute_walker = NULL;
+   } else if (flags & INTEL_DS_TRACEPOINT_FLAG_END_OF_PIPE) {
       iris_emit_pipe_control_write(batch, "query: pipelined snapshot write",
                                    PIPE_CONTROL_WRITE_TIMESTAMP,
-                                   bo, idx * sizeof(uint64_t), 0ull);
+                                   bo, offset_B, 0ull);
    } else {
-      batch->screen->vtbl.store_register_mem64(batch,
-                                               0x2358,
-                                               bo, idx * sizeof(uint64_t),
+      batch->screen->vtbl.store_register_mem64(batch, 0x2358,
+                                               bo, offset_B,
                                                false);
    }
 }
 
 static uint64_t
 iris_utrace_read_ts(struct u_trace_context *utctx,
-                    void *timestamps, unsigned idx, void *flush_data)
+                    void *timestamps, uint64_t offset_B, void *flush_data)
 {
    struct iris_context *ice =
       container_of(utctx, struct iris_context, ds.trace_context);
    struct pipe_context *ctx = &ice->ctx;
    struct iris_screen *screen = (struct iris_screen *)ctx->screen;
-   struct iris_resource *res = (void *) timestamps;
-   struct iris_bo *bo = res->bo;
+   struct iris_bo *bo = timestamps;
 
-   if (idx == 0)
+   if (offset_B == 0)
       iris_bo_wait_rendering(bo);
 
-   uint64_t *ts = iris_bo_map(NULL, bo, MAP_READ);
+   union iris_utrace_timestamp *ts = iris_bo_map(NULL, bo, MAP_READ) + offset_B;
 
    /* Don't translate the no-timestamp marker: */
-   if (ts[idx] == U_TRACE_NO_TIMESTAMP)
+   if (ts->timestamp == U_TRACE_NO_TIMESTAMP)
       return U_TRACE_NO_TIMESTAMP;
 
-   return intel_device_info_timebase_scale(&screen->devinfo, ts[idx]);
+   /* Detect a 16/32 bytes timestamp write */
+   if (ts->gfx20_postsync_data[1] != 0 ||
+       ts->gfx20_postsync_data[2] != 0 ||
+       ts->gfx20_postsync_data[3] != 0) {
+      if (screen->devinfo->ver >= 20) {
+         return intel_device_info_timebase_scale(screen->devinfo,
+                                                 ts->gfx20_postsync_data[3]);
+      }
+
+      /* The timestamp written by COMPUTE_WALKER::PostSync only as 32bits. We
+       * need to rebuild the full 64bits using the previous timestamp. We
+       * assume that utrace is reading the timestamp in order. Anyway
+       * timestamp rollover on 32bits in a few minutes so in most cases that
+       * should be correct.
+       */
+      uint64_t timestamp =
+         (ice->utrace.last_full_timestamp & 0xffffffff00000000) |
+         (uint64_t) ts->gfx125_postsync_data[3];
+
+      return intel_device_info_timebase_scale(screen->devinfo, timestamp);
+   }
+
+   ice->utrace.last_full_timestamp = ts->timestamp;
+
+   return intel_device_info_timebase_scale(screen->devinfo, ts->timestamp);
 }
 
 static void
@@ -95,8 +185,9 @@ iris_utrace_delete_flush_data(struct u_trace_context *utctx,
 void iris_utrace_flush(struct iris_batch *batch, uint64_t submission_id)
 {
    struct intel_ds_flush_data *flush_data = malloc(sizeof(*flush_data));
-   intel_ds_flush_data_init(flush_data, batch->ds, submission_id);
-   u_trace_flush(&batch->trace, flush_data, false);
+   intel_ds_flush_data_init(flush_data, &batch->ds, submission_id);
+   intel_ds_queue_flush_data(&batch->ds, &batch->trace, flush_data,
+                             U_TRACE_FRAME_UNKNOWN, false);
 }
 
 void iris_utrace_init(struct iris_context *ice)
@@ -111,20 +202,23 @@ void iris_utrace_init(struct iris_context *ice)
    else
       minor = 0;
 
-   /* We could be dealing with /dev/dri/card0 or /dev/dri/renderD128 so to get
-    * a GPU ID we % 128 the minor number.
-    */
-   intel_ds_device_init(&ice->ds, &screen->devinfo, screen->fd, minor % 128,
+   intel_ds_device_init(&ice->ds, screen->devinfo, screen->fd, minor,
                         INTEL_DS_API_OPENGL);
-   u_trace_pipe_context_init(&ice->ds.trace_context, &ice->ctx,
-                             iris_utrace_record_ts,
-                             iris_utrace_read_ts,
-                             iris_utrace_delete_flush_data);
+
+   u_trace_context_init(&ice->ds.trace_context, &ice->ctx,
+                        sizeof(union iris_utrace_timestamp),
+                        0,
+                        iris_utrace_create_buffer,
+                        iris_utrace_delete_buffer,
+                        iris_utrace_record_ts,
+                        iris_utrace_read_ts,
+                        NULL,
+                        NULL,
+                        iris_utrace_delete_flush_data);
 
    for (int i = 0; i < IRIS_BATCH_COUNT; i++) {
-      ice->batches[i].ds =
-         intel_ds_device_add_queue(&ice->ds, "%s",
-                                   iris_batch_name_to_string(i));
+      intel_ds_device_init_queue(&ice->ds, &ice->batches[i].ds, "%s",
+                                 iris_batch_name_to_string(i));
    }
 }
 
@@ -140,19 +234,22 @@ iris_utrace_pipe_flush_bit_to_ds_stall_flag(uint32_t flags)
       uint32_t iris;
       enum intel_ds_stall_flag ds;
    } iris_to_ds_flags[] = {
-      { .iris = PIPE_CONTROL_DEPTH_CACHE_FLUSH,        .ds = INTEL_DS_DEPTH_CACHE_FLUSH_BIT, },
-      { .iris = PIPE_CONTROL_DATA_CACHE_FLUSH,         .ds = INTEL_DS_DATA_CACHE_FLUSH_BIT, },
-      { .iris = PIPE_CONTROL_TILE_CACHE_FLUSH,         .ds = INTEL_DS_TILE_CACHE_FLUSH_BIT, },
-      { .iris = PIPE_CONTROL_RENDER_TARGET_FLUSH,      .ds = INTEL_DS_RENDER_TARGET_CACHE_FLUSH_BIT, },
-      { .iris = PIPE_CONTROL_STATE_CACHE_INVALIDATE,   .ds = INTEL_DS_STATE_CACHE_INVALIDATE_BIT, },
-      { .iris = PIPE_CONTROL_CONST_CACHE_INVALIDATE,   .ds = INTEL_DS_CONST_CACHE_INVALIDATE_BIT, },
-      { .iris = PIPE_CONTROL_VF_CACHE_INVALIDATE,      .ds = INTEL_DS_VF_CACHE_INVALIDATE_BIT, },
-      { .iris = PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE, .ds = INTEL_DS_TEXTURE_CACHE_INVALIDATE_BIT, },
-      { .iris = PIPE_CONTROL_INSTRUCTION_INVALIDATE,   .ds = INTEL_DS_INST_CACHE_INVALIDATE_BIT, },
-      { .iris = PIPE_CONTROL_DEPTH_STALL,              .ds = INTEL_DS_DEPTH_STALL_BIT, },
-      { .iris = PIPE_CONTROL_CS_STALL,                 .ds = INTEL_DS_CS_STALL_BIT, },
-      { .iris = PIPE_CONTROL_FLUSH_HDC,                .ds = INTEL_DS_HDC_PIPELINE_FLUSH_BIT, },
-      { .iris = PIPE_CONTROL_STALL_AT_SCOREBOARD,      .ds = INTEL_DS_STALL_AT_SCOREBOARD_BIT, },
+      { .iris = PIPE_CONTROL_DEPTH_CACHE_FLUSH,            .ds = INTEL_DS_DEPTH_CACHE_FLUSH_BIT, },
+      { .iris = PIPE_CONTROL_DATA_CACHE_FLUSH,             .ds = INTEL_DS_DATA_CACHE_FLUSH_BIT, },
+      { .iris = PIPE_CONTROL_TILE_CACHE_FLUSH,             .ds = INTEL_DS_TILE_CACHE_FLUSH_BIT, },
+      { .iris = PIPE_CONTROL_L3_FABRIC_FLUSH,              .ds = INTEL_DS_L3_FABRIC_FLUSH_BIT, },
+      { .iris = PIPE_CONTROL_RENDER_TARGET_FLUSH,          .ds = INTEL_DS_RENDER_TARGET_CACHE_FLUSH_BIT, },
+      { .iris = PIPE_CONTROL_STATE_CACHE_INVALIDATE,       .ds = INTEL_DS_STATE_CACHE_INVALIDATE_BIT, },
+      { .iris = PIPE_CONTROL_CONST_CACHE_INVALIDATE,       .ds = INTEL_DS_CONST_CACHE_INVALIDATE_BIT, },
+      { .iris = PIPE_CONTROL_VF_CACHE_INVALIDATE,          .ds = INTEL_DS_VF_CACHE_INVALIDATE_BIT, },
+      { .iris = PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE,     .ds = INTEL_DS_TEXTURE_CACHE_INVALIDATE_BIT, },
+      { .iris = PIPE_CONTROL_INSTRUCTION_INVALIDATE,       .ds = INTEL_DS_INST_CACHE_INVALIDATE_BIT, },
+      { .iris = PIPE_CONTROL_DEPTH_STALL,                  .ds = INTEL_DS_DEPTH_STALL_BIT, },
+      { .iris = PIPE_CONTROL_CS_STALL,                     .ds = INTEL_DS_CS_STALL_BIT, },
+      { .iris = PIPE_CONTROL_FLUSH_HDC,                    .ds = INTEL_DS_HDC_PIPELINE_FLUSH_BIT, },
+      { .iris = PIPE_CONTROL_STALL_AT_SCOREBOARD,          .ds = INTEL_DS_STALL_AT_SCOREBOARD_BIT, },
+      { .iris = PIPE_CONTROL_UNTYPED_DATAPORT_CACHE_FLUSH, .ds = INTEL_DS_UNTYPED_DATAPORT_CACHE_FLUSH_BIT, },
+      { .iris = PIPE_CONTROL_CCS_CACHE_FLUSH,              .ds = INTEL_DS_CCS_CACHE_FLUSH_BIT, },
    };
 
    enum intel_ds_stall_flag ret = 0;

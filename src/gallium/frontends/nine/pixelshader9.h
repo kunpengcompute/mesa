@@ -1,24 +1,7 @@
 /*
  * Copyright 2011 Joakim Sindholt <opensource@zhasha.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #ifndef _NINE_PIXELSHADER9_H_
 #define _NINE_PIXELSHADER9_H_
@@ -47,8 +30,8 @@ struct NinePixelShader9
     uint16_t sampler_mask;
     uint8_t rt_mask;
 
-    boolean int_slots_used[NINE_MAX_CONST_I];
-    boolean bool_slots_used[NINE_MAX_CONST_B];
+    bool int_slots_used[NINE_MAX_CONST_I];
+    bool bool_slots_used[NINE_MAX_CONST_B];
 
     unsigned const_int_slots;
     unsigned const_bool_slots;
@@ -111,14 +94,11 @@ NinePixelShader9_UpdateKey( struct NinePixelShader9 *ps,
         }
     }
 
-    if (ps->byte_code.version < 0x30) {
-        key |= ((uint64_t)context->rs[D3DRS_FOGENABLE]) << 20;
-        key |= ((uint64_t)context->rs[D3DRS_FOGTABLEMODE]) << 21;
+    if (ps->byte_code.version < 0x30 && context->rs[D3DRS_FOGENABLE]) {
+        key |= 1 << 20;
+        key |= ((uint64_t)context->rs[D3DRS_FOGTABLEMODE]) << 21; /* 2 bits */
+        key |= ((uint64_t)context->zfog) << 23;
     }
-
-    /* centroid interpolation automatically used for color ps inputs */
-    if (context->rt[0]->base.info.nr_samples)
-        key |= ((uint64_t)1) << 22;
 
     if ((ps->const_int_slots > 0 || ps->const_bool_slots > 0) && context->inline_constants)
         key |= ((uint64_t)nine_shader_constant_combination_key(&ps->c_combinations,
@@ -127,7 +107,15 @@ NinePixelShader9_UpdateKey( struct NinePixelShader9 *ps,
                                                                (void *)context->ps_const_i,
                                                                context->ps_const_b)) << 24;
 
-    key |= ((uint64_t)(context->rs[NINED3DRS_FETCH4] & samplers_fetch4)) << 32;
+    key |= ((uint64_t)(context->rs[NINED3DRS_FETCH4] & samplers_fetch4)) << 32; /* 16 bits */
+
+    /* centroid interpolation automatically used for color ps inputs */
+    if (context->rt[0]->base.info.nr_samples)
+        key |= ((uint64_t)1) << 48;
+    key |= ((uint64_t)(context->rs[NINED3DRS_EMULATED_ALPHATEST] & 0x7)) << 49; /* 3 bits */
+    if (context->rs[D3DRS_SHADEMODE] == D3DSHADE_FLAT)
+        key |= ((uint64_t)1) << 52;
+
     res = ps->last_key != key;
     if (res)
         ps->next_key = key;

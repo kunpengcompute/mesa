@@ -24,7 +24,7 @@
 
 
 #include "bufferobj.h"
-#include "glheader.h"
+#include "util/glheader.h"
 #include "context.h"
 #include "enums.h"
 #include "hash.h"
@@ -83,15 +83,18 @@ delete_query(struct gl_context *ctx, struct gl_query_object *q)
 }
 
 static int
-target_to_index(const struct st_context *st, const struct gl_query_object *q)
+target_to_index(const struct gl_query_object *q)
 {
    if (q->Target == GL_PRIMITIVES_GENERATED ||
        q->Target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN ||
        q->Target == GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB)
       return q->Stream;
 
-   if (st->has_single_pipe_stat) {
-      switch (q->Target) {
+   /* Drivers with PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE = 0 ignore the
+    * index param so it should be useless; but radeonsi needs it in some cases,
+    * so pass the correct value.
+    */
+   switch (q->Target) {
       case GL_VERTICES_SUBMITTED_ARB:
          return PIPE_STAT_QUERY_IA_VERTICES;
       case GL_PRIMITIVES_SUBMITTED_ARB:
@@ -116,10 +119,28 @@ target_to_index(const struct st_context *st, const struct gl_query_object *q)
          return PIPE_STAT_QUERY_CS_INVOCATIONS;
       default:
          break;
-      }
    }
 
    return 0;
+}
+
+static bool
+query_type_is_dummy(struct gl_context *ctx, unsigned type)
+{
+   struct st_context *st = st_context(ctx);
+   switch (type) {
+   case PIPE_QUERY_OCCLUSION_COUNTER:
+   case PIPE_QUERY_OCCLUSION_PREDICATE:
+   case PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE:
+      return !st->has_occlusion_query;
+   case PIPE_QUERY_PIPELINE_STATISTICS:
+      return !st->has_pipeline_stat;
+   case PIPE_QUERY_PIPELINE_STATISTICS_SINGLE:
+      return !st->has_single_pipe_stat;
+   default:
+      break;
+   }
+   return false;
 }
 
 static void
@@ -196,8 +217,13 @@ begin_query(struct gl_context *ctx, struct gl_query_object *q)
       if (q->pq_begin)
          ret = pipe->end_query(pipe, q->pq_begin);
    } else {
-      if (!q->pq) {
-         q->pq = pipe->create_query(pipe, type, target_to_index(st, q));
+      if (query_type_is_dummy(ctx, type)) {
+         /* starting a dummy-query; ignore */
+         assert(!q->pq);
+         q->type = type;
+         ret = true;
+      } else if (!q->pq) {
+         q->pq = pipe->create_query(pipe, type, target_to_index(q));
          q->type = type;
       }
       if (q->pq)
@@ -235,7 +261,10 @@ end_query(struct gl_context *ctx, struct gl_query_object *q)
       q->type = PIPE_QUERY_TIMESTAMP;
    }
 
-   if (q->pq)
+   if (query_type_is_dummy(ctx, q->type)) {
+      /* ending a dummy-query; ignore */
+      ret = true;
+   } else if (q->pq)
       ret = pipe->end_query(pipe, q->pq);
 
    if (!ret) {
@@ -248,22 +277,24 @@ end_query(struct gl_context *ctx, struct gl_query_object *q)
 }
 
 
-static boolean
+static bool
 get_query_result(struct pipe_context *pipe,
                  struct gl_query_object *q,
-                 boolean wait)
+                 bool wait)
 {
    union pipe_query_result data;
 
    if (!q->pq) {
-      /* Only needed in case we failed to allocate the gallium query earlier.
-       * Return TRUE so we don't spin on this forever.
+      /* Needed in case we failed to allocate the gallium query earlier, or
+       * in the case of a dummy query.
+       *
+       * Return TRUE in either case so we don't spin on this forever.
        */
-      return TRUE;
+      return true;
    }
 
    if (!pipe->get_query_result(pipe, q->pq, wait, &data))
-      return FALSE;
+      return false;
 
    switch (q->type) {
    case PIPE_QUERY_PIPELINE_STATISTICS:
@@ -319,15 +350,14 @@ get_query_result(struct pipe_context *pipe,
    if (q->Target == GL_TIME_ELAPSED &&
        q->type == PIPE_QUERY_TIMESTAMP) {
       /* Calculate the elapsed time from the two timestamp queries */
-      GLuint64EXT Result0 = 0;
       assert(q->pq_begin);
-      pipe->get_query_result(pipe, q->pq_begin, TRUE, (void *)&Result0);
-      q->Result -= Result0;
+      pipe->get_query_result(pipe, q->pq_begin, true, &data);
+      q->Result -= data.u64;
    } else {
       assert(!q->pq_begin);
    }
 
-   return TRUE;
+   return true;
 }
 
 
@@ -340,7 +370,7 @@ _mesa_wait_query(struct gl_context *ctx, struct gl_query_object *q)
    assert(!q->Ready);
 
    while (!q->Ready &&
-          !get_query_result(pipe, q, TRUE))
+          !get_query_result(pipe, q, true))
    {
       /* nothing */
    }
@@ -354,7 +384,7 @@ _mesa_check_query(struct gl_context *ctx, struct gl_query_object *q)
 {
    struct pipe_context *pipe = ctx->pipe;
    assert(!q->Ready);   /* we should not get called if Ready is TRUE */
-   q->Ready = get_query_result(pipe, q, FALSE);
+   q->Ready = get_query_result(pipe, q, false);
 }
 
 
@@ -424,49 +454,14 @@ store_query_result(struct gl_context *ctx, struct gl_query_object *q,
    if (pname == GL_QUERY_RESULT_AVAILABLE) {
       index = -1;
    } else if (q->type == PIPE_QUERY_PIPELINE_STATISTICS) {
-      switch (q->Target) {
-      case GL_VERTICES_SUBMITTED_ARB:
-         index = PIPE_STAT_QUERY_IA_VERTICES;
-         break;
-      case GL_PRIMITIVES_SUBMITTED_ARB:
-         index = PIPE_STAT_QUERY_IA_PRIMITIVES;
-         break;
-      case GL_VERTEX_SHADER_INVOCATIONS_ARB:
-         index = PIPE_STAT_QUERY_VS_INVOCATIONS;
-         break;
-      case GL_GEOMETRY_SHADER_INVOCATIONS:
-         index = PIPE_STAT_QUERY_GS_INVOCATIONS;
-         break;
-      case GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED_ARB:
-         index = PIPE_STAT_QUERY_GS_PRIMITIVES;
-         break;
-      case GL_CLIPPING_INPUT_PRIMITIVES_ARB:
-         index = PIPE_STAT_QUERY_C_INVOCATIONS;
-         break;
-      case GL_CLIPPING_OUTPUT_PRIMITIVES_ARB:
-         index = PIPE_STAT_QUERY_C_PRIMITIVES;
-         break;
-      case GL_FRAGMENT_SHADER_INVOCATIONS_ARB:
-         index = PIPE_STAT_QUERY_PS_INVOCATIONS;
-         break;
-      case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
-         index = PIPE_STAT_QUERY_HS_INVOCATIONS;
-         break;
-      case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
-         index = PIPE_STAT_QUERY_DS_INVOCATIONS;
-         break;
-      case GL_COMPUTE_SHADER_INVOCATIONS_ARB:
-         index = PIPE_STAT_QUERY_CS_INVOCATIONS;
-         break;
-      default:
-         unreachable("Unexpected target");
-      }
+      index = target_to_index(q);
    } else {
       index = 0;
    }
 
-   pipe->get_query_result_resource(pipe, q->pq, flags, result_type, index,
-                                   buf->buffer, offset);
+   if (q->pq)
+      pipe->get_query_result_resource(pipe, q->pq, flags, result_type, index,
+                                      buf->buffer, offset);
 }
 
 static struct gl_query_object **
@@ -476,7 +471,7 @@ get_pipe_stats_binding_point(struct gl_context *ctx,
    const int which = target - GL_VERTICES_SUBMITTED;
    assert(which < MAX_PIPELINE_STATISTICS);
 
-   if (!_mesa_has_ARB_pipeline_statistics_query(ctx))
+   if (!_mesa_has_pipeline_statistics(ctx))
       return NULL;
 
    return &ctx->Query.pipeline_stats[which];
@@ -492,14 +487,12 @@ get_query_binding_point(struct gl_context *ctx, GLenum target, GLuint index)
 {
    switch (target) {
    case GL_SAMPLES_PASSED:
-      if (_mesa_has_ARB_occlusion_query(ctx) ||
-          _mesa_has_ARB_occlusion_query2(ctx))
+      if (_mesa_has_occlusion_query(ctx))
          return &ctx->Query.CurrentOcclusionObject;
       else
          return NULL;
    case GL_ANY_SAMPLES_PASSED:
-      if (_mesa_has_ARB_occlusion_query2(ctx) ||
-          _mesa_has_EXT_occlusion_query_boolean(ctx))
+      if (_mesa_has_occlusion_query_boolean(ctx))
          return &ctx->Query.CurrentOcclusionObject;
       else
          return NULL;
@@ -592,7 +585,7 @@ create_queries(struct gl_context *ctx, GLenum target, GLsizei n, GLuint *ids,
       return;
    }
 
-   if (_mesa_HashFindFreeKeys(ctx->Query.QueryObjects, ids, n)) {
+   if (_mesa_HashFindFreeKeys(&ctx->Query.QueryObjects, ids, n)) {
       GLsizei i;
       for (i = 0; i < n; i++) {
          struct gl_query_object *q
@@ -605,7 +598,7 @@ create_queries(struct gl_context *ctx, GLenum target, GLsizei n, GLuint *ids,
             q->Target = target;
             q->EverBound = GL_TRUE;
          }
-         _mesa_HashInsertLocked(ctx->Query.QueryObjects, ids[i], q, true);
+         _mesa_HashInsertLocked(&ctx->Query.QueryObjects, ids[i], q);
       }
    }
 }
@@ -672,7 +665,7 @@ _mesa_DeleteQueries(GLsizei n, const GLuint *ids)
                q->Active = GL_FALSE;
                end_query(ctx, q);
             }
-            _mesa_HashRemoveLocked(ctx->Query.QueryObjects, ids[i]);
+            _mesa_HashRemoveLocked(&ctx->Query.QueryObjects, ids[i]);
             delete_query(ctx, q);
          }
       }
@@ -775,7 +768,7 @@ _mesa_BeginQueryIndexed(GLenum target, GLuint index, GLuint id)
             _mesa_error(ctx, GL_OUT_OF_MEMORY, "glBeginQuery{Indexed}");
             return;
          }
-         _mesa_HashInsertLocked(ctx->Query.QueryObjects, id, q, false);
+         _mesa_HashInsertLocked(&ctx->Query.QueryObjects, id, q);
       }
    }
    else {
@@ -917,7 +910,7 @@ _mesa_QueryCounter(GLuint id, GLenum target)
          _mesa_error(ctx, GL_OUT_OF_MEMORY, "glQueryCounter");
          return;
       }
-      _mesa_HashInsertLocked(ctx->Query.QueryObjects, id, q, false);
+      _mesa_HashInsertLocked(&ctx->Query.QueryObjects, id, q);
    }
    else {
       if (q->Target && q->Target != GL_TIMESTAMP) {
@@ -1349,7 +1342,7 @@ _mesa_init_queryobj(struct gl_context *ctx)
 {
    struct pipe_screen *screen = ctx->pipe->screen;
 
-   ctx->Query.QueryObjects = _mesa_NewHashTable();
+   _mesa_InitHashTable(&ctx->Query.QueryObjects);
    ctx->Query.CurrentOcclusionObject = NULL;
 
    if (screen->get_param(screen, PIPE_CAP_OCCLUSION_QUERY))
@@ -1362,22 +1355,37 @@ _mesa_init_queryobj(struct gl_context *ctx)
    ctx->Const.QueryCounterBits.PrimitivesGenerated = 64;
    ctx->Const.QueryCounterBits.PrimitivesWritten = 64;
 
-   ctx->Const.QueryCounterBits.VerticesSubmitted = 64;
-   ctx->Const.QueryCounterBits.PrimitivesSubmitted = 64;
-   ctx->Const.QueryCounterBits.VsInvocations = 64;
-   ctx->Const.QueryCounterBits.TessPatches = 64;
-   ctx->Const.QueryCounterBits.TessInvocations = 64;
-   ctx->Const.QueryCounterBits.GsInvocations = 64;
-   ctx->Const.QueryCounterBits.GsPrimitives = 64;
-   ctx->Const.QueryCounterBits.FsInvocations = 64;
-   ctx->Const.QueryCounterBits.ComputeInvocations = 64;
-   ctx->Const.QueryCounterBits.ClInPrimitives = 64;
-   ctx->Const.QueryCounterBits.ClOutPrimitives = 64;
+   if (screen->get_param(screen, PIPE_CAP_QUERY_PIPELINE_STATISTICS) ||
+       screen->get_param(screen, PIPE_CAP_QUERY_PIPELINE_STATISTICS_SINGLE)) {
+      ctx->Const.QueryCounterBits.VerticesSubmitted = 64;
+      ctx->Const.QueryCounterBits.PrimitivesSubmitted = 64;
+      ctx->Const.QueryCounterBits.VsInvocations = 64;
+      ctx->Const.QueryCounterBits.TessPatches = 64;
+      ctx->Const.QueryCounterBits.TessInvocations = 64;
+      ctx->Const.QueryCounterBits.GsInvocations = 64;
+      ctx->Const.QueryCounterBits.GsPrimitives = 64;
+      ctx->Const.QueryCounterBits.FsInvocations = 64;
+      ctx->Const.QueryCounterBits.ComputeInvocations = 64;
+      ctx->Const.QueryCounterBits.ClInPrimitives = 64;
+      ctx->Const.QueryCounterBits.ClOutPrimitives = 64;
+   } else {
+      ctx->Const.QueryCounterBits.VerticesSubmitted = 0;
+      ctx->Const.QueryCounterBits.PrimitivesSubmitted = 0;
+      ctx->Const.QueryCounterBits.VsInvocations = 0;
+      ctx->Const.QueryCounterBits.TessPatches = 0;
+      ctx->Const.QueryCounterBits.TessInvocations = 0;
+      ctx->Const.QueryCounterBits.GsInvocations = 0;
+      ctx->Const.QueryCounterBits.GsPrimitives = 0;
+      ctx->Const.QueryCounterBits.FsInvocations = 0;
+      ctx->Const.QueryCounterBits.ComputeInvocations = 0;
+      ctx->Const.QueryCounterBits.ClInPrimitives = 0;
+      ctx->Const.QueryCounterBits.ClOutPrimitives = 0;
+   }
 }
 
 
 /**
- * Callback for deleting a query object.  Called by _mesa_HashDeleteAll().
+ * Callback for deleting a query object.  Called by _mesa_DeleteHashTable().
  */
 static void
 delete_queryobj_cb(void *data, void *userData)
@@ -1394,6 +1402,5 @@ delete_queryobj_cb(void *data, void *userData)
 void
 _mesa_free_queryobj_data(struct gl_context *ctx)
 {
-   _mesa_HashDeleteAll(ctx->Query.QueryObjects, delete_queryobj_cb, ctx);
-   _mesa_DeleteHashTable(ctx->Query.QueryObjects);
+   _mesa_DeinitHashTable(&ctx->Query.QueryObjects, delete_queryobj_cb, ctx);
 }

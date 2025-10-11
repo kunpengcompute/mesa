@@ -1,25 +1,8 @@
 /*
  * Copyright 2008 Corbin Simpson <MostAwesomeDude@gmail.com>
  * Copyright 2010 Marek Olšák <maraeo@gmail.com>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * on the rights to use, copy, modify, merge, publish, distribute, sub
- * license, and/or sell copies of the Software, and to permit persons to whom
- * the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL
- * THE AUTHOR(S) AND/OR THEIR SUPPLIERS BE LIABLE FOR ANY CLAIM,
- * DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
- * OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
- * USE OR OTHER DEALINGS IN THE SOFTWARE. */
+ * SPDX-License-Identifier: MIT
+ */
 
 #include "r300_transfer.h"
 #include "r300_texture_desc.h"
@@ -27,7 +10,7 @@
 
 #include "util/u_memory.h"
 #include "util/format/u_format.h"
-#include "util/u_box.h"
+#include "util/box.h"
 
 struct r300_transfer {
     /* Parent class */
@@ -107,14 +90,14 @@ r300_texture_transfer_map(struct pipe_context *ctx,
     struct r300_context *r300 = r300_context(ctx);
     struct r300_resource *tex = r300_resource(texture);
     struct r300_transfer *trans;
-    boolean referenced_cs, referenced_hw;
+    bool referenced_cs, referenced_hw;
     enum pipe_format format = tex->b.format;
     char *map;
 
     referenced_cs =
         r300->rws->cs_is_buffer_referenced(&r300->cs, tex->buf, RADEON_USAGE_READWRITE);
     if (referenced_cs) {
-        referenced_hw = TRUE;
+        referenced_hw = true;
     } else {
         referenced_hw =
             !r300->rws->buffer_wait(r300->rws, tex->buf, 0, RADEON_USAGE_READWRITE);

@@ -49,8 +49,6 @@ header = """/* GLXEXT is the define used in the xserver when the GLX extension i
 #include <stdio.h>
 #include <string.h>
 
-#include "main/glheader.h"
-
 #include "glapi.h"
 #include "glapitable.h"
 
@@ -85,6 +83,7 @@ __glapi_gentable_set_remaining_noop(struct _glapi_table *disp) {
 """
 
 footer = """
+#if defined(GLX_USE_APPLEGL) || defined(GLX_USE_WINDOWSGL)
 struct _glapi_table *
 _glapi_create_table_from_handle(void *handle, const char *symbol_prefix) {
     struct _glapi_table *disp = calloc(_glapi_get_dispatch_table_size(), sizeof(_glapi_proc));
@@ -126,7 +125,7 @@ void
    }
    fprintf(stderr, "could not patch %s in dispatch table\\n", name);
 }
-
+#endif
 """
 
 

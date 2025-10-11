@@ -1,22 +1,5 @@
 # Copyright © 2017 Intel Corporation
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in
-# all copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
+# SPDX-License-Identifier: MIT
 
 subdir('program')
 subdir('main')
@@ -58,8 +41,6 @@ files_libmesa = files(
   'main/context.c',
   'main/context.h',
   'main/copyimage.c',
-  'main/cpuinfo.c',
-  'main/cpuinfo.h',
   'main/dd.h',
   'main/debug.c',
   'main/debug.h',
@@ -93,7 +74,7 @@ files_libmesa = files(
   'main/fbobject.h',
   'main/feedback.c',
   'main/feedback.h',
-  'main/ff_fragment_shader.cpp',
+  'main/ff_fragment_shader.c',
   'main/ffvertex_prog.c',
   'main/ffvertex_prog.h',
   'main/fog.c',
@@ -115,16 +96,17 @@ files_libmesa = files(
   'main/getstring.c',
   'main/glformats.c',
   'main/glformats.h',
-  'main/glheader.h',
   'main/glspirv.c',
   'main/glspirv.h',
   'main/glthread.c',
   'main/glthread.h',
   'main/glthread_bufferobj.c',
   'main/glthread_draw.c',
+  'main/glthread_draw_unroll.c',
   'main/glthread_get.c',
   'main/glthread_list.c',
   'main/glthread_marshal.h',
+  'main/glthread_pixels.c',
   'main/glthread_shaderobj.c',
   'main/glthread_varray.c',
   'main/hash.c',
@@ -148,7 +130,6 @@ files_libmesa = files(
   'main/multisample.c',
   'main/multisample.h',
   'main/objectlabel.c',
-  'main/objectpurge.c',
   'main/pack.c',
   'main/pack.h',
   'main/pbo.c',
@@ -197,6 +178,8 @@ files_libmesa = files(
   'main/shaderobj.h',
   'main/shared.c',
   'main/shared.h',
+  'main/spirv_capabilities.c',
+  'main/spirv_capabilities.h',
   'main/spirv_extensions.c',
   'main/spirv_extensions.h',
   'main/state.c',
@@ -215,7 +198,6 @@ files_libmesa = files(
   'main/texcompress_cpal.h',
   'main/texcompress_etc.c',
   'main/texcompress_etc.h',
-  'main/texcompress_etc_tmp.h',
   'main/texcompress_fxt1.c',
   'main/texcompress_fxt1.h',
   'main/texcompress_rgtc.c',
@@ -256,28 +238,16 @@ files_libmesa = files(
   'main/viewport.c',
   'main/viewport.h',
   'main/es1_conversion.c',
-  'math/m_debug.h',
-  'math/m_debug_clip.c',
-  'math/m_debug_norm.c',
-  'math/m_debug_util.h',
-  'math/m_debug_xform.c',
   'math/m_eval.c',
   'math/m_eval.h',
   'math/m_matrix.c',
   'math/m_matrix.h',
-  'math/m_vector.c',
-  'math/m_vector.h',
   'program/arbprogparse.c',
   'program/arbprogparse.h',
-  'program/link_program.cpp',
-  'program/link_program.h',
   'program/prog_cache.c',
   'program/prog_cache.h',
   'program/prog_instruction.c',
   'program/prog_instruction.h',
-  'program/prog_opt_constant_fold.c',
-  'program/prog_optimize.c',
-  'program/prog_optimize.h',
   'program/prog_parameter.c',
   'program/prog_parameter.h',
   'program/prog_parameter_layout.c',
@@ -292,13 +262,10 @@ files_libmesa = files(
   'program/program.h',
   'program/program_parse_extra.c',
   'program/program_parser.h',
-  'program/programopt.c',
-  'program/programopt.h',
   'program/symbol_table.c',
   'program/symbol_table.h',
   'state_tracker/st_atifs_to_nir.c',
   'state_tracker/st_atifs_to_nir.h',
-  'state_tracker/st_atom.c',
   'state_tracker/st_atom_array.cpp',
   'state_tracker/st_atom_atomicbuf.c',
   'state_tracker/st_atom_blend.c',
@@ -320,16 +287,15 @@ files_libmesa = files(
   'state_tracker/st_atom_tess.c',
   'state_tracker/st_atom_texture.c',
   'state_tracker/st_atom_viewport.c',
+  'state_tracker/st_bc1_tables.h',
   'state_tracker/st_cb_bitmap.c',
   'state_tracker/st_cb_bitmap.h',
-  'state_tracker/st_cb_bitmap_shader.c',
   'state_tracker/st_cb_clear.c',
   'state_tracker/st_cb_clear.h',
   'state_tracker/st_cb_copyimage.c',
   'state_tracker/st_cb_copyimage.h',
   'state_tracker/st_cb_drawpixels.c',
   'state_tracker/st_cb_drawpixels.h',
-  'state_tracker/st_cb_drawpixels_shader.c',
   'state_tracker/st_cb_drawtex.c',
   'state_tracker/st_cb_drawtex.h',
   'state_tracker/st_cb_eglimage.c',
@@ -353,29 +319,24 @@ files_libmesa = files(
   'state_tracker/st_draw.c',
   'state_tracker/st_draw.h',
   'state_tracker/st_draw_feedback.c',
+  'state_tracker/st_draw_hw_select.c',
   'state_tracker/st_extensions.c',
   'state_tracker/st_extensions.h',
   'state_tracker/st_format.c',
   'state_tracker/st_format.h',
   'state_tracker/st_gen_mipmap.c',
   'state_tracker/st_gen_mipmap.h',
-  'state_tracker/st_gl_api.h',
-  'state_tracker/st_glsl_to_ir.cpp',
-  'state_tracker/st_glsl_to_ir.h',
   'state_tracker/st_glsl_to_nir.cpp',
-  'state_tracker/st_glsl_to_tgsi.cpp',
-  'state_tracker/st_glsl_to_tgsi.h',
-  'state_tracker/st_glsl_to_tgsi_array_merge.cpp',
-  'state_tracker/st_glsl_to_tgsi_array_merge.h',
-  'state_tracker/st_glsl_to_tgsi_private.cpp',
-  'state_tracker/st_glsl_to_tgsi_private.h',
-  'state_tracker/st_glsl_to_tgsi_temprename.cpp',
-  'state_tracker/st_glsl_to_tgsi_temprename.h',
+  'state_tracker/st_glsl_to_nir.h',
+  'state_tracker/st_interop.c',
+  'state_tracker/st_interop.h',
   'state_tracker/st_manager.c',
   'state_tracker/st_manager.h',
   'state_tracker/st_nir.h',
   'state_tracker/st_nir_builtins.c',
   'state_tracker/st_nir_lower_builtin.c',
+  'state_tracker/st_nir_lower_fog.c',
+  'state_tracker/st_nir_lower_position_invariant.c',
   'state_tracker/st_nir_lower_tex_src_plane.c',
   'state_tracker/st_pbo.c',
   'state_tracker/st_pbo_compute.c',
@@ -388,10 +349,10 @@ files_libmesa = files(
   'state_tracker/st_scissor.h',
   'state_tracker/st_shader_cache.c',
   'state_tracker/st_shader_cache.h',
+  'state_tracker/st_texcompress_compute.c',
+  'state_tracker/st_texcompress_compute.h',
   'state_tracker/st_texture.c',
   'state_tracker/st_texture.h',
-  'state_tracker/st_tgsi_lower_yuv.c',
-  'state_tracker/st_tgsi_lower_yuv.h',
   'state_tracker/st_util.h',
   'state_tracker/st_vdpau.c',
   'state_tracker/st_vdpau.h',
@@ -412,19 +373,13 @@ files_libmesa = files(
   'vbo/vbo_save_draw.c',
   'vbo/vbo_save_loopback.c',
   'vbo/vbo_util.h',
-  'x86/common_x86.c',
 )
 
 inc_libmesa_asm = []
 if with_asm_arch == 'x86'
   files_libmesa += files(
     'x86/assyntax.h',
-    'x86/common_x86_asm.S',
-    'x86/common_x86_asm.h',
-    'x86/common_x86_features.h',
-    'x86/read_rgba_span_x86.S',
   )
-  inc_libmesa_asm = include_directories('x86')
 endif
 
 format_fallback_c = custom_target(
@@ -462,7 +417,8 @@ files_libmesa += [
   main_api_exec_decl_h,
   main_api_save_h,
   main_api_save_init_h,
-  main_api_vtxfmt_init_h,
+  main_api_beginend_init_h,
+  main_api_hw_select_init_h,
   main_enums_c,
   format_fallback_c,
   get_hash_h,
@@ -471,12 +427,13 @@ files_libmesa += [
   ir_expression_operation_h,
   main_remap_helper_h,
   sha1_h,
+  main_unmarshal_table_c,
 ] + main_marshal_generated_c
 
 if with_sse41
   libmesa_sse41 = static_library(
     'mesa_sse41',
-    files('main/streaming-load-memcpy.c', 'main/sse_minmax.c'),
+    files('main/sse_minmax.c'),
     c_args : [c_msvc_compat_args, sse41_args],
     include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux],
     gnu_symbol_visibility : 'hidden',
@@ -489,7 +446,6 @@ _mesa_windows_args = []
 if with_platform_windows
   _mesa_windows_args += [
     '-D_GDI32_',    # prevent gl* being declared __declspec(dllimport) in MS headers
-    '-DBUILD_GL32'  # declare gl* as __declspec(dllexport) in Mesa headers
   ]
   if not with_shared_glapi
     # prevent _glapi_* from being declared __declspec(dllimport)
@@ -507,8 +463,7 @@ libmesa = static_library(
     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux,
     inc_libmesa_asm, include_directories('main'),
   ],
-  link_with : [libglsl, libmesa_sse41],
-  dependencies : [idep_nir_headers, dep_vdpau, idep_mesautil],
+  link_with : [libmesa_sse41],
+  dependencies : [idep_libglsl, idep_nir, idep_vtn, dep_vdpau, idep_mesautil],
   build_by_default : false,
 )
-

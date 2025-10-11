@@ -31,7 +31,7 @@
 
 #include <stdio.h>
 #include <stddef.h>
-#include "main/glheader.h"
+#include "util/glheader.h"
 #include "main/context.h"
 #include "main/blend.h"
 
@@ -308,12 +308,22 @@ fetch_state(struct gl_context *ctx, const gl_state_index16 state[],
       else
          COPY_4V(value, ctx->Fog.ColorUnclamped);
       return;
-   case STATE_FOG_PARAMS:
+   case STATE_FOG_PARAMS: {
+      float scale = 1.0f / (ctx->Fog.End - ctx->Fog.Start);
+      /* Pass +-FLT_MAX/2 to the shader instead of +-Inf because Infs have
+       * undefined behavior without GLSL 4.10 or GL_ARB_shader_precision
+       * enabled. Infs also have undefined behavior with Shader Model 3.
+       *
+       * The division by 2 makes it less likely that ALU ops will generate
+       * Inf.
+       */
+      scale = CLAMP(scale, FLT_MIN / 2, FLT_MAX / 2);
       value[0] = ctx->Fog.Density;
       value[1] = ctx->Fog.Start;
       value[2] = ctx->Fog.End;
-      value[3] = 1.0f / (ctx->Fog.End - ctx->Fog.Start);
+      value[3] = scale;
       return;
+   }
    case STATE_CLIPPLANE:
       {
          const GLuint plane = (GLuint) state[1];
@@ -779,6 +789,13 @@ fetch_state(struct gl_context *ctx, const gl_state_index16 state[],
          COPY_4V(value, ctx->Transform._ClipUserPlane[plane]);
       }
       return;
+
+   case STATE_ATOMIC_COUNTER_OFFSET:
+      {
+         const GLuint counter = (GLuint) state[1];
+         val[0].i = ctx->AtomicBufferBindings[counter].Offset % ctx->Const.ShaderStorageBufferOffsetAlignment;
+      }
+      return;
    }
 }
 
@@ -911,6 +928,10 @@ _mesa_program_state_flags(const gl_state_index16 state[STATE_LENGTH])
 
    case STATE_CLIP_INTERNAL:
       return _NEW_TRANSFORM | _NEW_PROJECTION;
+
+   /* Needs to return any nonzero value to trigger constant updating */
+   case STATE_ATOMIC_COUNTER_OFFSET:
+      return _NEW_PROGRAM_CONSTANTS;
 
    case STATE_TCS_PATCH_VERTICES_IN:
    case STATE_TES_PATCH_VERTICES_IN:
@@ -1192,6 +1213,9 @@ append_token(char *dst, gl_state_index k)
    case STATE_CLIP_INTERNAL:
       append(dst, "clipInternal");
       break;
+   case STATE_ATOMIC_COUNTER_OFFSET:
+      append(dst, "counterOffset");
+      break;
    default:
       /* probably STATE_INTERNAL_DRIVER+i (driver private state) */
       append(dst, "driverState");
@@ -1317,6 +1341,7 @@ _mesa_program_state_string(const gl_state_index16 state[STATE_LENGTH])
    case STATE_LIGHT_POSITION_NORMALIZED:
    case STATE_LIGHT_HALF_VECTOR:
    case STATE_CLIP_INTERNAL:
+   case STATE_ATOMIC_COUNTER_OFFSET:
       append_index(str, state[1], false);
       break;
    case STATE_POINT_SIZE:
@@ -1592,22 +1617,28 @@ _mesa_optimize_state_parameters(struct gl_constants *consts,
          gl_state_index16 state = STATE_NOT_STATE_VAR;
          unsigned num_lights = 0;
 
-         for (unsigned state_iter = STATE_LIGHTPROD_ARRAY_FRONT;
+         for (gl_state_index state_iter = STATE_LIGHTPROD_ARRAY_FRONT;
               state_iter <= STATE_LIGHTPROD_ARRAY_TWOSIDE; state_iter++) {
             unsigned num_attribs, base_attrib, attrib_incr;
 
-            if (state_iter == STATE_LIGHTPROD_ARRAY_FRONT)  {
+            switch (state_iter) {
+            case STATE_LIGHTPROD_ARRAY_FRONT:
                num_attribs = 3;
                base_attrib = MAT_ATTRIB_FRONT_AMBIENT;
                attrib_incr = 2;
-            } else if (state_iter == STATE_LIGHTPROD_ARRAY_BACK) {
+               break;
+            case STATE_LIGHTPROD_ARRAY_BACK:
                num_attribs = 3;
                base_attrib = MAT_ATTRIB_BACK_AMBIENT;
                attrib_incr = 2;
-            } else if (state_iter == STATE_LIGHTPROD_ARRAY_TWOSIDE) {
+               break;
+            case STATE_LIGHTPROD_ARRAY_TWOSIDE:
                num_attribs = 6;
                base_attrib = MAT_ATTRIB_FRONT_AMBIENT;
                attrib_incr = 1;
+               break;
+            default:
+               unreachable("unexpected state-var");
             }
 
             /* Find all attributes for one light. */

@@ -77,7 +77,7 @@ public:
    {
       foreach_in_list_safe(assignment_entry, entry, this->assignments) {
 	 if (entry->lhs == var) {
-	    if (var->type->is_scalar() || var->type->is_vector()) {
+	    if (glsl_type_is_scalar(var->type) || glsl_type_is_vector(var->type)) {
 	       if (debug)
 		  printf("used %s (0x%01x - 0x%01x)\n", entry->lhs->name,
 			 entry->unused, used & 0xf);
@@ -169,7 +169,7 @@ public:
  * of a variable to a variable.
  */
 static bool
-process_assignment(void *lin_ctx, ir_assignment *ir, exec_list *assignments)
+process_assignment(linear_ctx *lin_ctx, ir_assignment *ir, exec_list *assignments)
 {
    ir_variable *var = NULL;
    bool progress = false;
@@ -199,8 +199,8 @@ process_assignment(void *lin_ctx, ir_assignment *ir, exec_list *assignments)
    /* If it's a vector type, we can do per-channel elimination of
     * use of the RHS.
     */
-   if (deref_var && (deref_var->var->type->is_scalar() ||
-                     deref_var->var->type->is_vector())) {
+   if (deref_var && (glsl_type_is_scalar(deref_var->var->type) ||
+                     glsl_type_is_vector(deref_var->var->type))) {
 
       if (debug)
          printf("looking for %s.0x%01x to remove\n", var->name,
@@ -303,18 +303,20 @@ dead_code_local_basic_block(ir_instruction *first,
 			     ir_instruction *last,
 			     void *data)
 {
-   ir_instruction *ir, *ir_next;
+   ir_instruction *ir;
+   exec_node *node, *node_next;
    /* List of avaialble_copy */
    exec_list assignments;
    bool *out_progress = (bool *)data;
    bool progress = false;
 
    void *ctx = ralloc_context(NULL);
-   void *lin_ctx = linear_alloc_parent(ctx, 0);
+   linear_ctx *lin_ctx = linear_context(ctx);
 
    /* Safe looping, since process_assignment */
-   for (ir = first, ir_next = (ir_instruction *)first->next;;
-	ir = ir_next, ir_next = (ir_instruction *)ir->next) {
+   for (node = first, node_next = first->next;;
+	node = node_next, node_next = node->next) {
+      ir = (ir_instruction *) node;
       ir_assignment *ir_assign = ir->as_assignment();
 
       if (debug) {

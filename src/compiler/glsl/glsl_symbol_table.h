@@ -45,6 +45,9 @@ struct glsl_symbol_table {
    glsl_symbol_table();
    ~glsl_symbol_table();
 
+   glsl_symbol_table(const glsl_symbol_table &) = delete;
+   glsl_symbol_table & operator=(const glsl_symbol_table &) = delete;
+
    /* In 1.10, functions and variables have separate namespaces. */
    bool separate_function_namespace;
 
@@ -71,11 +74,6 @@ struct glsl_symbol_table {
                       enum ir_variable_mode mode);
    bool add_default_precision_qualifier(const char *type_name, int precision);
    /*@}*/
-
-   /**
-    * Add an function at global scope without checking for scoping conflicts.
-    */
-   void add_global_function(ir_function *f);
 
    /**
     * \name Methods to get symbols from the table
@@ -107,7 +105,7 @@ private:
 
    struct _mesa_symbol_table *table;
    void *mem_ctx;
-   void *linalloc;
+   linear_ctx *linalloc;
 };
 
 #endif /* GLSL_SYMBOL_TABLE */

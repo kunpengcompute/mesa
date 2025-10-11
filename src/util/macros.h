@@ -24,13 +24,20 @@
 #ifndef UTIL_MACROS_H
 #define UTIL_MACROS_H
 
-#include <stdio.h>
 #include <assert.h>
-
-#include "c99_compat.h"
-#include "c11_compat.h"
-
+#if defined(__HAIKU__)  && !defined(__cplusplus)
+#define static_assert _Static_assert
+#endif
+#include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+
+#ifdef _GAMING_XBOX
+#define strdup _strdup
+#define stricmp _stricmp
+#define unlink _unlink
+#define access(a, b) _access(a, b)
+#endif
 
 /* Compute the size of an array */
 #ifndef ARRAY_SIZE
@@ -70,28 +77,21 @@
 #  define __builtin_types_compatible_p(type1, type2) (1)
 #endif
 
+/* This should match linux gcc cdecl semantics everywhere, so that we
+ * just codegen one calling convention on all platforms.
+ */
+#ifdef _MSC_VER
+#define UTIL_CDECL __cdecl
+#else
+#define UTIL_CDECL
+#endif
+
 /**
  * Static (compile-time) assertion.
  */
-#if defined(_MSC_VER)
-   /* MSVC doesn't like VLA's, but it also dislikes zero length arrays
-    * (which gcc is happy with), so we have to define STATIC_ASSERT()
-    * slightly differently.
-    */
-#  define STATIC_ASSERT(COND) do {         \
-      (void) sizeof(char [(COND) != 0]);   \
-   } while (0)
-#elif defined(__GNUC__)
-   /* This version of STATIC_ASSERT() relies on VLAs.  If COND is
-    * false/zero, the array size will be -1 and we'll get a compile
-    * error
-    */
-#  define STATIC_ASSERT(COND) do {         \
-      (void) sizeof(char [1 - 2*!(COND)]); \
-   } while (0)
-#else
-#  define STATIC_ASSERT(COND) do { } while (0)
-#endif
+#define STATIC_ASSERT(cond) do { \
+   static_assert(cond, #cond); \
+} while (0)
 
 /**
  * container_of - cast a member of a structure out to the containing structure
@@ -108,9 +108,9 @@
       __builtin_types_compatible_p(__typeof__(a), __typeof__(b))
 #  define container_of(ptr, type, member) ({                            \
          uint8_t *__mptr = (uint8_t *)(ptr);                            \
-         STATIC_ASSERT(__same_type(*(ptr), ((type *)0)->member) ||      \
-                       __same_type(*(ptr), void) ||                     \
-                       !"pointer type mismatch in container_of()");     \
+         static_assert(__same_type(*(ptr), ((type *)0)->member) ||      \
+                       __same_type(*(ptr), void),                       \
+                       "pointer type mismatch in container_of()");      \
          ((type *)(__mptr - offsetof(type, member)));                   \
       })
 #endif
@@ -122,17 +122,17 @@
 #if defined(HAVE___BUILTIN_UNREACHABLE) || __has_builtin(__builtin_unreachable)
 #define unreachable(str)    \
 do {                        \
-   assert(!str);            \
+   assert(!"" str);         \
    __builtin_unreachable(); \
 } while (0)
 #elif defined (_MSC_VER)
 #define unreachable(str)    \
 do {                        \
-   assert(!str);            \
+   assert(!"" str);         \
    __assume(0);             \
 } while (0)
 #else
-#define unreachable(str) assert(!str)
+#define unreachable(str) assert(!"" str)
 #endif
 
 /**
@@ -160,7 +160,7 @@ do {                       \
  * value.  As a result, calls to it can be CSEed.  Note that using memory
  * pointed to by the arguments is not allowed for const functions.
  */
-#ifdef HAVE_FUNC_ATTRIBUTE_CONST
+#if !defined(__clang__) && defined(HAVE_FUNC_ATTRIBUTE_CONST)
 #define ATTRIBUTE_CONST __attribute__((__const__))
 #else
 #define ATTRIBUTE_CONST
@@ -204,9 +204,15 @@ do {                       \
  * packed, to trade off performance for space.
  */
 #ifdef HAVE_FUNC_ATTRIBUTE_PACKED
-#define PACKED __attribute__((__packed__))
+#  if defined(__MINGW32__) || defined(__MINGW64__)
+#    define PACKED __attribute__((gcc_struct,__packed__))
+#  else
+#    define PACKED __attribute__((__packed__))
+#  endif
+#  define ENUM_PACKED __attribute__((packed))
 #else
 #define PACKED
+#define ENUM_PACKED
 #endif
 
 /* Attribute pure is used for functions that have no effects other than their
@@ -234,10 +240,10 @@ do {                       \
 #  endif
 #endif
 
-#ifdef _MSC_VER
-#define ALIGN16 __declspec(align(16))
+#ifdef HAVE_FUNC_ATTRIBUTE_OPTIMIZE
+#define ATTRIBUTE_OPTIMIZE(flags) __attribute__((__optimize__((flags))))
 #else
-#define ALIGN16 __attribute__((aligned(16)))
+#define ATTRIBUTE_OPTIMIZE(flags)
 #endif
 
 #ifdef __cplusplus
@@ -247,8 +253,10 @@ do {                       \
  * performs no action and all member variables and base classes are
  * trivially destructible themselves.
  */
-#   if (defined(__clang__) && defined(__has_feature))
-#      if __has_feature(has_trivial_destructor)
+#   if defined(__clang__)
+#      if __has_builtin(__is_trivially_destructible)
+#         define HAS_TRIVIAL_DESTRUCTOR(T) __is_trivially_destructible(T)
+#      elif (defined(__has_feature) && __has_feature(has_trivial_destructor))
 #         define HAS_TRIVIAL_DESTRUCTOR(T) __has_trivial_destructor(T)
 #      endif
 #   elif defined(__GNUC__)
@@ -299,6 +307,8 @@ do {                       \
  */
 #ifdef HAVE_FUNC_ATTRIBUTE_UNUSED
 #define UNUSED __attribute__((unused))
+#elif defined (_MSC_VER)
+#define UNUSED __pragma(warning(suppress:4100 4101 4189))
 #else
 #define UNUSED
 #endif
@@ -327,14 +337,6 @@ do {                       \
 #define ATTRIBUTE_NOINLINE
 #endif
 
-/* Use as: enum name { X, Y } ENUM_PACKED; */
-#if defined(__GNUC__)
-#define ENUM_PACKED __attribute__((packed))
-#else
-#define ENUM_PACKED
-#endif
-
-
 /**
  * Check that STRUCT::FIELD can hold MAXVAL.  We use a lot of bitfields
  * in Mesa/gallium.  We have to be sure they're of sufficient size to
@@ -354,7 +356,11 @@ do {                       \
 /** Compute ceiling of integer quotient of A divided by B. */
 #define DIV_ROUND_UP( A, B )  ( ((A) + (B) - 1) / (B) )
 
-/** Clamp X to [MIN,MAX].  Turn NaN into MIN, arbitrarily. */
+/**
+ * Clamp X to [MIN, MAX].
+ * This is a macro to allow float, int, unsigned, etc. types.
+ * We arbitrarily turn NaN into MIN.
+ */
 #define CLAMP( X, MIN, MAX )  ( (X)>(MIN) ? ((X)>(MAX) ? (MAX) : (X)) : (MIN) )
 
 /* Syntax sugar occuring frequently in graphics code */
@@ -366,28 +372,32 @@ do {                       \
 /** Maximum of two values: */
 #define MAX2( A, B )   ( (A)>(B) ? (A) : (B) )
 
-/** Minimum and maximum of three values: */
+/** Minimum of three values: */
 #define MIN3( A, B, C ) ((A) < (B) ? MIN2(A, C) : MIN2(B, C))
+
+/** Maximum of three values: */
 #define MAX3( A, B, C ) ((A) > (B) ? MAX2(A, C) : MAX2(B, C))
+
+/** Minimum of four values: */
+#define MIN4( A, B, C, D ) ((A) < (B) ? MIN3(A, C, D) : MIN3(B, C, D))
+
+/** Maximum of four values: */
+#define MAX4( A, B, C, D ) ((A) > (B) ? MAX3(A, C, D) : MAX3(B, C, D))
 
 /** Align a value to a power of two */
 #define ALIGN_POT(x, pot_align) (((x) + (pot_align) - 1) & ~((pot_align) - 1))
 
-/**
- * Macro for declaring an explicit conversion operator.  Defaults to an
- * implicit conversion if C++11 is not supported.
- */
-#if __cplusplus >= 201103L
-#define EXPLICIT_CONVERSION explicit
-#elif defined(__cplusplus)
-#define EXPLICIT_CONVERSION
-#endif
+/** Checks is a value is a power of two. Does not handle zero. */
+#define IS_POT(v) (((v) & ((v) - 1)) == 0)
+
+/** Checks is a value is a power of two. Zero handled. */
+#define IS_POT_NONZERO(v) ((v) != 0 && IS_POT(v))
 
 /** Set a single bit */
 #define BITFIELD_BIT(b)      (1u << (b))
 /** Set all bits up to excluding bit b */
 #define BITFIELD_MASK(b)      \
-   ((b) == 32 ? (~0u) : BITFIELD_BIT((b) % 32) - 1)
+   ((b) == 32 ? (~0u) : BITFIELD_BIT((b) & 31) - 1)
 /** Set count bits starting from bit b  */
 #define BITFIELD_RANGE(b, count) \
    (BITFIELD_MASK((b) + (count)) & ~BITFIELD_MASK(b))
@@ -396,7 +406,7 @@ do {                       \
 #define BITFIELD64_BIT(b)      (1ull << (b))
 /** Set all bits up to excluding bit b */
 #define BITFIELD64_MASK(b)      \
-   ((b) == 64 ? (~0ull) : BITFIELD64_BIT(b) - 1)
+   ((b) == 64 ? (~0ull) : BITFIELD64_BIT((b) & 63) - 1)
 /** Set count bits starting from bit b  */
 #define BITFIELD64_RANGE(b, count) \
    (BITFIELD64_MASK((b) + (count)) & ~BITFIELD64_MASK(b))
@@ -425,13 +435,30 @@ u_uintN_max(unsigned bit_size)
    return UINT64_MAX >> (64 - bit_size);
 }
 
-#if !defined(alignof) && !defined(__cplusplus)
-#if __STDC_VERSION__ >= 201112L
-#define alignof(t) _Alignof(t)
-#elif defined(_MSC_VER)
-#define alignof(t) __alignof(t)
+/* alignas usage
+ * For struct or union, use alignas(align_size) on any member
+ * of it will make it aligned to align_size.
+ * See https://en.cppreference.com/w/c/language/_Alignas for
+ * details. We can use static_assert and alignof to check if
+ * the alignment result of alignas(align_size) on struct or
+ * union is valid.
+ * For example:
+ *   static_assert(alignof(struct tgsi_exec_machine) == 16, "")
+ * Also, we can use special code to see the size of the aligned
+ * struct or union at the compile time with GCC, Clang or MSVC.
+ * So we can see if the size of union or struct are as expected
+ * when using alignas(align_size) on its member.
+ * For example:
+ *   char (*__kaboom)[sizeof(struct tgsi_exec_machine)] = 1;
+ * can show us the size of struct tgsi_exec_machine at compile
+ * time.
+ */
+#ifndef __cplusplus
+#ifdef _MSC_VER
+#define alignof _Alignof
+#define alignas _Alignas
 #else
-#define alignof(t) __alignof__(t)
+#include <stdalign.h>
 #endif
 #endif
 
@@ -463,7 +490,42 @@ typedef int lock_cap_t;
 
 #endif
 
-/* TODO: this could be different on non-x86 architectures. */
-#define CACHE_LINE_SIZE 64
+#define DO_PRAGMA(X) _Pragma (#X)
+
+#if defined(__clang__)
+#define PRAGMA_DIAGNOSTIC_PUSH       _Pragma("clang diagnostic push")
+#define PRAGMA_DIAGNOSTIC_POP        _Pragma("clang diagnostic pop")
+#define PRAGMA_DIAGNOSTIC_ERROR(X)   DO_PRAGMA( clang diagnostic error #X )
+#define PRAGMA_DIAGNOSTIC_WARNING(X) DO_PRAGMA( clang diagnostic warning #X )
+#define PRAGMA_DIAGNOSTIC_IGNORED(X) DO_PRAGMA( clang diagnostic ignored #X )
+#elif defined(__GNUC__)
+#define PRAGMA_DIAGNOSTIC_PUSH       _Pragma("GCC diagnostic push")
+#define PRAGMA_DIAGNOSTIC_POP        _Pragma("GCC diagnostic pop")
+#define PRAGMA_DIAGNOSTIC_ERROR(X)   DO_PRAGMA( GCC diagnostic error #X )
+#define PRAGMA_DIAGNOSTIC_WARNING(X) DO_PRAGMA( GCC diagnostic warning #X )
+#define PRAGMA_DIAGNOSTIC_IGNORED(X) DO_PRAGMA( GCC diagnostic ignored #X )
+#else
+#define PRAGMA_DIAGNOSTIC_PUSH
+#define PRAGMA_DIAGNOSTIC_POP
+#define PRAGMA_DIAGNOSTIC_ERROR(X)
+#define PRAGMA_DIAGNOSTIC_WARNING(X)
+#define PRAGMA_DIAGNOSTIC_IGNORED(X)
+#endif
+
+#define PASTE2(a, b) a ## b
+#define PASTE3(a, b, c) a ## b ## c
+#define PASTE4(a, b, c, d) a ## b ## c ## d
+
+#define CONCAT2(a, b) PASTE2(a, b)
+#define CONCAT3(a, b, c) PASTE3(a, b, c)
+#define CONCAT4(a, b, c, d) PASTE4(a, b, c, d)
+
+#if defined(__GNUC__)
+#define PRAGMA_POISON(X) DO_PRAGMA( GCC poison X )
+#elif defined(__clang__)
+#define PRAGMA_POISON(X) DO_PRAGMA( clang poison X )
+#else
+#define PRAGMA_POISON
+#endif
 
 #endif /* UTIL_MACROS_H */

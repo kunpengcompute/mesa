@@ -1,24 +1,6 @@
 /*
- * Copyright (C) 2016 Rob Clark <robclark@freedesktop.org>
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * Copyright © 2016 Rob Clark <robclark@freedesktop.org>
+ * SPDX-License-Identifier: MIT
  *
  * Authors:
  *    Rob Clark <robclark@freedesktop.org>
@@ -77,7 +59,7 @@ emit_mrt(struct fd_ringbuffer *ring, unsigned nr_bufs,
          sint = util_format_is_pure_sint(pformat);
          uint = util_format_is_pure_uint(pformat);
 
-         debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+         assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
          offset = fd_resource_offset(rsc, psurf->u.tex.level,
                                      psurf->u.tex.first_layer);
@@ -263,6 +245,14 @@ use_hw_binning(struct fd_batch *batch)
 {
    const struct fd_gmem_stateobj *gmem = batch->gmem_state;
 
+   /* workaround: Like on a3xx, hw binning and scissor optimization
+    * don't play nice together.
+    *
+    * Disable binning if scissor optimization is used.
+    */
+   if (gmem->minx || gmem->miny)
+      return false;
+
    if ((gmem->maxpw * gmem->maxph) > 32)
       return false;
 
@@ -386,6 +376,7 @@ emit_binning_pass(struct fd_batch *batch) assert_dt
 static void
 fd5_emit_tile_init(struct fd_batch *batch) assert_dt
 {
+   struct fd_context *ctx = batch->ctx;
    struct fd_ringbuffer *ring = batch->gmem;
    struct pipe_framebuffer_state *pfb = &batch->framebuffer;
 
@@ -403,10 +394,10 @@ fd5_emit_tile_init(struct fd_batch *batch) assert_dt
    OUT_RING(ring, 0x0);
 
    OUT_PKT4(ring, REG_A5XX_PC_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* PC_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* PC_POWER_CNTL */
 
    OUT_PKT4(ring, REG_A5XX_VFD_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* VFD_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* VFD_POWER_CNTL */
 
    /* 0x10000000 for BYPASS.. 0x7c13c080 for GMEM: */
    fd_wfi(batch, ring);
@@ -503,7 +494,7 @@ emit_mem2gmem_surf(struct fd_batch *batch, uint32_t base,
    struct fd_resource *rsc = fd_resource(psurf->texture);
    uint32_t stride, size;
 
-   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    if (buf == BLIT_S)
       rsc = rsc->stencil;
@@ -634,7 +625,7 @@ emit_gmem2mem_surf(struct fd_batch *batch, uint32_t base,
       fd_resource_offset(rsc, psurf->u.tex.level, psurf->u.tex.first_layer);
    pitch = fd_resource_pitch(rsc, psurf->u.tex.level);
 
-   debug_assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
+   assert(psurf->u.tex.first_layer == psurf->u.tex.last_layer);
 
    OUT_PKT4(ring, REG_A5XX_RB_BLIT_FLAG_DST_LO, 4);
    OUT_RING(ring, 0x00000000); /* RB_BLIT_FLAG_DST_LO */
@@ -707,6 +698,7 @@ fd5_emit_tile_fini(struct fd_batch *batch) assert_dt
 static void
 fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
 {
+   struct fd_context *ctx = batch->ctx;
    struct fd_ringbuffer *ring = batch->gmem;
 
    fd5_emit_restore(batch, ring);
@@ -722,10 +714,10 @@ fd5_emit_sysmem_prep(struct fd_batch *batch) assert_dt
    fd5_event_write(batch, ring, PC_CCU_INVALIDATE_COLOR, false);
 
    OUT_PKT4(ring, REG_A5XX_PC_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* PC_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* PC_POWER_CNTL */
 
    OUT_PKT4(ring, REG_A5XX_VFD_POWER_CNTL, 1);
-   OUT_RING(ring, 0x00000003); /* VFD_POWER_CNTL */
+   OUT_RING(ring, ctx->screen->info->num_sp_cores - 1); /* VFD_POWER_CNTL */
 
    /* 0x10000000 for BYPASS.. 0x7c13c080 for GMEM: */
    fd_wfi(batch, ring);

@@ -36,6 +36,7 @@
 #include "st_context.h"
 #include "st_atom.h"
 #include "st_cb_bitmap.h"
+#include "st_manager.h"
 #include "st_texture.h"
 #include "st_util.h"
 #include "pipe/p_context.h"
@@ -110,10 +111,13 @@ void
 st_update_framebuffer_state( struct st_context *st )
 {
    struct gl_context *ctx = st->ctx;
-   struct pipe_framebuffer_state framebuffer;
+   struct pipe_framebuffer_state framebuffer = {0};
    struct gl_framebuffer *fb = st->ctx->DrawBuffer;
    struct gl_renderbuffer *rb;
    GLuint i;
+
+   /* Window framebuffer changes are received here. */
+   st_manager_validate_framebuffers(st);
 
    st_flush_bitmap_cache(st);
    st_invalidate_readpix_cache(st);
@@ -135,12 +139,15 @@ st_update_framebuffer_state( struct st_context *st )
    framebuffer.height = _mesa_geometric_height(fb);
    framebuffer.samples = _mesa_geometric_samples(fb);
    framebuffer.layers = _mesa_geometric_layers(fb);
+   framebuffer.resolve = fb->resolve;
 
    /* Examine Mesa's ctx->DrawBuffer->_ColorDrawBuffers state
     * to determine which surfaces to draw to
     */
    framebuffer.nr_cbufs = fb->_NumColorDrawBuffers;
 
+   unsigned num_multiview_layer = 0;
+   unsigned first_multiview_layer = 0;
    for (i = 0; i < fb->_NumColorDrawBuffers; i++) {
       framebuffer.cbufs[i] = NULL;
       rb = fb->_ColorDrawBuffers[i];
@@ -151,6 +158,11 @@ st_update_framebuffer_state( struct st_context *st )
             /* rendering to a GL texture, may have to update surface */
 
             _mesa_update_renderbuffer_surface(ctx, rb);
+
+            if (rb->rtt_numviews) {
+               first_multiview_layer = rb->rtt_slice;
+               num_multiview_layer = MAX2(num_multiview_layer, rb->rtt_numviews);
+            }
          }
 
          if (rb->surface) {
@@ -163,6 +175,8 @@ st_update_framebuffer_state( struct st_context *st )
          rb->defined = GL_TRUE; /* we'll be drawing something */
       }
    }
+   if (num_multiview_layer)
+      framebuffer.viewmask = BITFIELD_RANGE(first_multiview_layer, num_multiview_layer);
 
    for (i = framebuffer.nr_cbufs; i < PIPE_MAX_COLOR_BUFS; i++) {
       framebuffer.cbufs[i] = NULL;

@@ -157,6 +157,11 @@ enum gbm_bo_format {
 #define GBM_FORMAT_RGBA1010102	__gbm_fourcc_code('R', 'A', '3', '0') /* [31:0] R:G:B:A 10:10:10:2 little endian */
 #define GBM_FORMAT_BGRA1010102	__gbm_fourcc_code('B', 'A', '3', '0') /* [31:0] B:G:R:A 10:10:10:2 little endian */
 
+/* 64 bpp RGB */
+#define GBM_FORMAT_XBGR16161616	__gbm_fourcc_code('X', 'B', '4', '8') /* [63:0] x:B:G:R 16:16:16:16 little endian */
+
+#define GBM_FORMAT_ABGR16161616	__gbm_fourcc_code('A', 'B', '4', '8') /* [63:0] A:B:G:R 16:16:16:16 little endian */
+
 /*
  * Floating point 64bpp RGB
  * IEEE 754-2008 binary16 half-precision float
@@ -251,7 +256,84 @@ enum gbm_bo_flags {
     * OpenCL, and Vulkan applications.
     */
    GBM_BO_USE_PROTECTED = (1 << 5),
+
+   /**
+    * The buffer will be used for front buffer rendering.  On some
+    * platforms this may (for example) disable framebuffer compression
+    * to avoid problems with compression flags data being out of sync
+    * with pixel data.
+    */
+   GBM_BO_USE_FRONT_RENDERING = (1 << 6),
+
+   /**
+    * Allow the driver to select fixed-rate compression parameters.
+    */
+   GBM_BO_FIXED_COMPRESSION_DEFAULT = (1 << 7),
+
+   /**
+    * Fixed-rate compression: at least 1bpc, less than 2bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_1BPC = (2 << 7),
+
+   /**
+    * Fixed-rate compression: at least 2bpc, less than 3bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_2BPC = (3 << 7),
+
+   /**
+    * Fixed-rate compression: at least 3bpc, less than 4bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_3BPC = (4 << 7),
+
+   /**
+    * Fixed-rate compression: at least 4bpc, less than 5bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_4BPC = (5 << 7),
+
+   /**
+    * Fixed-rate compression: at least 5bpc, less than 6bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_5BPC = (6 << 7),
+
+   /**
+    * Fixed-rate compression: at least 6bpc, less than 7bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_6BPC = (7 << 7),
+
+   /**
+    * Fixed-rate compression: at least 7bpc, less than 8bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_7BPC = (8 << 7),
+
+   /**
+    * Fixed-rate compression: at least 8bpc, less than 9bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_8BPC = (9 << 7),
+
+   /**
+    * Fixed-rate compression: at least 9bpc, less than 10bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_9BPC = (10 << 7),
+
+   /**
+    * Fixed-rate compression: at least 10bpc, less than 11bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_10BPC = (11 << 7),
+
+   /**
+    * Fixed-rate compression: at least 11bpc, less than 12bpc
+    */
+   GBM_BO_FIXED_COMPRESSION_11BPC = (12 << 7),
+
+   /**
+    * Fixed-rate compression: at least 12bpc, no maximum rate
+    */
+   GBM_BO_FIXED_COMPRESSION_12BPC = (13 << 7),
+
+   /* next available value is (1 << 11) */
 };
+
+#define GBM_BO_FIXED_COMPRESSION_MASK (((1 << 11) - 1) & ~((1 << 7) - 1))
 
 int
 gbm_device_get_fd(struct gbm_device *gbm);
@@ -278,12 +360,6 @@ struct gbm_bo *
 gbm_bo_create(struct gbm_device *gbm,
               uint32_t width, uint32_t height,
               uint32_t format, uint32_t flags);
-
-struct gbm_bo *
-gbm_bo_create_native(struct gbm_device *gbm,
-                     uint32_t width, uint32_t height,
-                     uint32_t format, uint32_t flags,
-                     unsigned long **texture);
 
 struct gbm_bo *
 gbm_bo_create_with_modifiers(struct gbm_device *gbm,
@@ -361,11 +437,6 @@ void *
 gbm_bo_map(struct gbm_bo *bo,
            uint32_t x, uint32_t y, uint32_t width, uint32_t height,
            uint32_t flags, uint32_t *stride, void **map_data);
-
-void *
-gbm_bo_map_native(struct gbm_bo *bo,
-                  uint32_t x, uint32_t y, uint32_t width, uint32_t height,
-                  uint32_t flags, uint32_t *stride, void **map_data);
 
 void
 gbm_bo_unmap(struct gbm_bo *bo, void *map_data);

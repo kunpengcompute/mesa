@@ -32,7 +32,7 @@
 #define DRAW_H
 
 #include <stdbool.h>
-#include "main/glheader.h"
+#include "util/glheader.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,26 +80,53 @@ struct _mesa_index_buffer
 void
 _mesa_set_varying_vp_inputs(struct gl_context *ctx, GLbitfield varying_inputs);
 
-/**
- * Set the _DrawVAO and the net enabled arrays.
- */
 void
-_mesa_set_draw_vao(struct gl_context *ctx, struct gl_vertex_array_object *vao,
-                   GLbitfield filter);
+_mesa_set_draw_vao(struct gl_context *ctx, struct gl_vertex_array_object *vao);
 
 void
-_mesa_draw_gallium_fallback(struct gl_context *ctx,
-                            struct pipe_draw_info *info,
-                            unsigned drawid_offset,
-                            const struct pipe_draw_start_count_bias *draws,
-                            unsigned num_draws);
+_mesa_save_and_set_draw_vao(struct gl_context *ctx,
+                            struct gl_vertex_array_object *vao,
+                            GLbitfield vp_input_filter,
+                            struct gl_vertex_array_object **old_vao,
+                            GLbitfield *old_vp_input_filter);
 
 void
-_mesa_draw_gallium_multimode_fallback(struct gl_context *ctx,
-                                     struct pipe_draw_info *info,
-                                     const struct pipe_draw_start_count_bias *draws,
-                                     const unsigned char *mode,
-                                     unsigned num_draws);
+_mesa_restore_draw_vao(struct gl_context *ctx,
+                       struct gl_vertex_array_object *saved,
+                       GLbitfield saved_vp_input_filter);
+
+void
+_mesa_bitmap(struct gl_context *ctx, GLsizei width, GLsizei height,
+             GLfloat xorig, GLfloat yorig, GLfloat xmove, GLfloat ymove,
+             const GLubyte *bitmap, struct pipe_resource *tex);
+
+static inline unsigned
+_mesa_get_index_size_shift(GLenum type)
+{
+   /* The type is already validated, so use a fast conversion.
+    *
+    * GL_UNSIGNED_BYTE  - GL_UNSIGNED_BYTE = 0
+    * GL_UNSIGNED_SHORT - GL_UNSIGNED_BYTE = 2
+    * GL_UNSIGNED_INT   - GL_UNSIGNED_BYTE = 4
+    *
+    * Divide by 2 to get 0,1,2.
+    */
+   return (type - GL_UNSIGNED_BYTE) >> 1;
+}
+
+static inline bool
+_mesa_is_index_type_valid(GLenum type)
+{
+   /* GL_UNSIGNED_BYTE  = 0x1401
+    * GL_UNSIGNED_SHORT = 0x1403
+    * GL_UNSIGNED_INT   = 0x1405
+    *
+    * The trick is that bit 1 and bit 2 mean USHORT and UINT, respectively.
+    * After clearing those two bits (with ~6), we should get UBYTE.
+    * Both bits can't be set, because the enum would be greater than UINT.
+    */
+   return type <= GL_UNSIGNED_INT && (type & ~6) == GL_UNSIGNED_BYTE;
+}
 
 #ifdef __cplusplus
 } // extern "C"

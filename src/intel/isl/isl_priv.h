@@ -33,6 +33,60 @@
 
 #include "isl.h"
 
+typedef void (*isl_surf_fill_state_s_func)(
+   const struct isl_device *dev, void *state,
+   const struct isl_surf_fill_state_info *restrict info);
+
+typedef void (*isl_buffer_fill_state_s_func)(
+   const struct isl_device *dev, void *state,
+   const struct isl_buffer_fill_state_info *restrict info);
+
+typedef void (*isl_emit_depth_stencil_hiz_s_func)(
+   const struct isl_device *dev, void *state,
+   const struct isl_depth_stencil_hiz_emit_info *restrict info);
+
+typedef void (*isl_null_fill_state_s_func)(const struct isl_device *dev, void *state,
+                                           const struct isl_null_fill_state_info *restrict info);
+
+typedef void (*isl_emit_cpb_control_s_func)(const struct isl_device *dev, void *batch,
+                                            const struct isl_cpb_emit_info *restrict info);
+
+#define isl_genX_declare_get_func(func)                                 \
+   static inline isl_##func##_func                                      \
+   isl_##func##_get_func(const struct isl_device *dev) {                \
+      switch (ISL_GFX_VERX10(dev)) {                                    \
+      case 40:                                                          \
+         return isl_gfx4_##func;                                        \
+      case 45:                                                          \
+         /* G45 surface state is the same as gfx5 */                    \
+      case 50:                                                          \
+         return isl_gfx5_##func;                                        \
+      case 60:                                                          \
+         return isl_gfx6_##func;                                        \
+      case 70:                                                          \
+         return isl_gfx7_##func;                                        \
+      case 75:                                                          \
+         return isl_gfx75_##func;                                       \
+      case 80:                                                          \
+         return isl_gfx8_##func;                                        \
+      case 90:                                                          \
+         return isl_gfx9_##func;                                        \
+      case 110:                                                         \
+         return isl_gfx11_##func;                                       \
+      case 120:                                                         \
+         return isl_gfx12_##func;                                       \
+      case 125:                                                         \
+         return isl_gfx125_##func;                                      \
+      case 200:                                                         \
+         return isl_gfx20_##func;                                       \
+      case 300:                                                         \
+         return isl_gfx30_##func;                                       \
+      default:                                                          \
+         assert(!"Unknown hardware generation");                        \
+         return NULL;                                                   \
+      }                                                                 \
+   }
+
 #define isl_finishme(format, ...) \
    do { \
       static bool reported = false; \
@@ -161,6 +215,11 @@ isl_extent3d_el_to_sa(enum isl_format fmt, struct isl_extent3d extent_el)
    };
 }
 
+bool
+_isl_surf_info_supports_ccs(const struct isl_device *dev,
+                            enum isl_format format,
+                            isl_surf_usage_flags_t usage);
+
 void
 _isl_memcpy_linear_to_tiled(uint32_t xt1, uint32_t xt2,
                             uint32_t yt1, uint32_t yt2,
@@ -197,10 +256,16 @@ _isl_memcpy_tiled_to_linear_sse41(uint32_t xt1, uint32_t xt2,
                                   enum isl_tiling tiling,
                                   isl_memcpy_type copy_type);
 
+void PRINTFLIKE(4, 5)
+_isl_notify_failure(const struct isl_surf_init_info *surf_info,
+                    const char *file, int line, const char *fmt, ...);
+
+#define notify_failure(surf_info, ...) \
+   (_isl_notify_failure(surf_info, __FILE__, __LINE__, __VA_ARGS__), false)
+
+
 /* This is useful for adding the isl_prefix to genX functions */
-#define __PASTE2(x, y) x ## y
-#define __PASTE(x, y) __PASTE2(x, y)
-#define isl_genX(x) __PASTE(isl_, genX(x))
+#define isl_genX(x) CONCAT2(isl_, genX(x))
 
 #ifdef genX
 #  include "isl_genX_priv.h"
@@ -233,6 +298,12 @@ _isl_memcpy_tiled_to_linear_sse41(uint32_t xt1, uint32_t xt2,
 #  include "isl_genX_priv.h"
 #  undef genX
 #  define genX(x) gfx125_##x
+#  include "isl_genX_priv.h"
+#  undef genX
+#  define genX(x) gfx20_##x
+#  include "isl_genX_priv.h"
+#  undef genX
+#  define genX(x) gfx30_##x
 #  include "isl_genX_priv.h"
 #  undef genX
 #endif

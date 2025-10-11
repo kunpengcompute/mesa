@@ -33,7 +33,7 @@
 #include <vdpau/vdpau.h>
 #include <vdpau/vdpau_x11.h>
 
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
 #include "pipe/p_video_codec.h"
 
 #include "frontend/vdpau_interop.h"
@@ -42,7 +42,7 @@
 
 #include "util/u_debug.h"
 #include "util/u_rect.h"
-#include "os/os_thread.h"
+#include "util/u_thread.h"
 
 #include "vl/vl_video_buffer.h"
 #include "vl/vl_bicubic_filter.h"
@@ -144,22 +144,39 @@ FormatYCBCRToPipe(VdpYCbCrFormat vdpau_format)
 #endif
       default:
          /* NOTE: Can't be "unreachable", as it's quite reachable. */
-         debug_assert(!"unexpected VdpYCbCrFormat");
-#if defined(NDEBUG) || defined(DEBUG)
-         FALLTHROUGH;
-#endif
+         assert(!"unexpected VdpYCbCrFormat");
+         return PIPE_FORMAT_NONE;
 #ifdef VDP_YCBCR_FORMAT_Y_UV_444
       case VDP_YCBCR_FORMAT_Y_UV_444:
+         return PIPE_FORMAT_NONE;
 #endif
 #ifdef VDP_YCBCR_FORMAT_Y_U_V_444
       case VDP_YCBCR_FORMAT_Y_U_V_444:
+         return PIPE_FORMAT_NONE;
 #endif
 #ifdef VDP_YCBCR_FORMAT_Y_U_V_444_16
       case VDP_YCBCR_FORMAT_Y_U_V_444_16:
-#endif
          return PIPE_FORMAT_NONE;
+#endif
    }
 
+}
+
+static inline enum pipe_format
+ChromaToPipeFormat(VdpChromaType vdpau_type)
+{
+   switch (vdpau_type) {
+      case VDP_CHROMA_TYPE_420:
+         return PIPE_FORMAT_NV12;
+#ifdef VDP_CHROMA_TYPE_420_16
+      case VDP_CHROMA_TYPE_420_16:
+         return PIPE_FORMAT_P016;
+#endif
+      default:
+         assert(0);
+   }
+
+   return PIPE_FORMAT_NONE;
 }
 
 static inline VdpYCbCrFormat
@@ -276,6 +293,8 @@ ProfileToPipe(VdpDecoderProfile vdpau_profile)
          return PIPE_VIDEO_PROFILE_HEVC_MAIN_12;
       case VDP_DECODER_PROFILE_HEVC_MAIN_444:
          return PIPE_VIDEO_PROFILE_HEVC_MAIN_444;
+      case VDP_DECODER_PROFILE_AV1_MAIN:
+         return PIPE_VIDEO_PROFILE_AV1_MAIN;
       default:
          return PIPE_VIDEO_PROFILE_UNKNOWN;
    }
@@ -319,6 +338,8 @@ PipeToProfile(enum pipe_video_profile p_profile)
          return VDP_DECODER_PROFILE_HEVC_MAIN_12;
       case PIPE_VIDEO_PROFILE_HEVC_MAIN_444:
          return VDP_DECODER_PROFILE_HEVC_MAIN_444;
+      case PIPE_VIDEO_PROFILE_AV1_MAIN:
+         return VDP_DECODER_PROFILE_AV1_MAIN;
       default:
          assert(0);
          return -1;
@@ -473,13 +494,13 @@ typedef struct
 
 typedef uint32_t vlHandle;
 
-boolean vlCreateHTAB(void);
+bool vlCreateHTAB(void);
 void vlDestroyHTAB(void);
 vlHandle vlAddDataHTAB(void *data);
 void* vlGetDataHTAB(vlHandle handle);
 void vlRemoveDataHTAB(vlHandle handle);
 
-boolean vlGetFuncFTAB(VdpFuncId function_id, void **func);
+bool vlGetFuncFTAB(VdpFuncId function_id, void **func);
 
 /* Public functions */
 VdpDeviceCreateX11 vdp_imp_device_create_x11;

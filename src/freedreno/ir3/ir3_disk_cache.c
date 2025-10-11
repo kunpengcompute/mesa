@@ -1,24 +1,6 @@
 /*
  * Copyright © 2020 Google, Inc.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a
- * copy of this software and associated documentation files (the "Software"),
- * to deal in the Software without restriction, including without limitation
- * the rights to use, copy, modify, merge, publish, distribute, sublicense,
- * and/or sell copies of the Software, and to permit persons to whom the
- * Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice (including the next
- * paragraph) shall be included in all copies or substantial portions of the
- * Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
- * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
+ * SPDX-License-Identifier: MIT
  */
 
 #include "nir_serialize.h"
@@ -63,8 +45,6 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
    _mesa_sha1_format(timestamp, id_sha1);
 
    uint64_t driver_flags = ir3_shader_debug;
-   if (compiler->robust_ubo_access)
-      driver_flags |= IR3_DBG_ROBUST_UBO_ACCESS;
    compiler->disk_cache = disk_cache_create(renderer, timestamp, driver_flags);
 }
 
@@ -90,10 +70,12 @@ ir3_disk_cache_init_shader_key(struct ir3_compiler *compiler,
    _mesa_sha1_update(&ctx, blob.data, blob.size);
    blob_finish(&blob);
 
-   _mesa_sha1_update(&ctx, &shader->api_wavesize,
-                     sizeof(shader->api_wavesize));
-   _mesa_sha1_update(&ctx, &shader->real_wavesize,
-                     sizeof(shader->real_wavesize));
+   _mesa_sha1_update(&ctx, &shader->options.api_wavesize,
+                     sizeof(shader->options.api_wavesize));
+   _mesa_sha1_update(&ctx, &shader->options.real_wavesize,
+                     sizeof(shader->options.real_wavesize));
+   _mesa_sha1_update(&ctx, &shader->options.nir_options,
+                     sizeof(shader->options.nir_options));
 
    /* Note that on some gens stream-out is lowered in ir3 to stg.  For later
     * gens we maybe don't need to include stream-out in the cache key.
@@ -105,17 +87,17 @@ ir3_disk_cache_init_shader_key(struct ir3_compiler *compiler,
 }
 
 static void
-compute_variant_key(struct ir3_compiler *compiler, struct ir3_shader_variant *v,
+compute_variant_key(struct ir3_shader *shader, struct ir3_shader_variant *v,
                     cache_key cache_key)
 {
    struct blob blob;
    blob_init(&blob);
 
-   blob_write_bytes(&blob, &v->shader->cache_key, sizeof(v->shader->cache_key));
+   blob_write_bytes(&blob, &shader->cache_key, sizeof(shader->cache_key));
    blob_write_bytes(&blob, &v->key, sizeof(v->key));
    blob_write_uint8(&blob, v->binning_pass);
 
-   disk_cache_compute_key(compiler->disk_cache, blob.data, blob.size,
+   disk_cache_compute_key(shader->compiler->disk_cache, blob.data, blob.size,
                           cache_key);
 
    blob_finish(&blob);
@@ -143,7 +125,7 @@ retrieve_variant(struct blob_reader *blob, struct ir3_shader_variant *v)
 }
 
 static void
-store_variant(struct blob *blob, struct ir3_shader_variant *v)
+store_variant(struct blob *blob, const struct ir3_shader_variant *v)
 {
    blob_write_bytes(blob, VARIANT_CACHE_PTR(v), VARIANT_CACHE_SIZE);
 
@@ -163,16 +145,65 @@ store_variant(struct blob *blob, struct ir3_shader_variant *v)
    }
 }
 
+struct ir3_shader_variant *
+ir3_retrieve_variant(struct blob_reader *blob, struct ir3_compiler *compiler,
+                     void *mem_ctx)
+{
+   struct ir3_shader_variant *v = rzalloc_size(mem_ctx, sizeof(*v));
+
+   v->id = 0;
+   v->compiler = compiler;
+   v->binning_pass = false;
+   v->nonbinning = NULL;
+   v->binning = NULL;
+   blob_copy_bytes(blob, &v->key, sizeof(v->key));
+   v->type = blob_read_uint32(blob);
+   v->mergedregs = blob_read_uint32(blob);
+   v->const_state = rzalloc_size(v, sizeof(*v->const_state));
+
+   retrieve_variant(blob, v);
+
+   if (v->type == MESA_SHADER_VERTEX && ir3_has_binning_vs(&v->key)) {
+      v->binning = rzalloc_size(v, sizeof(*v->binning));
+      v->binning->id = 0;
+      v->binning->compiler = compiler;
+      v->binning->binning_pass = true;
+      v->binning->nonbinning = v;
+      v->binning->key = v->key;
+      v->binning->type = MESA_SHADER_VERTEX;
+      v->binning->mergedregs = v->mergedregs;
+      v->binning->const_state = v->const_state;
+
+      retrieve_variant(blob, v->binning);
+   }
+   
+   return v;
+}
+
+void
+ir3_store_variant(struct blob *blob, const struct ir3_shader_variant *v)
+{
+   blob_write_bytes(blob, &v->key, sizeof(v->key));
+   blob_write_uint32(blob, v->type);
+   blob_write_uint32(blob, v->mergedregs);
+
+   store_variant(blob, v);
+
+   if (v->type == MESA_SHADER_VERTEX && ir3_has_binning_vs(&v->key)) {
+      store_variant(blob, v->binning);
+   }
+}
+
 bool
-ir3_disk_cache_retrieve(struct ir3_compiler *compiler,
+ir3_disk_cache_retrieve(struct ir3_shader *shader,
                         struct ir3_shader_variant *v)
 {
-   if (!compiler->disk_cache)
+   if (!shader->compiler->disk_cache)
       return false;
 
    cache_key cache_key;
 
-   compute_variant_key(compiler, v, cache_key);
+   compute_variant_key(shader, v, cache_key);
 
    if (debug) {
       char sha1[41];
@@ -181,7 +212,7 @@ ir3_disk_cache_retrieve(struct ir3_compiler *compiler,
    }
 
    size_t size;
-   void *buffer = disk_cache_get(compiler->disk_cache, cache_key, &size);
+   void *buffer = disk_cache_get(shader->compiler->disk_cache, cache_key, &size);
 
    if (debug)
       fprintf(stderr, "%s\n", buffer ? "found" : "missing");
@@ -203,15 +234,15 @@ ir3_disk_cache_retrieve(struct ir3_compiler *compiler,
 }
 
 void
-ir3_disk_cache_store(struct ir3_compiler *compiler,
+ir3_disk_cache_store(struct ir3_shader *shader,
                      struct ir3_shader_variant *v)
 {
-   if (!compiler->disk_cache)
+   if (!shader->compiler->disk_cache)
       return;
 
    cache_key cache_key;
 
-   compute_variant_key(compiler, v, cache_key);
+   compute_variant_key(shader, v, cache_key);
 
    if (debug) {
       char sha1[41];
@@ -227,6 +258,6 @@ ir3_disk_cache_store(struct ir3_compiler *compiler,
    if (v->binning)
       store_variant(&blob, v->binning);
 
-   disk_cache_put(compiler->disk_cache, cache_key, blob.data, blob.size, NULL);
+   disk_cache_put(shader->compiler->disk_cache, cache_key, blob.data, blob.size, NULL);
    blob_finish(&blob);
 }

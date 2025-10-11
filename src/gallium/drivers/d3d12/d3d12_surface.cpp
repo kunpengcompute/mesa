@@ -194,7 +194,7 @@ initialize_rtv(struct pipe_context *pctx,
                       tpl->u.tex.first_layer);
 
       desc.Texture2D.MipSlice = tpl->u.tex.level;
-      desc.Texture2D.PlaneSlice = 0;
+      desc.Texture2D.PlaneSlice = res->plane_slice;
       break;
 
    case D3D12_RTV_DIMENSION_TEXTURE2DMSARRAY:
@@ -333,7 +333,7 @@ d3d12_surface_update_pre_draw(struct pipe_context *pctx,
          templ.array_size = src->array_size;
          templ.nr_samples = src->nr_samples;
          templ.nr_storage_samples = src->nr_storage_samples;
-         templ.usage = PIPE_USAGE_DEFAULT | PIPE_USAGE_STAGING;
+         templ.usage = PIPE_USAGE_STAGING;
          templ.bind = src->bind;
          templ.target = src->target;
 

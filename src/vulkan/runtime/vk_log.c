@@ -31,9 +31,8 @@
 #include "vk_device.h"
 #include "vk_physical_device.h"
 
-#include "ralloc.h"
-
-#include "log.h"
+#include "util/ralloc.h"
+#include "util/log.h"
 
 static struct vk_device *
 vk_object_to_device(struct vk_object_base *obj)
@@ -90,11 +89,29 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
       instance = (struct vk_instance *) objects_or_instance;
    } else {
       objects = (struct vk_object_base **) objects_or_instance;
-      instance = vk_object_to_instance(objects[0]);
-      assert(instance->base.client_visible);
+      for (unsigned i = 0; i < object_count; i++) {
+         if (unlikely(objects[i] == NULL)) {
+            mesa_logw("vk_log*() called with NULL object\n");
+            continue;
+         }
+
+         if (unlikely(!objects[i]->client_visible)) {
+            mesa_logw("vk_log*() called with client-invisible object %p "
+                      "of type %s", objects[i],
+                      vk_ObjectType_to_str(objects[i]->type));
+         }
+
+         if (!instance) {
+            instance = vk_object_to_instance(objects[i]);
+            assert(instance->base.client_visible);
+         } else {
+            assert(vk_object_to_instance(objects[i]) == instance);
+         }
+         break;
+      }
    }
 
-#ifndef DEBUG
+#if !MESA_DEBUG
    if (unlikely(!instance) ||
        (likely(list_is_empty(&instance->debug_utils.callbacks)) &&
         likely(list_is_empty(&instance->debug_report.callbacks))))
@@ -110,7 +127,7 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 
    char *message_idname = ralloc_asprintf(NULL, "%s:%d", file, line);
 
-#if DEBUG
+#if MESA_DEBUG
    switch (severity) {
    case VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT:
       mesa_logd("%s: %s", message_idname, message);
@@ -160,10 +177,11 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
       VkDebugUtilsObjectNameInfoEXT *object_name_infos =
          ralloc_array(NULL, VkDebugUtilsObjectNameInfoEXT, object_count);
 
-      ASSERTED int cmdbuf_n = 0, queue_n = 0;
+      ASSERTED int cmdbuf_n = 0, queue_n = 0, obj_n = 0;
       for (int i = 0; i < object_count; i++) {
          struct vk_object_base *base = objects[i];
-         assert(base->client_visible);
+         if (base == NULL || !base->client_visible)
+            continue;
 
          switch (base->type) {
          case VK_OBJECT_TYPE_COMMAND_BUFFER: {
@@ -194,7 +212,7 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
             break;
          }
 
-         object_name_infos[i] = (VkDebugUtilsObjectNameInfoEXT){
+         object_name_infos[obj_n++] = (VkDebugUtilsObjectNameInfoEXT){
             .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
             .pNext = NULL,
             .objectType = base->type,
@@ -202,7 +220,7 @@ __vk_log_impl(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
             .pObjectName = base->object_name,
          };
       }
-      cb_data.objectCount = object_count;
+      cb_data.objectCount = obj_n;
       cb_data.pObjects = object_name_infos;
 
       vk_debug_message(instance, severity, types, &cb_data);
@@ -291,16 +309,35 @@ __vk_errorv(const void *_obj, VkResult error,
 
    const char *error_str = vk_Result_to_str(error);
 
+   /* From the Vulkan 1.3.295 spec:
+    *
+    *    "VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT specifies use of
+    *    Vulkan that may expose an application bug. Such cases may not be
+    *    immediately harmful, such as a fragment shader outputting to a
+    *    location with no attachment. Other cases may point to behavior that
+    *    is almost certainly bad when unintended such as using an image whose
+    *    memory has not been filled. In general if you see a warning but you
+    *    know that the behavior is intended/desired, then simply ignore the
+    *    warning.
+    *
+    *    VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT specifies that the
+    *    application has violated a valid usage condition of the
+    *    specification."
+    *
+    * Our use of vk_error*() to expound on error messages returned from
+    * drivers falls more under the WARNING category than ERROR since they may
+    * not actually be application bugs or VU violations.
+    */
    if (format) {
       char *message = ralloc_vasprintf(NULL, format, va);
 
       if (object) {
-         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
                   VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
                   VK_LOG_OBJS(object), file, line,
                   "%s (%s)", message, error_str);
       } else {
-         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
                   VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
                   VK_LOG_NO_OBJS(instance), file, line,
                   "%s (%s)", message, error_str);
@@ -309,12 +346,12 @@ __vk_errorv(const void *_obj, VkResult error,
       ralloc_free(message);
    } else {
       if (object) {
-         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
                   VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
                   VK_LOG_OBJS(object), file, line,
                   "%s", error_str);
       } else {
-         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+         __vk_log(VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT,
                   VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT,
                   VK_LOG_NO_OBJS(instance), file, line,
                   "%s", error_str);

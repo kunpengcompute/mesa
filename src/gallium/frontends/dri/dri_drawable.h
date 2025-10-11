@@ -28,25 +28,20 @@
 #ifndef DRI_DRAWABLE_H
 #define DRI_DRAWABLE_H
 
-#include "pipe/p_compiler.h"
-#include "pipe/p_format.h"
+#include "util/compiler.h"
+#include "util/format/u_formats.h"
 #include "frontend/api.h"
 #include "dri_util.h"
 
-struct pipe_surface;
-struct st_framebuffer;
 struct dri_context;
+struct dri_screen;
 
 struct dri_drawable
 {
-   struct st_framebuffer_iface base;
+   struct pipe_frontend_drawable base;
    struct st_visual stvis;
 
    struct dri_screen *screen;
-
-   /* dri */
-   __DRIdrawable *dPriv;
-   __DRIscreen *sPriv;
 
    __DRIbuffer old[__DRI_BUFFER_COUNT];
    unsigned old_num;
@@ -59,9 +54,44 @@ struct dri_drawable
    struct pipe_resource *textures[ST_ATTACHMENT_COUNT];
    struct pipe_resource *msaa_textures[ST_ATTACHMENT_COUNT];
    unsigned int texture_mask, texture_stamp;
+   int swap_interval;
 
    struct pipe_fence_handle *throttle_fence;
    bool flushing; /* prevents recursion in dri_flush */
+
+   /**
+    * Private data from the loader.  We just hold on to it and pass
+    * it back when calling into loader provided functions.
+    */
+   void *loaderPrivate;
+
+   /**
+    * Reference count for number of context's currently bound to this
+    * drawable.
+    *
+    * Once it reaches zero, the drawable can be destroyed.
+    *
+    * \note This behavior will change with GLX 1.3.
+    */
+   int refcount;
+
+   /**
+    * Increased when the loader calls invalidate.
+    *
+    * If this changes, the drawable information (below) should be retrieved
+    * from the loader.
+    */
+   unsigned int lastStamp;
+   int w, h;
+
+   /* generic for swrast */
+   unsigned buffer_age;
+
+   /* kopper */
+   struct kopper_loader_info info;
+   struct dri_image   *image; //texture_from_pixmap
+   bool is_window;
+   bool window_valid;
 
    /* hooks filled in by dri2 & drisw */
    void (*allocate_textures)(struct dri_context *ctx,
@@ -80,24 +110,22 @@ struct dri_drawable
                              struct pipe_resource *res);
    void (*flush_swapbuffers)(struct dri_context *ctx,
                              struct dri_drawable *drawable);
+
+   void (*swap_buffers)(struct dri_drawable *drawable);
+   void (*swap_buffers_with_damage)(struct dri_drawable *drawable, int nrects, const int *rects);
 };
 
-static inline struct dri_drawable *
-dri_drawable(__DRIdrawable * driDrawPriv)
+static inline void
+dri_get_drawable(struct dri_drawable *drawable)
 {
-   return (struct dri_drawable *) (driDrawPriv)
-      ? driDrawPriv->driverPrivate : NULL;
+    drawable->refcount++;
 }
 
 /***********************************************************************
  * dri_drawable.c
  */
-bool
-dri_create_buffer(__DRIscreen * sPriv,
-		  __DRIdrawable * dPriv,
-		  const struct gl_config * visual, bool isPixmap);
-
-void dri_destroy_buffer(__DRIdrawable * dPriv);
+void
+dri_put_drawable(struct dri_drawable *drawable);
 
 void
 dri_drawable_get_format(struct dri_drawable *drawable,
@@ -111,13 +139,27 @@ dri_pipe_blit(struct pipe_context *pipe,
               struct pipe_resource *src);
 
 void
-dri_flush(__DRIcontext *cPriv,
-          __DRIdrawable *dPriv,
+dri_flush(struct dri_context *ctx,
+          struct dri_drawable *drawable,
           unsigned flags,
           enum __DRI2throttleReason reason);
 
+void
+dri_flush_drawable(struct dri_drawable *dPriv);
+
 extern const __DRItexBufferExtension driTexBufferExtension;
-extern const __DRI2throttleExtension dri2ThrottleExtension;
+
+void
+drisw_update_tex_buffer(struct dri_drawable *drawable,
+                        struct dri_context *ctx,
+                        struct pipe_resource *res);
+
+void
+kopper_init_drawable(struct dri_drawable *drawable, bool isPixmap, int alphaBits);
+void
+drisw_init_drawable(struct dri_drawable *drawable, bool isPixmap, int alphaBits);
+void
+dri2_init_drawable(struct dri_drawable *drawable, bool isPixmap, int alphaBits);
 #endif
 
 /* vim: set sw=3 ts=8 sts=3 expandtab: */

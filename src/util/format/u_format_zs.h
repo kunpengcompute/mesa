@@ -30,7 +30,9 @@
 #define U_FORMAT_ZS_H_
 
 
-#include "pipe/p_compiler.h"
+#include "util/compiler.h"
+
+#include "c99_compat.h"
 
 #ifdef __cplusplus
 extern "C" {

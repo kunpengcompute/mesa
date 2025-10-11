@@ -19,9 +19,6 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
-#
-# Authors:
-#    Jason Ekstrand (jason@jlekstrand.net)
 
 import ast
 from collections import defaultdict
@@ -208,6 +205,9 @@ class Value(object):
       ${'true' if val.inexact else 'false'},
       ${'true' if val.exact else 'false'},
       ${'true' if val.ignore_exact else 'false'},
+      ${'true' if val.nsz else 'false'},
+      ${'true' if val.nnan else 'false'},
+      ${'true' if val.ninf else 'false'},
       ${val.c_opcode()},
       ${val.comm_expr_idx}, ${val.comm_exprs},
       { ${', '.join(src.array_index for src in val.sources)} },
@@ -255,9 +255,14 @@ class Constant(Value):
       if isinstance(self.value, (bool)):
          return 'NIR_TRUE' if self.value else 'NIR_FALSE'
       if isinstance(self.value, int):
-         return hex(self.value)
+         # Explicitly sign-extend negative integers to 64-bit, ensuring correct
+         # handling of -INT32_MIN which is not representable in 32-bit.
+         if self.value < 0:
+            return hex(struct.unpack('Q', struct.pack('q', self.value))[0]) + 'ull'
+         else:
+            return hex(self.value) + 'ull'
       elif isinstance(self.value, float):
-         return hex(struct.unpack('Q', struct.pack('d', self.value))[0])
+         return hex(struct.unpack('Q', struct.pack('d', self.value))[0]) + 'ull'
       else:
          assert False
 
@@ -287,7 +292,7 @@ class Constant(Value):
 _var_name_re = re.compile(r"(?P<const>#)?(?P<name>\w+)"
                           r"(?:@(?P<type>int|uint|bool|float)?(?P<bits>\d+)?)?"
                           r"(?P<cond>\([^\)]+\))?"
-                          r"(?P<swiz>\.[xyzw]+)?"
+                          r"(?P<swiz>\.[xyzwabcdefghijklmnop]+)?"
                           r"$")
 
 class Variable(Value):
@@ -380,16 +385,15 @@ class Expression(Value):
       # "many-comm-expr" isn't really a condition.  It's notification to the
       # generator that this pattern is known to have too many commutative
       # expressions, and an error should not be generated for this case.
-      self.many_commutative_expressions = False
-      if self.cond and self.cond.find("many-comm-expr") >= 0:
-         # Split the condition into a comma-separated list.  Remove
-         # "many-comm-expr".  If there is anything left, put it back together.
-         c = self.cond[1:-1].split(",")
-         c.remove("many-comm-expr")
-         assert(len(c) <= 1)
+      # nsz, nnan and ninf are special conditions, so we treat them specially too.
+      cond = {k: True for k in self.cond[1:-1].split(",")} if self.cond else {}
+      self.many_commutative_expressions = cond.pop('many-comm-expr', False)
+      self.nsz = cond.pop('nsz', False)
+      self.nnan = cond.pop('nnan', False)
+      self.ninf = cond.pop('ninf', False)
 
-         self.cond = c[0] if c else None
-         self.many_commutative_expressions = True
+      assert len(cond) <= 1
+      self.cond = cond.popitem()[0] if cond else None
 
       # Deduplicate references to the condition functions for the expressions
       # and save the index for the order they were added.
@@ -739,6 +743,17 @@ class BitSizeValidator(object):
       if isinstance(val, Expression):
          for src in val.sources:
             self.validate_replace(src, search)
+      elif isinstance(val, Variable):
+          # These catch problems when someone copies and pastes the search
+          # into the replacement.
+          assert not val.is_constant, \
+              'Replacement variables must not be marked constant.'
+
+          assert val.cond_index == -1, \
+              'Replacement variables must not have a condition.'
+
+          assert not val.required_type, \
+              'Replacement variables must not have a required type.'
 
    def validate(self, search, replace):
       self.is_search = True
@@ -928,12 +943,12 @@ class TreeAutomaton(object):
             stripped = opcode.rstrip('0123456789')
             if stripped in conv_opcode_types:
                # Matches that use conversion opcodes with a specific type,
-               # like f2b1, are tricky.  Either we construct the automaton to
-               # match specific NIR opcodes like nir_op_f2b1, in which case we
+               # like f2i1, are tricky.  Either we construct the automaton to
+               # match specific NIR opcodes like nir_op_f2i1, in which case we
                # need to create separate items for each possible NIR opcode
-               # for patterns that have a generic opcode like f2b, or we
+               # for patterns that have a generic opcode like f2i, or we
                # construct it to match the search opcode, in which case we
-               # need to map f2b1 to f2b when constructing the automaton. Here
+               # need to map f2i1 to f2i when constructing the automaton. Here
                # we do the latter.
                opcode = stripped
             self.opcodes.add(opcode)
@@ -1160,8 +1175,12 @@ static const nir_algebraic_table ${pass_name}_table = {
 };
 
 bool
-${pass_name}(nir_shader *shader)
-{
+${pass_name}(
+   nir_shader *shader
+% for type, name in params:
+   , ${type} ${name}
+% endfor
+) {
    bool progress = false;
    bool condition_flags[${len(condition_list)}];
    const nir_shader_compiler_options *options = shader->options;
@@ -1174,11 +1193,8 @@ ${pass_name}(nir_shader *shader)
    condition_flags[${index}] = ${condition};
    % endfor
 
-   nir_foreach_function(function, shader) {
-      if (function->impl) {
-         progress |= nir_algebraic_impl(function->impl, condition_flags,
-                                        &${pass_name}_table);
-      }
+   nir_foreach_function_impl(impl, shader) {
+     progress |= nir_algebraic_impl(impl, condition_flags, &${pass_name}_table);
    }
 
    return progress;
@@ -1187,12 +1203,14 @@ ${pass_name}(nir_shader *shader)
 
 
 class AlgebraicPass(object):
-   def __init__(self, pass_name, transforms):
+   # params is a list of `("type", "name")` tuples
+   def __init__(self, pass_name, transforms, params=[]):
       self.xforms = []
       self.opcode_xforms = defaultdict(lambda : [])
       self.pass_name = pass_name
       self.expression_cond = {}
       self.variable_cond = {}
+      self.params = params
 
       error = False
 
@@ -1258,7 +1276,8 @@ class AlgebraicPass(object):
                                              expression_cond = sorted(self.expression_cond.items(), key=lambda kv: kv[1]),
                                              variable_cond = sorted(self.variable_cond.items(), key=lambda kv: kv[1]),
                                              get_c_opcode=get_c_opcode,
-                                             itertools=itertools)
+                                             itertools=itertools,
+                                             params=self.params)
 
 # The replacement expression isn't necessarily exact if the search expression is exact.
 def ignore_exact(*expr):
