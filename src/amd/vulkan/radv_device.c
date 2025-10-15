@@ -708,9 +708,11 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
 
 #ifdef ANDROID
    device->emulate_etc2 = !radv_device_supports_etc(device);
+   device->emulate_astc = true;
 #else
    device->emulate_etc2 = !radv_device_supports_etc(device) &&
                           driQueryOptionb(&device->instance->dri_options, "radv_require_etc2");
+   device->emulate_astc = driQueryOptionb(&device->instance->dri_options, "radv_require_astc");
 #endif
 
    snprintf(device->name, sizeof(device->name), "AMD RADV %s%s", device->rad_info.name,
@@ -957,6 +959,7 @@ static const driOptionDescription radv_dri_options[] = {
       DRI_CONF_RADV_DISABLE_DCC(false)
       DRI_CONF_RADV_REPORT_APU_AS_DGPU(false)
       DRI_CONF_RADV_REQUIRE_ETC2(false)
+      DRI_CONF_RADV_REQUIRE_ASTC(true)
       DRI_CONF_RADV_DISABLE_HTILE_LAYERS(false)
       DRI_CONF_RADV_DISABLE_ANISO_SINGLE_LEVEL(false)
       DRI_CONF_RADV_DISABLE_SINKING_LOAD_INPUT_FS(false)
@@ -1222,7 +1225,7 @@ radv_GetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice, VkPhysicalDevice
       .multiViewport = true,
       .samplerAnisotropy = true,
       .textureCompressionETC2 = radv_device_supports_etc(pdevice) || pdevice->emulate_etc2,
-      .textureCompressionASTC_LDR = false,
+      .textureCompressionASTC_LDR = pdevice->emulate_astc,
       .textureCompressionBC = true,
       .occlusionQueryPrecise = true,
       .pipelineStatisticsQuery = true,
@@ -5574,6 +5577,7 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
    uint64_t va;
    const struct radv_image_plane *plane = &iview->image->planes[iview->plane_id];
    const struct radeon_surf *surf = &plane->surface;
+   uint8_t tile_swizzle = plane->surface.tile_swizzle;
 
    desc = vk_format_description(iview->vk_format);
 
@@ -5583,6 +5587,11 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
    cb->cb_color_attrib = S_028C74_FORCE_DST_ALPHA_1(desc->swizzle[3] == PIPE_SWIZZLE_1);
 
    va = radv_buffer_get_va(iview->image->bo) + iview->image->offset;
+   
+   if (iview->nbc_view.valid) {
+      va += iview->nbc_view.base_address_offset;
+      tile_swizzle = iview->nbc_view.tile_swizzle;
+   }
 
    cb->cb_color_base = va >> 8;
 
@@ -5609,14 +5618,14 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
       }
 
       cb->cb_color_base += surf->u.gfx9.surf_offset >> 8;
-      cb->cb_color_base |= surf->tile_swizzle;
+      cb->cb_color_base |= tile_swizzle;
    } else {
       const struct legacy_surf_level *level_info = &surf->u.legacy.level[iview->base_mip];
       unsigned pitch_tile_max, slice_tile_max, tile_mode_index;
 
       cb->cb_color_base += level_info->offset_256B;
       if (level_info->mode == RADEON_SURF_MODE_2D)
-         cb->cb_color_base |= surf->tile_swizzle;
+         cb->cb_color_base |= tile_swizzle;
 
       pitch_tile_max = level_info->nblk_x / 8 - 1;
       slice_tile_max = (level_info->nblk_x * level_info->nblk_y) / 64 - 1;
@@ -5655,7 +5664,7 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
        device->physical_device->rad_info.chip_class <= GFX8)
       va += plane->surface.u.legacy.color.dcc_level[iview->base_mip].dcc_offset;
 
-   unsigned dcc_tile_swizzle = surf->tile_swizzle;
+   unsigned dcc_tile_swizzle = tile_swizzle;
    dcc_tile_swizzle &= ((1 << surf->meta_alignment_log2) - 1) >> 8;
 
    cb->cb_dcc_base = va >> 8;
@@ -5764,9 +5773,17 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
          vk_format_get_plane_width(iview->image->vk_format, iview->plane_id, iview->extent.width);
       unsigned height =
          vk_format_get_plane_height(iview->image->vk_format, iview->plane_id, iview->extent.height);
+      unsigned max_mip = iview->image->info.levels - 1;
 
       if (device->physical_device->rad_info.chip_class >= GFX10) {
-         cb->cb_color_view |= S_028C6C_MIP_LEVEL_GFX10(iview->base_mip);
+         unsigned base_level = iview->base_mip;
+
+         if (iview->nbc_view.valid) {
+            base_level = iview->nbc_view.level;
+            max_mip = iview->nbc_view.num_levels - 1;
+         }
+
+         cb->cb_color_view |= S_028C6C_MIP_LEVEL_GFX10(base_level);
 
          cb->cb_color_attrib3 |= S_028EE0_MIP0_DEPTH(mip0_depth) |
                                  S_028EE0_RESOURCE_TYPE(surf->u.gfx9.resource_type) |
@@ -5778,7 +5795,7 @@ radv_initialise_color_surface(struct radv_device *device, struct radv_color_buff
       }
 
       cb->cb_color_attrib2 = S_028C68_MIP0_WIDTH(width - 1) | S_028C68_MIP0_HEIGHT(height - 1) |
-                             S_028C68_MAX_MIP(iview->image->info.levels - 1);
+                             S_028C68_MAX_MIP(max_mip);
    }
 }
 

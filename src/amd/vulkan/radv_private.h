@@ -96,6 +96,7 @@ typedef uint32_t xcb_window_t;
 
 #include "radv_entrypoints.h"
 
+#include "vk_texcompress_astc.h"
 #include "wsi_common.h"
 
 #ifdef __cplusplus
@@ -302,6 +303,9 @@ struct radv_physical_device {
 
    /* Whether to emulate ETC2 image support on HW without support. */
    bool emulate_etc2;
+
+   /* Whether to emulate ASTC image support on HW without support. */
+   bool emulate_astc;
 
    /* This is the drivers on-disk cache used as a fallback as opposed to
     * the pipeline cache defined by apps.
@@ -675,6 +679,8 @@ struct radv_meta_state {
       VkPipelineLayout p_layout;
       VkPipeline pipeline;
    } etc_decode;
+
+   struct vk_texcompress_astc_state *astc_decode;
 };
 
 #define RADV_NUM_HW_CTX (RADEON_CTX_PRIORITY_REALTIME + 1)
@@ -2415,6 +2421,9 @@ struct radv_image_view {
     * This has a few differences for cube maps (e.g. type).
     */
    union radv_descriptor storage_descriptor;
+
+   /* Block-compressed image views on GFX10+. */
+   struct ac_surf_nbc_view nbc_view;
 };
 
 struct radv_image_create_info {
