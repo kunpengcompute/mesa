@@ -98,6 +98,7 @@ typedef uint32_t xcb_window_t;
 
 #include "vk_texcompress_astc.h"
 #include "wsi_common.h"
+#include "vk_texcompress_bcn.h"
 
 #ifdef __cplusplus
 extern "C"
@@ -681,6 +682,8 @@ struct radv_meta_state {
    } etc_decode;
 
    struct vk_texcompress_astc_state *astc_decode;
+
+   struct vk_texcompress_bcn_state *bcn_encoded[VK_TEXCOMPRESS_BCN_NUM_COMPUTE_PIPELINES];
 };
 
 #define RADV_NUM_HW_CTX (RADEON_CTX_PRIORITY_REALTIME + 1)
@@ -2090,8 +2093,12 @@ struct radv_image {
    bool dcc_sign_reinterpret;
    bool support_comp_to_single;
 
-   bool isNeedSoftEncode;// 是否需要使用 软编
-   bool isNeedSoftDecode;// 是否需要使用 软解
+   bool isNeedSoftEncode;  // 是否需要使用 软编
+   bool isNeedSoftDecode;  // 是否需要使用 软解
+
+   bool isNeedHardEncode;  // 是否需要使用 硬编
+   struct vk_texcompress_bcn_image *staging_images;  // 硬编的中间资源
+
 	VkFormat srcFormat; //用于保存纹理的原始格式
 	VkFormat unpackETCFormat;//用于保存ETC纹理解压后的格式
 
@@ -2473,6 +2480,8 @@ void radv_image_view_init(struct radv_image_view *view, struct radv_device *devi
                           const VkImageViewCreateInfo *pCreateInfo,
                           const struct radv_image_view_extra_create_info *extra_create_info);
 void radv_image_view_finish(struct radv_image_view *iview);
+
+void radv_internal_image_finish(struct radv_image *image);
 
 VkFormat radv_get_aspect_format(struct radv_image *image, VkImageAspectFlags mask);
 

@@ -38,6 +38,7 @@
 #include <cutils/properties.h>
 
 #include "gfx10_format_table.h"
+#include "vk_texcompress_bcn.h"
 
 static const VkImageUsageFlagBits RADV_IMAGE_USAGE_WRITE_BITS =
    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
@@ -546,6 +547,66 @@ radv_patch_image_from_extra_info(struct radv_device *device, struct radv_image *
 
 extern bool radv_is_format_emulated(const struct radv_physical_device *physical_device, VkFormat format);
 
+static char isEnableHardEncode[PROPERTY_VALUE_MAX];
+VkFormat
+radv_translate_rgba2dxt5(VkFormat format)
+{
+   switch (format) {
+   case VK_FORMAT_R8G8B8A8_UNORM:
+      return VK_FORMAT_BC3_UNORM_BLOCK;
+   case VK_FORMAT_R8G8B8A8_SRGB:
+      return VK_FORMAT_BC3_SRGB_BLOCK;
+   default:
+      return format;
+   }
+}
+
+static bool
+radv_need_hard_encode(const struct radv_physical_device *pdev, const VkImageCreateInfo *pCreateInfo)
+{
+   if (property_get("sys.vmi.vk.texturecompress", isEnableHardEncode, "0") && strcmp(isEnableHardEncode, "2") != 0) {
+      return false;
+   }
+
+   // 暂不支持对图像数组进行压缩
+   if (pCreateInfo->arrayLayers > 1) {
+      return false;
+   }
+
+   if (!radv_is_format_emulated(pdev, pCreateInfo->format)) {
+      return false;
+   }
+
+   const enum util_format_layout format_layout = vk_format_description(pCreateInfo->format)->layout;
+   if (format_layout != UTIL_FORMAT_LAYOUT_ASTC &&
+       vk_texcompress_etc2_emulation_format(pCreateInfo->format) != VK_FORMAT_R8G8B8A8_UNORM &&
+       vk_texcompress_etc2_emulation_format(pCreateInfo->format) != VK_FORMAT_R8G8B8A8_SRGB) {
+      return false;
+   }
+
+   // 过滤掉对稀疏纹理的压缩，对该部分纹理进行压缩时可能造成GPU reset。 
+   if (pCreateInfo->flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+      VK_IMAGE_CREATE_SPARSE_ALIASED_BIT)) {
+      return false;
+   }
+
+	// 检查图像的用途，防止压缩 swapchain 的 images；并只对 VK_IMAGE_TYPE_2D 类型纹理进行压缩
+	if (!(pCreateInfo->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || pCreateInfo->imageType != VK_IMAGE_TYPE_2D) {
+		return false;
+	}
+
+   // 图像太大内存申请不了
+	if (pCreateInfo->extent.width >= 3960 && pCreateInfo->extent.height >= 3960) {
+	   return false;
+	}
+
+	// 检查图像大小
+	if (pCreateInfo->extent.width >= 256 && pCreateInfo->extent.height >= 256) {
+	   return true;
+	}
+	return false;
+}
+
 static VkFormat
 radv_image_get_plane_format(const struct radv_physical_device *pdev, const struct radv_image *image,
                             unsigned plane)
@@ -553,10 +614,15 @@ radv_image_get_plane_format(const struct radv_physical_device *pdev, const struc
    if (radv_is_format_emulated(pdev, image->vk_format)) {
       if (plane == 0)
          return image->vk_format;
-      if (vk_format_description(image->vk_format)->layout == UTIL_FORMAT_LAYOUT_ASTC)
+      if (vk_format_description(image->vk_format)->layout == UTIL_FORMAT_LAYOUT_ASTC) {
+         if (image->isNeedHardEncode)
+            return radv_translate_rgba2dxt5(vk_texcompress_astc_emulation_format(image->vk_format));
          return vk_texcompress_astc_emulation_format(image->vk_format);
-      else
+      } else {
+         if (image->isNeedHardEncode)
+            return radv_translate_rgba2dxt5(vk_texcompress_etc2_emulation_format(image->vk_format));
          return vk_texcompress_etc2_emulation_format(image->vk_format);
+      }
    }
    return vk_format_get_plane_format(image->vk_format, plane);
 }
@@ -1710,6 +1776,12 @@ radv_destroy_image(struct radv_device *device, const VkAllocationCallbacks *pAll
    vk_free2(&device->vk.alloc, pAllocator, image);
 }
 
+void
+radv_internal_image_finish(struct radv_image *image)
+{
+   vk_object_base_finish(&image->base);
+}
+
 static void
 radv_image_print_info(struct radv_device *device, struct radv_image *image)
 {
@@ -1890,9 +1962,11 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
       vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
 
+   bool needHardEncode = radv_need_hard_encode(device->physical_device, pCreateInfo);
+
    unsigned plane_count = radv_get_internal_plane_count(device->physical_device, format);
 
-   bool needSoftEncode = !external_info && radv_need_soft_encode(pCreateInfo);
+   bool needSoftEncode = !external_info && radv_need_soft_encode(pCreateInfo) && !needHardEncode;
    bool needSoftDecode = needSoftEncode && radv_need_soft_decode(format);
    VkFormat softDecodeFormat = radv_translate_etc(format);
    VkFormat softEncodeFormat = radv_translate_rgb2BC(format);
@@ -1936,6 +2010,7 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
    image->usage = pCreateInfo->usage;
    image->flags = pCreateInfo->flags;
    image->plane_count = vk_format_get_plane_count(format);
+   image->isNeedHardEncode = needHardEncode;
 
    //满足要求的 ETC2 纹理使用软解
    if (needSoftDecode) {

@@ -166,8 +166,15 @@ radv_meta_decode_astc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *ima
    struct radv_image_view src_iview, dst_iview;
    image_view_init(device, image, VK_FORMAT_R32G32B32A32_UINT, VK_IMAGE_ASPECT_COLOR_BIT, subresource->mipLevel,
                    subresource->baseArrayLayer, vk_image_subresource_layer_count(vkImage, subresource), &src_iview);
-   image_view_init(device, image, VK_FORMAT_R8G8B8A8_UINT, VK_IMAGE_ASPECT_PLANE_1_BIT, subresource->mipLevel,
-                   subresource->baseArrayLayer, vk_image_subresource_layer_count(vkImage, subresource), &dst_iview);
+   if (image->isNeedHardEncode) {
+      RADV_FROM_HANDLE(radv_image, store_image, image->staging_images->image_rgba);
+      cmd_buffer->state.flush_bits |= radv_dst_access_flush(cmd_buffer, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, store_image);
+      image_view_init(device, store_image, VK_FORMAT_R8G8B8A8_UINT, VK_IMAGE_ASPECT_COLOR_BIT, subresource->mipLevel,
+         subresource->baseArrayLayer, vk_image_subresource_layer_count(vkImage, subresource), &dst_iview);
+   } else {
+      image_view_init(device, image, VK_FORMAT_R8G8B8A8_UINT, VK_IMAGE_ASPECT_PLANE_1_BIT, subresource->mipLevel,
+         subresource->baseArrayLayer, vk_image_subresource_layer_count(vkImage, subresource), &dst_iview);
+   }
 
    VkExtent3D extent_copy = {
       .width = extent.width,

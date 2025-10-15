@@ -107,6 +107,9 @@ void radv_device_finish_meta_etc_decode_state(struct radv_device *device);
 VkResult radv_device_init_meta_astc_decode_state(struct radv_device *device, bool on_demand);
 void radv_device_finish_meta_astc_decode_state(struct radv_device *device);
 
+VkResult radv_device_init_meta_rgba_encode_state(struct radv_device *device);
+void radv_device_finish_meta_rgba_encode_state(struct radv_device *device);
+
 void radv_meta_save(struct radv_meta_saved_state *saved_state, struct radv_cmd_buffer *cmd_buffer,
                     uint32_t flags);
 
@@ -230,6 +233,9 @@ void radv_meta_decode_etc(struct radv_cmd_buffer *cmd_buffer, struct radv_image 
                           VkOffset3D offset, VkExtent3D extent);
 
 void radv_meta_decode_astc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image, VkImageLayout layout,
+                           const VkImageSubresourceLayers *subresource, VkOffset3D offset, VkExtent3D extent);
+
+void radv_meta_bcn_encoded(struct radv_cmd_buffer *cmd_buffer, struct radv_image *image, VkImageLayout layout,
                            const VkImageSubresourceLayers *subresource, VkOffset3D offset, VkExtent3D extent);
 
 /**

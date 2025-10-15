@@ -28,6 +28,7 @@
 #include "vk_object.h"
 #include "util/list.h"
 #include "util/u_dynarray.h"
+#include "vk_texcompress_bcn.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -130,6 +131,12 @@ struct vk_command_buffer {
    /* This uses the same trick as STACK_ARRAY */
    struct vk_attachment_state *attachments;
    struct vk_attachment_state _attachments[8];
+
+   bool is_need_hard_encode;
+
+   struct vk_texcompress_staging_images* staging_image_list_head;
+
+   struct vk_texcompress_dummy_image* dummy;
 };
 
 VK_DEFINE_HANDLE_CASTS(vk_command_buffer, base, VkCommandBuffer,

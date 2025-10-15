@@ -42,6 +42,7 @@
 #include "vk_util.h"
 
 #include "vulkan/wsi/wsi_common.h"
+#include "vk_texcompress_bcn.h"
 
 static VkResult
 vk_queue_start_submit_thread(struct vk_queue *queue);
@@ -1140,7 +1141,22 @@ vk_common_QueueSubmit2KHR(VkQueue _queue,
       }
    }
 
+   int n_command_buffers = 0;
+   for (uint32_t s = 0; s < submitCount; s++) {
+      n_command_buffers += pSubmits[s].commandBufferInfoCount;
+   }
+   const uint32_t const_num_cmd_buf = n_command_buffers;
+   uint32_t num_cmd_buf = 0;
+   struct vk_command_buffer *need_delete_cmd_buf[const_num_cmd_buf];
+
    for (uint32_t i = 0; i < submitCount; i++) {
+      for (uint32_t j = 0; j < pSubmits[i].commandBufferInfoCount; j++) {
+         VK_FROM_HANDLE(vk_command_buffer, commandBuffer, (pSubmits[i].pCommandBufferInfos)[j].commandBuffer);
+         if (commandBuffer->is_need_hard_encode) {
+            need_delete_cmd_buf[num_cmd_buf] = commandBuffer;
+            num_cmd_buf += 1;
+         }
+      }
       struct vulkan_submit_info info = {
          .pNext = pSubmits[i].pNext,
          .command_buffer_count = pSubmits[i].commandBufferInfoCount,
@@ -1154,6 +1170,20 @@ vk_common_QueueSubmit2KHR(VkQueue _queue,
       VkResult result = vk_queue_submit(queue, &info);
       if (unlikely(result != VK_SUCCESS))
          return result;
+   }
+
+   if (num_cmd_buf > 0 && fence == NULL) {
+      vk_texcompress_create_fence(queue->base.device, NULL, &_fence);
+   }
+
+   if (num_cmd_buf > 0) {
+      vk_texcompress_wait_fence(queue->base.device, NULL, &_fence);
+      for (uint32_t i = 0; i < num_cmd_buf; i++) {
+         while (need_delete_cmd_buf[i]->staging_image_list_head != NULL) {
+            vk_texcompress_delete_head(&need_delete_cmd_buf[i]->staging_image_list_head, queue->base.device);
+         }
+         need_delete_cmd_buf[i]->is_need_hard_encode = false;
+      }
    }
 
    return VK_SUCCESS;

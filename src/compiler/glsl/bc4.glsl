@@ -1,3 +1,5 @@
+#version 310 es
+
 /*
  * Copyright 2020-2022 Matias N. Goldberg
  * Copyright 2022 Intel Corporation
@@ -21,8 +23,6 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#version 310 es
-
 #if defined(GL_ES) && GL_ES == 1
 	// Desktop GLSL allows the const keyword for either compile-time or
 	// run-time constants. GLSL ES only allows the keyword for compile-time
@@ -33,19 +33,36 @@
 
 #define __sharedOnlyBarrier memoryBarrierShared();barrier();
 
+#ifdef VULKAN
+
+#extension GL_GOOGLE_include_directive : require
+#include "CrossPlatformSettings_piece_all.glsl"
+
+layout(push_constant, std430) uniform pc {
+	uint2 params;
+};
+
+layout ( set = 0, binding = 0 ) uniform sampler2D srcTex;
+
+layout (rgba16ui, set = 0, binding = 1) uniform restrict writeonly mediump uimage2D dstTexture;
+
+#else
+
 %s // include "CrossPlatformSettings_piece_all.glsl"
-
-shared float2 g_minMaxValues[4u * 4u * 4u];
-shared uint2 g_mask[4u * 4u];
-
-layout( location = 0 ) uniform uint2 params;
-
-#define p_channelIdx params.x
-#define p_useSNorm params.y
 
 uniform sampler2D srcTex;
 
 layout( rgba16ui ) uniform restrict writeonly mediump uimage2D dstTexture;
+
+layout( location = 0 ) uniform uint2 params;
+
+#endif
+
+shared float2 g_minMaxValues[4u * 4u * 4u];
+shared uint2 g_mask[4u * 4u];
+
+#define p_channelIdx params.x
+#define p_useSNorm params.y
 
 layout( local_size_x = 4,  //
 		local_size_y = 4,  //

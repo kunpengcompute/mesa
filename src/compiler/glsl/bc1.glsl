@@ -1,3 +1,4 @@
+#version 310 es
 /*
  * Copyright 2020-2022 Matias N. Goldberg
  * Copyright 2022 Intel Corporation
@@ -21,7 +22,6 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#version 310 es
 
 #if defined(GL_ES) && GL_ES == 1
 	// Desktop GLSL allows the const keyword for either compile-time or
@@ -31,9 +31,30 @@
 	#define const
 #endif
 
-%s // include "CrossPlatformSettings_piece_all.glsl"
-
 #define FLT_MAX 340282346638528859811704183484516925440.0f
+
+#ifdef VULKAN
+
+#extension GL_GOOGLE_include_directive : require
+#include "CrossPlatformSettings_piece_all.glsl"
+
+layout(push_constant, std430) uniform pc {
+	uint p_numRefinements;
+};
+
+layout ( set = 0, binding = 0 ) uniform sampler2D srcTex;
+
+layout (std430, set = 0, binding = 1) readonly restrict buffer globalBuffer
+{
+	float2 c_oMatch5[256];
+	float2 c_oMatch6[256];
+};
+
+layout (rgba16ui, set = 0, binding = 2 ) uniform restrict writeonly mediump uimage2D dstTexture;
+
+#else
+
+%s // include "CrossPlatformSettings_piece_all.glsl"
 
 layout( location = 0 ) uniform uint p_numRefinements;
 
@@ -46,6 +67,8 @@ layout( std430, binding = 1 ) readonly restrict buffer globalBuffer
 	float2 c_oMatch5[256];
 	float2 c_oMatch6[256];
 };
+
+#endif
 
 layout( local_size_x = 8,  //
 		local_size_y = 8,  //

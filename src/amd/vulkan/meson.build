@@ -70,6 +70,7 @@ libradv_files = files(
   'radv_meta_fmask_copy.c',
   'radv_meta_fmask_expand.c',
   'radv_meta_astc_decode.c',
+  'radv_meta_rgba_encode.c',
   'radv_meta_resolve.c',
   'radv_meta_resolve_cs.c',
   'radv_meta_resolve_fs.c',

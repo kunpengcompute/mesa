@@ -801,23 +801,45 @@ radv_meta_decode_etc(struct radv_cmd_buffer *cmd_buffer, struct radv_image *imag
       store_format = VK_FORMAT_R8G8B8A8_UNORM;
    }
    struct radv_image_view dest_iview;
-   radv_image_view_init(
-      &dest_iview, cmd_buffer->device,
-      &(VkImageViewCreateInfo){
-         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-         .image = radv_image_to_handle(image),
-         .viewType = radv_meta_get_view_type(image),
-         .format = store_format,
-         .subresourceRange =
-            {
-               .aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT,
-               .baseMipLevel = subresource->mipLevel,
-               .levelCount = 1,
-               .baseArrayLayer = 0,
-               .layerCount = subresource->baseArrayLayer + subresource->layerCount,
-            },
-      },
-      NULL);
+   if (image->isNeedHardEncode) {
+      RADV_FROM_HANDLE(radv_image, store_image, image->staging_images->image_rgba);
+      cmd_buffer->state.flush_bits |= radv_dst_access_flush(cmd_buffer, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, store_image);
+      radv_image_view_init(
+         &dest_iview, cmd_buffer->device,
+         &(VkImageViewCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = radv_image_to_handle(store_image),
+            .viewType = radv_meta_get_view_type(store_image),
+            .format = store_format,
+            .subresourceRange =
+               {
+                  .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                  .baseMipLevel = subresource->mipLevel,
+                  .levelCount = 1,
+                  .baseArrayLayer = 0,
+                  .layerCount = subresource->baseArrayLayer + subresource->layerCount,
+               },
+         },
+         NULL);
+   } else {
+      radv_image_view_init(
+         &dest_iview, cmd_buffer->device,
+         &(VkImageViewCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+            .image = radv_image_to_handle(image),
+            .viewType = radv_meta_get_view_type(image),
+            .format = store_format,
+            .subresourceRange =
+               {
+                  .aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT,
+                  .baseMipLevel = subresource->mipLevel,
+                  .levelCount = 1,
+                  .baseArrayLayer = 0,
+                  .layerCount = subresource->baseArrayLayer + subresource->layerCount,
+               },
+         },
+         NULL);
+   }
 
    decode_etc(cmd_buffer, &src_iview, &dest_iview, &(VkOffset3D){offset.x, offset.y, base_slice},
               &(VkExtent3D){extent.width, extent.height, slice_count});

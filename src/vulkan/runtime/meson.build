@@ -93,12 +93,31 @@ endif
 
 if prog_glslang.found()
   vulkan_runtime_files += files('vk_texcompress_astc.c', 'vk_texcompress_astc.h')
+  vulkan_runtime_files += files('vk_texcompress_bcn.c', 'vk_texcompress_bcn.h')
   vulkan_runtime_files += custom_target(
     'astc_spv.h',
     input : astc_decoder_glsl_file,
     output : 'astc_spv.h',
     command : [prog_glslang, '-V', '-S', 'comp', '-x', '-o', '@OUTPUT@', '@INPUT@'] + glslang_quiet,
     )
+  vulkan_runtime_files += custom_target(
+    'bc1_spv.h',
+    input : bc1_glsl_file,
+    output : 'bc1_spv.h',
+    command : [prog_glslang, '-V', '-S', 'comp', '-x', '-Ibc3_encode_head_dir', '-o', '@OUTPUT@', '@INPUT@'] + glslang_quiet,
+  )
+  vulkan_runtime_files += custom_target(
+    'bc4_spv.h',
+    input : bc4_glsl_file,
+    output : 'bc4_spv.h',
+    command : [prog_glslang, '-V', '-S', 'comp', '-x', '-Ibc3_encode_head_dir', '-o', '@OUTPUT@', '@INPUT@'] + glslang_quiet,
+  )
+  vulkan_runtime_files += custom_target(
+    'bc3_spv.h',
+    input : etc2_rgba_stitch_glsl_file,
+    output : 'bc3_spv.h',
+    command : [prog_glslang, '-V', '-S', 'comp', '-x', '-Ibc3_encode_head_dir', '-o', '@OUTPUT@', '@INPUT@'] + glslang_quiet,
+  )
 endif
 
 vk_common_entrypoints = custom_target(

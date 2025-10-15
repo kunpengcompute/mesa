@@ -1,3 +1,5 @@
+#version 310 es
+
 /*
  * Copyright 2020-2022 Matias N. Goldberg
  * Copyright 2022 Intel Corporation
@@ -25,17 +27,29 @@
 // This compute shader merely stitches them together to form the final result
 // It's also used by RG11 driver to stitch two R11 into one RG11
 
-#version 310 es
+#ifdef VULKAN
+
+#extension GL_GOOGLE_include_directive : require
+#include "CrossPlatformSettings_piece_all.glsl"
+
+layout ( binding = 0 ) uniform highp usampler2D srcRGB;
+layout ( binding = 1 ) uniform highp usampler2D srcAlpha;
+
+layout ( rgba32ui, binding = 2 ) uniform restrict writeonly mediump uimage2D dstTexture;
+
+#else
 
 %s // include "CrossPlatformSettings_piece_all.glsl"
-
-layout( local_size_x = 8,  //
-		local_size_y = 8,  //
-		local_size_z = 1 ) in;
 
 layout( binding = 0 ) uniform highp usampler2D srcRGB;
 layout( binding = 1 ) uniform highp usampler2D srcAlpha;
 layout( rgba32ui ) uniform restrict writeonly highp uimage2D dstTexture;
+
+#endif
+
+layout( local_size_x = 8,  //
+		local_size_y = 8,  //
+		local_size_z = 1 ) in;
 
 void main()
 {

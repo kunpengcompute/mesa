@@ -601,8 +601,14 @@ radv_device_init_meta(struct radv_device *device)
    if (result != VK_SUCCESS)
       goto fail_astc_decode;
 
+   result = radv_device_init_meta_rgba_encode_state(device);
+   if (result != VK_SUCCESS)
+      goto fail_bcn_encode;
+
    return VK_SUCCESS;
 
+fail_bcn_encode:
+   radv_device_finish_meta_rgba_encode_state(device);
 fail_astc_decode:
    radv_device_finish_meta_astc_decode_state(device);
 fail_etc_decode:
@@ -644,6 +650,7 @@ fail_clear:
 void
 radv_device_finish_meta(struct radv_device *device)
 {
+   radv_device_finish_meta_rgba_encode_state(device);
    radv_device_finish_meta_etc_decode_state(device);
    radv_device_finish_meta_astc_decode_state(device);
    radv_device_finish_accel_struct_build_state(device);
