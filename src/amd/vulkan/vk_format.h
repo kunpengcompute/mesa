@@ -195,4 +195,29 @@ vk_format_get_plane_format(VkFormat format, unsigned plane_id)
    }
 }
 
+static inline VkFormat
+vk_texcompress_etc2_emulation_format(VkFormat etc2_format)
+{
+   switch (etc2_format) {
+   case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+      return VK_FORMAT_R8G8B8A8_UNORM;
+   case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+      return VK_FORMAT_R8G8B8A8_SRGB;
+   case VK_FORMAT_EAC_R11_UNORM_BLOCK:
+      return VK_FORMAT_R16_UNORM;
+   case VK_FORMAT_EAC_R11_SNORM_BLOCK:
+      return VK_FORMAT_R16_SNORM;
+   case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
+      return VK_FORMAT_R16G16_UNORM;
+   case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+      return VK_FORMAT_R16G16_SNORM;
+   default:
+      return VK_FORMAT_UNDEFINED;
+   }
+}
+
 #endif /* VK_FORMAT_H */

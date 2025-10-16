@@ -2674,12 +2674,11 @@ _mesa_copy_linked_program_data(const struct gl_shader_program *src,
 /**
  * ARB_separate_shader_objects: Compile & Link Program
  */
-GLuint GLAPIENTRY
-_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
-                           const GLchar* const *strings)
+GLuint
+_mesa_CreateShaderProgramv_impl(struct gl_context *ctx,
+                                GLenum type, GLsizei count,
+                                const GLchar* const *strings)
 {
-   GET_CURRENT_CONTEXT(ctx);
-
    const GLuint shader = create_shader_err(ctx, type, "glCreateShaderProgramv");
    GLuint program = 0;
 
@@ -2731,6 +2730,17 @@ _mesa_CreateShaderProgramv(GLenum type, GLsizei count,
    return program;
 }
 
+/**
+ * ARB_separate_shader_objects: Compile & Link Program
+ */
+GLuint GLAPIENTRY
+_mesa_CreateShaderProgramv(GLenum type, GLsizei count,
+                           const GLchar* const *strings)
+{
+   GET_CURRENT_CONTEXT(ctx);
+
+   return _mesa_CreateShaderProgramv_impl(ctx, type, count, strings);
+}
 
 static void
 set_patch_vertices(struct gl_context *ctx, GLint value)

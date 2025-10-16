@@ -557,6 +557,82 @@ static int surf_config_sanity(const struct ac_surf_config *config, unsigned flag
    return 0;
 }
 
+static unsigned bpe_to_format(struct radeon_surf *surf)
+{
+   if (surf->blk_w != 1 || surf->blk_h != 1) {
+      if (surf->blk_w == 4 && surf->blk_h == 4) {
+         switch (surf->bpe) {
+         case 8:
+            return ADDR_FMT_BC1;
+         case 16:
+            /* since BC3 and ASTC4x4 has same blk dimension and bpe reporting BC3 also for ASTC4x4.
+             * matching is fine since addrlib needs only blk_w, blk_h and bpe to compute surface
+             * properties.
+             * TODO: If compress_type can be passed to this function, then this ugly BC3 and ASTC4x4
+             *       matching can be avoided.
+             */
+            return ADDR_FMT_BC3;
+         default:
+            unreachable("invalid compressed bpe");
+         }
+      } else if (surf->blk_w == 5 && surf->blk_h == 4)
+         return ADDR_FMT_ASTC_5x4;
+      else if (surf->blk_w == 5 && surf->blk_h == 5)
+         return ADDR_FMT_ASTC_5x5;
+      else if (surf->blk_w == 6 && surf->blk_h == 5)
+         return ADDR_FMT_ASTC_6x5;
+      else if (surf->blk_w == 6 && surf->blk_h == 6)
+         return ADDR_FMT_ASTC_6x6;
+      else if (surf->blk_w == 8 && surf->blk_h == 5)
+         return ADDR_FMT_ASTC_8x5;
+      else if (surf->blk_w == 8 && surf->blk_h == 6)
+         return ADDR_FMT_ASTC_8x6;
+      else if (surf->blk_w == 8 && surf->blk_h == 8)
+         return ADDR_FMT_ASTC_8x8;
+      else if (surf->blk_w == 10 && surf->blk_h == 5)
+         return ADDR_FMT_ASTC_10x5;
+      else if (surf->blk_w == 10 && surf->blk_h == 6)
+         return ADDR_FMT_ASTC_10x6;
+      else if (surf->blk_w == 10 && surf->blk_h == 8)
+         return ADDR_FMT_ASTC_10x8;
+      else if (surf->blk_w == 10 && surf->blk_h == 10)
+         return ADDR_FMT_ASTC_10x10;
+      else if (surf->blk_w == 12 && surf->blk_h == 10)
+         return ADDR_FMT_ASTC_12x10;
+      else if (surf->blk_w == 12 && surf->blk_h == 12)
+         return ADDR_FMT_ASTC_12x12;
+   } else {
+      switch (surf->bpe) {
+      case 1:
+         assert(!(surf->flags & RADEON_SURF_ZBUFFER));
+         return ADDR_FMT_8;
+      case 2:
+         assert(surf->flags & RADEON_SURF_ZBUFFER || !(surf->flags & RADEON_SURF_SBUFFER));
+         return ADDR_FMT_16;
+      case 4:
+         assert(surf->flags & RADEON_SURF_ZBUFFER || !(surf->flags & RADEON_SURF_SBUFFER));
+         return ADDR_FMT_32;
+      case 8:
+         assert(!(surf->flags & RADEON_SURF_Z_OR_SBUFFER));
+         return ADDR_FMT_32_32;
+      case 12:
+         assert(!(surf->flags & RADEON_SURF_Z_OR_SBUFFER));
+         return ADDR_FMT_32_32_32;
+      case 16:
+         assert(!(surf->flags & RADEON_SURF_Z_OR_SBUFFER));
+         return ADDR_FMT_32_32_32_32;
+      default:
+         unreachable("invalid bpe");
+      }
+   }
+   return ADDR_FMT_INVALID;
+}
+
+/* The addrlib pitch alignment is forced to this number for all chips to support interop
+ * between any 2 chips.
+ */
+#define LINEAR_PITCH_ALIGNMENT 256
+
 static int gfx6_compute_level(ADDR_HANDLE addrlib, const struct ac_surf_config *config,
                               struct radeon_surf *surf, bool is_stencil, unsigned level,
                               bool compressed, ADDR_COMPUTE_SURFACE_INFO_INPUT *AddrSurfInfoIn,
@@ -1002,23 +1078,10 @@ static int gfx6_compute_surface(ADDR_HANDLE addrlib, const struct radeon_info *i
       assert(0);
    }
 
-   /* The format must be set correctly for the allocation of compressed
-    * textures to work. In other cases, setting the bpp is sufficient.
-    */
-   if (compressed) {
-      switch (surf->bpe) {
-      case 8:
-         AddrSurfInfoIn.format = ADDR_FMT_BC1;
-         break;
-      case 16:
-         AddrSurfInfoIn.format = ADDR_FMT_BC3;
-         break;
-      default:
-         assert(0);
-      }
-   } else {
+   AddrSurfInfoIn.format = bpe_to_format(surf);
+   if (!compressed)
       AddrDccIn.bpp = AddrSurfInfoIn.bpp = surf->bpe * 8;
-   }
+
 
    AddrDccIn.numSamples = AddrSurfInfoIn.numSamples = MAX2(1, config->info.samples);
    AddrSurfInfoIn.tileIndex = -1;
@@ -2046,50 +2109,9 @@ static int gfx9_compute_surface(struct ac_addrlib *addrlib, const struct radeon_
 
    compressed = surf->blk_w == 4 && surf->blk_h == 4;
 
-   /* The format must be set correctly for the allocation of compressed
-    * textures to work. In other cases, setting the bpp is sufficient. */
-   if (compressed) {
-      switch (surf->bpe) {
-      case 8:
-         AddrSurfInfoIn.format = ADDR_FMT_BC1;
-         break;
-      case 16:
-         AddrSurfInfoIn.format = ADDR_FMT_BC3;
-         break;
-      default:
-         assert(0);
-      }
-   } else {
-      switch (surf->bpe) {
-      case 1:
-         assert(!(surf->flags & RADEON_SURF_ZBUFFER));
-         AddrSurfInfoIn.format = ADDR_FMT_8;
-         break;
-      case 2:
-         assert(surf->flags & RADEON_SURF_ZBUFFER || !(surf->flags & RADEON_SURF_SBUFFER));
-         AddrSurfInfoIn.format = ADDR_FMT_16;
-         break;
-      case 4:
-         assert(surf->flags & RADEON_SURF_ZBUFFER || !(surf->flags & RADEON_SURF_SBUFFER));
-         AddrSurfInfoIn.format = ADDR_FMT_32;
-         break;
-      case 8:
-         assert(!(surf->flags & RADEON_SURF_Z_OR_SBUFFER));
-         AddrSurfInfoIn.format = ADDR_FMT_32_32;
-         break;
-      case 12:
-         assert(!(surf->flags & RADEON_SURF_Z_OR_SBUFFER));
-         AddrSurfInfoIn.format = ADDR_FMT_32_32_32;
-         break;
-      case 16:
-         assert(!(surf->flags & RADEON_SURF_Z_OR_SBUFFER));
-         AddrSurfInfoIn.format = ADDR_FMT_32_32_32_32;
-         break;
-      default:
-         assert(0);
-      }
+   AddrSurfInfoIn.format = bpe_to_format(surf);
+   if (!compressed)
       AddrSurfInfoIn.bpp = surf->bpe * 8;
-   }
 
    bool is_color_surface = !(surf->flags & RADEON_SURF_Z_OR_SBUFFER);
    AddrSurfInfoIn.flags.color = is_color_surface && !(surf->flags & RADEON_SURF_NO_RENDER_TARGET);
@@ -2812,7 +2834,7 @@ bool ac_surface_override_offset_stride(const struct radeon_info *info, struct ra
          }
       }
       surf->u.gfx9.surf_offset = offset;
-      if (surf->u.gfx9.zs.stencil_offset)
+      if (surf->has_stencil)
          surf->u.gfx9.zs.stencil_offset += offset;
    } else {
       if (pitch) {
@@ -2916,6 +2938,84 @@ uint64_t ac_surface_get_plane_size(const struct radeon_surf *surf,
       return surf->meta_size;
    default:
       unreachable("Invalid plane index");
+   }
+}
+
+uint64_t
+ac_surface_addr_from_coord(struct ac_addrlib *addrlib, const struct radeon_info *info,
+                           const struct radeon_surf *surf, const struct ac_surf_info *surf_info,
+                           unsigned level, unsigned x, unsigned y, unsigned layer, bool is_3d)
+{
+   /* Only implemented for GFX9+ */
+   assert(info->gfx_level >= GFX9);
+
+   ADDR2_COMPUTE_SURFACE_ADDRFROMCOORD_INPUT input = {0};
+   input.size = sizeof(ADDR_COMPUTE_SURFACE_ADDRFROMCOORD_INPUT);
+   input.slice = layer;
+   input.mipId = level;
+   input.unalignedWidth = DIV_ROUND_UP(surf_info->width, surf->blk_w);
+   input.unalignedHeight = DIV_ROUND_UP(surf_info->height, surf->blk_h);
+   input.numSlices = is_3d ? surf_info->depth : surf_info->array_size;
+   input.numMipLevels = surf_info->levels;
+   input.numSamples = surf_info->samples;
+   input.numFrags = surf_info->samples;
+   input.swizzleMode = surf->u.gfx9.swizzle_mode;
+   input.resourceType = surf->u.gfx9.resource_type;
+   input.pipeBankXor = surf->tile_swizzle;
+   input.bpp = surf->bpe * 8;
+   input.x = x;
+   input.y = y;
+
+   ADDR2_COMPUTE_SURFACE_ADDRFROMCOORD_OUTPUT output = {0};
+   output.size = sizeof(ADDR2_COMPUTE_SURFACE_ADDRFROMCOORD_OUTPUT);
+   Addr2ComputeSurfaceAddrFromCoord(addrlib->handle, &input, &output);
+   return output.addr;
+}
+
+void
+ac_surface_compute_nbc_view(struct ac_addrlib *addrlib, const struct radeon_info *info,
+                            const struct radeon_surf *surf, const struct ac_surf_info *surf_info,
+                            unsigned level, unsigned layer, struct ac_surf_nbc_view *out)
+{
+   /* Only implemented for GFX10+ */
+   assert(info->gfx_level >= GFX10);
+
+   ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_INPUT input = {0};
+   input.size = sizeof(ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_INPUT);
+   input.swizzleMode = surf->u.gfx9.swizzle_mode;
+   input.resourceType = surf->u.gfx9.resource_type;
+   switch (surf->bpe) {
+   case 8:
+      input.format = ADDR_FMT_BC1;
+      break;
+   case 16:
+      input.format = ADDR_FMT_BC3;
+      break;
+   default:
+      assert(0);
+   }
+   input.width = surf_info->width;
+   input.height = surf_info->height;
+   input.numSlices = surf_info->array_size;
+   input.numMipLevels = surf_info->levels;
+   input.pipeBankXor = surf->tile_swizzle;
+   input.slice = layer;
+   input.mipId = level;
+
+   ADDR_E_RETURNCODE res;
+   ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_OUTPUT output = {0};
+   output.size = sizeof(ADDR2_COMPUTE_NONBLOCKCOMPRESSEDVIEW_OUTPUT);
+   res = Addr2ComputeNonBlockCompressedView(addrlib->handle, &input, &output);
+   if (res == ADDR_OK) {
+      out->base_address_offset = output.offset;
+      out->tile_swizzle = output.pipeBankXor;
+      out->width = output.unalignedWidth;
+      out->height = output.unalignedHeight;
+      out->num_levels = output.numMipLevels;
+      out->level = output.mipId;
+      out->valid = true;
+   } else {
+      out->valid = false;
    }
 }
 

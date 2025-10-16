@@ -56,6 +56,7 @@
 #include "st_program.h"
 #include "st_sampler_view.h"
 #include "st_shader_cache.h"
+#include "st_texcompress_compute.h"
 #include "st_texture.h"
 #include "st_util.h"
 #include "pipe/p_context.h"
@@ -67,6 +68,8 @@
 #include "cso_cache/cso_context.h"
 #include "compiler/glsl/glsl_parser_extras.h"
 #include "nir/nir_to_tgsi.h"
+
+#include <cutils/properties.h>
 
 DEBUG_GET_ONCE_BOOL_OPTION(mesa_mvp_dp4, "MESA_MVP_DP4", FALSE)
 
@@ -380,6 +383,10 @@ st_destroy_context_priv(struct st_context *st, bool destroy_pipe)
    st_destroy_drawpix(st);
    st_destroy_drawtex(st);
    st_destroy_pbo_helpers(st);
+
+   if (st->transcode_astc)
+      st_destroy_texcompress_compute(st);
+
    st_destroy_bound_texture_handles(st);
    st_destroy_bound_image_handles(st);
 
@@ -472,6 +479,7 @@ st_have_perfquery(struct st_context *ctx)
           pipe->get_intel_perf_query_data;
 }
 
+static char isEnableHardEncode[PROPERTY_VALUE_MAX];
 static struct st_context *
 st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
                        const struct st_config_options *options)
@@ -571,6 +579,8 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
                                                    PIPE_TEXTURE_2D, 0, 0,
                                                    PIPE_BIND_SAMPLER_VIEW);
    st->transcode_astc = options->transcode_astc &&
+                        property_get("sys.vmi.gl.texturecompress", isEnableHardEncode, "0") &&
+                        strcmp(isEnableHardEncode, "1") == 0 &&
                         screen->is_format_supported(screen, PIPE_FORMAT_DXT5_SRGBA,
                                                     PIPE_TEXTURE_2D, 0, 0,
                                                     PIPE_BIND_SAMPLER_VIEW) &&
@@ -771,6 +781,17 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    if (ctx->Version == 0) {
       /* This can happen when a core profile was requested, but the driver
        * does not support some features of GL 3.1 or later.
+       */
+      st_destroy_context_priv(st, false);
+      return NULL;
+   }
+
+   if (_mesa_has_compute_shaders(ctx) &&
+       st->transcode_astc && !st_init_texcompress_compute(st)) {
+      /* Transcoding ASTC to DXT5 using compute shaders can provide a
+       * significant performance benefit over the CPU path. It isn't strictly
+       * necessary to fail if we can't use the compute shader path, but it's
+       * very convenient to do so. This should be rare.
        */
       st_destroy_context_priv(st, false);
       return NULL;

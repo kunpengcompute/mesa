@@ -35,6 +35,9 @@ extern "C" {
 enum pipe_format
 vk_format_to_pipe_format(enum VkFormat vkformat);
 
+VkFormat
+vk_format_from_pipe_format(enum pipe_format format);
+
 VkImageAspectFlags
 vk_format_aspects(VkFormat format);
 
@@ -156,6 +159,12 @@ vk_format_is_compressed(VkFormat format)
 {
    /* this includes 4:2:2 formats, which are compressed formats for vulkan */
    return vk_format_get_blockwidth(format) > 1;
+}
+
+static inline bool
+vk_format_is_block_compressed(VkFormat format)
+{
+   return util_format_is_compressed(vk_format_to_pipe_format(format));
 }
 
 static inline const struct util_format_description *

@@ -22,6 +22,16 @@ inc_compiler = include_directories('.')
 inc_glsl = include_directories('glsl')
 inc_spirv = include_directories('spirv')
 
+astc_decoder_glsl_file = files('glsl/astc_decoder.glsl')
+
+bc3_encode_head_dir = meson.current_source_dir() / 'glsl'
+
+bc1_glsl_file = files('glsl/bc1.glsl')
+
+bc4_glsl_file = files('glsl/bc4.glsl')
+
+etc2_rgba_stitch_glsl_file = files('glsl/etc2_rgba_stitch.glsl')
+
 files_libcompiler = files(
   'builtin_type_macros.h',
   'glsl_types.cpp',
