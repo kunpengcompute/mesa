@@ -3328,6 +3328,26 @@ teximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
    }
 }
 
+static ALWAYS_INLINE unsigned long *
+nativeteximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
+             GLenum target, GLint level, GLint internalFormat,
+             GLsizei width, GLsizei height, GLsizei depth,
+             GLint border, GLenum format, GLenum type,
+             GLsizei imageSize, const GLvoid *pixels, bool no_error)
+{
+    struct gl_texture_image *texImage;
+    unsigned long *handle;
+    const struct gl_pixelstore_attrib *unpack = &ctx->Unpack;
+    struct gl_texture_object *texObj = _mesa_get_current_tex_object(ctx, target);
+    _mesa_lock_texture(ctx, texObj);
+    {
+        texImage = _mesa_get_tex_image(ctx, texObj, target, level);
+	handle = st_nativeTexImage(ctx, dims,texImage, format, type, pixels, unpack);
+    }
+    _mesa_unlock_texture(ctx, texObj);
+    return handle;
+
+}
 
 /* This is a wrapper around teximage() so that we can force the KHR_no_error
  * logic to be inlined without inlining the function into all the callers.
@@ -3343,6 +3363,16 @@ teximage_err(struct gl_context *ctx, GLboolean compressed, GLuint dims,
             depth, border, format, type, imageSize, pixels, false);
 }
 
+static unsigned long *
+nativeteximage_err(struct gl_context *ctx, GLboolean compressed, GLuint dims,
+             GLenum target, GLint level, GLint internalFormat,
+             GLsizei width, GLsizei height, GLsizei depth,
+             GLint border, GLenum format, GLenum type,
+             GLsizei imageSize, const GLvoid *pixels)
+{
+   return nativeteximage(ctx, compressed, dims, target, level, internalFormat, width, height,
+            depth, border, format, type, imageSize, pixels, false);
+}
 
 static void
 teximage_no_error(struct gl_context *ctx, GLboolean compressed, GLuint dims,
@@ -3415,6 +3445,17 @@ _mesa_TexImage2D( GLenum target, GLint level, GLint internalFormat,
 }
 
 void GLAPIENTRY
+_mesa_nativeTexImage2D( GLenum target, GLint level, GLint internalFormat,
+                  GLsizei width, GLsizei height, GLint border,
+                  GLenum format, GLenum type,unsigned long *handle,
+                  const GLvoid *pixels )
+{
+   GET_CURRENT_CONTEXT(ctx);
+   *handle = (unsigned long)(nativeteximage_err(ctx, GL_FALSE, 2, target, level, internalFormat, width, height, 1,
+                border, format, type, 0, pixels));
+}
+
+void GLAPIENTRY
 _mesa_TextureImage2DEXT(GLuint texture, GLenum target, GLint level,
                       GLint internalFormat, GLsizei width, GLsizei height,
                       GLint border,
@@ -3429,6 +3470,14 @@ _mesa_TextureImage2DEXT(GLuint texture, GLenum target, GLint level,
       return;
    teximage(ctx, GL_FALSE, 2, texObj, target, level, internalFormat,
             width, height, 1, border, format, type, 0, pixels, false);
+}
+
+void GLAPIENTRY
+_mesa_nativeTexImage2D_no_error(GLenum target, GLint level, GLint internalFormat,
+                  GLsizei width, GLsizei height, 
+                  GLint border, GLenum format, GLenum type,unsigned long *handle, const GLvoid *pixels)
+{
+	GET_CURRENT_CONTEXT(ctx);
 }
 
 void GLAPIENTRY

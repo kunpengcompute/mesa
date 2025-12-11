@@ -27,6 +27,7 @@ LOCAL_PATH := $(call my-dir)
 MESA3D_TOP := $(dir $(LOCAL_PATH))
 
 LIBDRM_VERSION = $(shell cat external/libdrm/meson.build | grep -o "\<version\>\s*:\s*'\w*\.\w*\.\w*'" | grep -o "\w*\.\w*\.\w*" | head -1)
+LIBVA_VERSION = $(shell cat external/libva/meson.build | grep -o "\<version\>\s*:\s*'\w*\.\w*\.\w*'" | grep -o "\w*\.\w*\.\w*" | head -1)
 LLVM_VERSION_MAJOR = $(shell \
     if [ -f external/llvm-project/cmake/Modules/LLVMVersion.cmake ]; then \
         grep 'set.LLVM_VERSION_MAJOR ' external/llvm-project/cmake/Modules/LLVMVersion.cmake | grep -o '[0-9]\+'; \
@@ -45,10 +46,10 @@ MESA_VK_LIB_SUFFIX_swrast := lvp
 
 include $(CLEAR_VARS)
 
-LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ libnativewindow libsync libhardware
-LOCAL_STATIC_LIBRARIES := libexpat libarect libelf
+LOCAL_SHARED_LIBRARIES := libc libdl libdrm libm liblog libcutils libz libc++ libnativewindow libsync libhardware libva
+LOCAL_STATIC_LIBRARIES := libexpat libarect libelf libzstd
 LOCAL_HEADER_LIBRARIES := libnativebase_headers hwvulkan_headers
-MESON_GEN_PKGCONFIGS := log cutils expat hardware libdrm:$(LIBDRM_VERSION) nativewindow sync zlib:1.2.11 libelf
+MESON_GEN_PKGCONFIGS := log cutils expat hardware libdrm:$(LIBDRM_VERSION) nativewindow sync zlib:1.2.11 libelf libva:$(LIBVA_VERSION)
 LOCAL_CFLAGS += $(BOARD_MESA3D_CFLAGS)
 
 ifneq ($(filter swrast,$(BOARD_MESA3D_GALLIUM_DRIVERS) $(BOARD_MESA3D_VULKAN_DRIVERS)),)
@@ -92,8 +93,8 @@ MESON_GEN_PKGCONFIGS += DirectX-Headers
 endif
 
 ifneq ($(MESON_GEN_LLVM_STUB),)
-MESON_LLVM_VERSION := $(LLVM_VERSION_MAJOR).0.0
-LOCAL_SHARED_LIBRARIES += libLLVM$(LLVM_VERSION_MAJOR)
+MESON_LLVM_VERSION := 13.0.1
+LOCAL_SHARED_LIBRARIES += libLLVM70
 endif
 
 ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 30; echo $$?), 0)
@@ -111,11 +112,7 @@ endif
 
 __MY_SHARED_LIBRARIES := $(LOCAL_SHARED_LIBRARIES)
 
-ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 30; echo $$?), 0)
-MESA_LIBGBM_NAME := libgbm_mesa
-else
 MESA_LIBGBM_NAME := libgbm
-endif
 
 ifeq ($(TARGET_IS_64_BIT),true)
 LOCAL_MULTILIB := 64
@@ -171,6 +168,7 @@ ifneq ($(strip $(BOARD_MESA3D_GALLIUM_DRIVERS)),)
 $(eval $(call mesa3d-lib,libgallium_dri,,MESA3D_GALLIUM_BIN))
 # Module 'libglapi', produces '/vendor/lib{64}/libglapi.so'
 $(eval $(call mesa3d-lib,libglapi,,MESA3D_LIBGLAPI_BIN))
+$(eval $(call mesa3d-lib,dri_gbm,dri,MESA3D_DRI_GBM_BIN))
 
 # Module 'libEGL_mesa', produces '/vendor/lib{64}/egl/libEGL_mesa.so'
 $(eval $(call mesa3d-lib,libEGL_mesa,egl,MESA3D_LIBEGL_BIN))
@@ -184,11 +182,10 @@ endif
 $(foreach driver,$(BOARD_MESA3D_VULKAN_DRIVERS), \
     $(eval $(call mesa3d-lib,vulkan.$(MESA_VK_LIB_SUFFIX_$(driver)),hw,MESA3D_VULKAN_$(driver)_BIN)))
 
-ifneq ($(filter true, $(BOARD_MESA3D_BUILD_LIBGBM)),)
+#ifneq ($(filter true, $(BOARD_MESA3D_BUILD_LIBGBM)),)
 # Modules 'libgbm', produces '/vendor/lib{64}/libgbm.so'
 $(eval $(call mesa3d-lib,$(MESA_LIBGBM_NAME),,MESA3D_LIBGBM_BIN,$(MESA3D_TOP)/src/gbm/main))
-$(eval $(call mesa3d-lib,dri_gbm,,MESA3D_DRI_GBM_BIN))
-endif
+#endif
 
 #-------------------------------------------------------------------------------
 

@@ -273,6 +273,11 @@ PUBLIC void *
 dri2_map_image(struct dri_context *ctx, struct dri_image *image,
                int x0, int y0, int width, int height,
                unsigned int flags, int *stride, void **data);
+PUBLIC void *
+dri2_map_image_native(struct dri_context *ctx, struct dri_image *image,
+                int x0, int y0, int width, int height,
+                unsigned int flags, int *stride, void **data);
+
 PUBLIC void
 dri2_unmap_image(struct dri_context *ctx, struct dri_image *image, void *data);
 PUBLIC bool
