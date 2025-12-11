@@ -8,6 +8,7 @@
 #include "radv_meta.h"
 #include "vk_command_pool.h"
 #include "vk_common_entrypoints.h"
+#include "log/log.h"
 
 static VkResult create_pipeline(struct radv_device *device, VkImageAspectFlagBits aspect, enum glsl_sampler_dim tex_dim,
                                 VkFormat format, VkPipeline *pipeline);
@@ -181,6 +182,11 @@ get_pipeline(struct radv_device *device, const struct radv_image_view *src_iview
    switch (src_image->vk.aspects) {
    case VK_IMAGE_ASPECT_COLOR_BIT: {
       fs_key = radv_format_meta_fs_key(device, dst_image->vk.format);
+      if (fs_key >= NUM_META_FS_KEYS) {
+         ALOGE("Invalid fs key. if sys.vmi.vk.texturecompress is enabled, disable it and restart app.");
+         return VK_ERROR_FORMAT_NOT_SUPPORTED;
+      }
+
       format = radv_fs_key_format_exemplars[fs_key];
 
       switch (src_image->vk.image_type) {

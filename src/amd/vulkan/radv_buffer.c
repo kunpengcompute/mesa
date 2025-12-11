@@ -86,6 +86,12 @@ radv_create_buffer(struct radv_device *device, const VkBufferCreateInfo *pCreate
    buffer->bo_va = 0;
    buffer->range = 0;
 
+   buffer->unpack_buffer_for_ct = NULL;
+   buffer->unpack_mem_for_ct = NULL;
+
+   buffer->compressed_buffer_for_BC = NULL;
+   buffer->compressed_mem_for_BC = NULL;
+
    uint64_t replay_address = 0;
    const VkBufferOpaqueCaptureAddressCreateInfo *replay_info =
       vk_find_struct_const(pCreateInfo->pNext, BUFFER_OPAQUE_CAPTURE_ADDRESS_CREATE_INFO);
@@ -136,6 +142,26 @@ radv_DestroyBuffer(VkDevice _device, VkBuffer _buffer, const VkAllocationCallbac
 
    if (!buffer)
       return;
+
+   if (buffer->unpack_mem_for_ct) {
+      radv_free_memory(device, NULL, buffer->unpack_mem_for_ct);
+      buffer->unpack_mem_for_ct = NULL;
+   }
+   
+   if (buffer->unpack_buffer_for_ct) {
+      radv_destroy_buffer(device, NULL, buffer->unpack_buffer_for_ct);
+      buffer->unpack_buffer_for_ct = NULL;
+   }
+   
+   if (buffer->compressed_mem_for_BC) {
+      radv_free_memory(device, NULL, buffer->compressed_mem_for_BC);
+      buffer->compressed_mem_for_BC = NULL;
+   }
+   
+   if (buffer->compressed_buffer_for_BC) {
+      radv_destroy_buffer(device, NULL, buffer->compressed_buffer_for_BC);
+      buffer->compressed_buffer_for_BC = NULL;
+   }
 
    radv_destroy_buffer(device, pAllocator, buffer);
 }
