@@ -237,6 +237,11 @@ static bool
 radv_use_dcc_for_image_early(struct radv_device *device, struct radv_image *image, const VkImageCreateInfo *pCreateInfo,
                              VkFormat format, bool *sign_reinterpret)
 {
+   // 规避无限暖暖黑块问题，dcc特性对miplevel较大的纹理处理有问题，10是根据无限暖暖实测确定的阈值
+   if (pCreateInfo->mipLevels > 10) {
+      return false;
+   }
+
    const struct radv_physical_device *pdev = radv_device_physical(device);
    const struct radv_instance *instance = radv_physical_device_instance(pdev);
 

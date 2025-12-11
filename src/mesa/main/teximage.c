@@ -3359,6 +3359,9 @@ teximage_err(struct gl_context *ctx, GLboolean compressed, GLuint dims,
              GLint border, GLenum format, GLenum type,
              GLsizei imageSize, const GLvoid *pixels)
 {
+   if (ctx->FlushSwitch) {
+      _mesa_Flush();
+   }
    teximage(ctx, compressed, dims, NULL, target, level, internalFormat, width, height,
             depth, border, format, type, imageSize, pixels, false);
 }
@@ -3919,6 +3922,10 @@ texsubimage_err(struct gl_context *ctx, GLuint dims, GLenum target, GLint level,
    texture_sub_image(ctx, dims, texObj, texImage, target, level,
                      xoffset, yoffset, zoffset, width, height, depth,
                      format, type, pixels);
+   
+   if (ctx->FlushSwitch) {
+      _mesa_Flush();
+   }
 }
 
 
