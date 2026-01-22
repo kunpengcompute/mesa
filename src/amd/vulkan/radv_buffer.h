@@ -23,6 +23,14 @@ struct radv_buffer {
    /* Set when bound */
    struct radeon_winsys_bo *bo;
    VkDeviceSize offset;
+
+   // 存储解压的buffer
+   struct radv_buffer* unpack_buffer_for_ct;
+   struct radv_device_memory* unpack_mem_for_ct;
+   // 存储软压缩的buffer
+   struct radv_buffer* compressed_buffer_for_BC;
+   struct radv_device_memory* compressed_mem_for_BC;
+
    uint64_t bo_va;
    uint64_t range;
 };

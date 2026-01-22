@@ -8,7 +8,7 @@ project(
   license : 'MIT',
   meson_version : '>= 1.1.0',
   default_options : [
-    'buildtype=debugoptimized',
+    'buildtype=release',
     'b_ndebug=if-release',
     'c_std=c11',
     'cpp_std=c++17',
@@ -576,7 +576,7 @@ if with_vulkan_icd_dir == ''
   with_vulkan_icd_dir = join_paths(get_option('datadir'), 'vulkan/icd.d')
 endif
 
-with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or with_dri_platform == 'apple')
+with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or host_machine.system() == 'gnu')
 
 with_x11_dri2 = with_dri2 and get_option('legacy-x11').contains('dri2')
 
@@ -677,7 +677,7 @@ with_gallium_va = dep_va.found()
 
 va_drivers_path = get_option('va-libs-path')
 if va_drivers_path == ''
-  va_drivers_path = join_paths(get_option('libdir'), 'dri')
+  va_drivers_path = join_paths(get_option('prefix'), get_option('libdir'), 'dri')
 endif
 
 with_gallium_xa = get_option('gallium-xa') \
@@ -1071,7 +1071,6 @@ if cc.get_argument_syntax() == 'msvc'
 else
   _trial_c = [
     '-Werror=implicit-function-declaration',
-    '-Werror=missing-prototypes',
     '-Werror=return-type',
     '-Werror=empty-body',
     '-Werror=incompatible-pointer-types',
@@ -1112,7 +1111,7 @@ else
 
   # MinGW chokes on format specifiers and I can't get it all working
   if not (cc.get_argument_syntax() == 'gcc' and host_machine.system() == 'windows')
-    _trial_c += ['-Werror=format', '-Wformat-security']
+    _trial_c += ['-Wformat-security']
     _trial_cpp += ['-Werror=format', '-Wformat-security']
   endif
 
@@ -1150,7 +1149,7 @@ else
   # Check for C and C++ arguments for MSVC compatibility. These are only used
   # in parts of the mesa code base that need to compile with MSVC, mainly
   # common code
-  _trial_msvc = ['-Werror=pointer-arith', '-Werror=vla', '-Werror=gnu-empty-initializer']
+  _trial_msvc = ['-Werror=vla', '-Werror=gnu-empty-initializer']
   c_msvc_compat_args += cc.get_supported_arguments(_trial_msvc)
   cpp_msvc_compat_args += cpp.get_supported_arguments(_trial_msvc)
 endif

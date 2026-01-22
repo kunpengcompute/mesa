@@ -110,7 +110,7 @@ load_backend_by_name(const char *name, int fd, bool warn_on_fail)
 {
    void *lib = loader_open_driver_lib(name, BACKEND_LIB_SUFFIX,
                                       backend_search_path_vars,
-                                      DEFAULT_BACKENDS_PATH,
+                                      "/system" DEFAULT_BACKENDS_PATH,
                                       warn_on_fail);
 
    if (!lib)

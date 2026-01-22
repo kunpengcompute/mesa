@@ -32,6 +32,8 @@
 #include "vk_render_pass.h"
 #include "vk_util.h"
 
+#include <cutils/properties.h>
+
 #include "gfx10_format_table.h"
 
 static unsigned
@@ -237,6 +239,11 @@ static bool
 radv_use_dcc_for_image_early(struct radv_device *device, struct radv_image *image, const VkImageCreateInfo *pCreateInfo,
                              VkFormat format, bool *sign_reinterpret)
 {
+   // 规避无限暖暖黑块问题，dcc特性对miplevel较大的纹理处理有问题，10是根据无限暖暖实测确定的阈值
+   if (pCreateInfo->mipLevels > 10) {
+      return false;
+   }
+
    const struct radv_physical_device *pdev = radv_device_physical(device);
    const struct radv_instance *instance = radv_physical_device_instance(pdev);
 
@@ -1314,6 +1321,89 @@ radv_select_modifier(const struct radv_device *dev, VkFormat format,
    unreachable("App specified an invalid modifier");
 }
 
+static char isEnableSoftEncode[PROPERTY_VALUE_MAX];
+static bool
+radv_need_soft_decode(VkFormat format) {
+   if (property_get("sys.vmi.vk.texturecompress", isEnableSoftEncode, "0") && strcmp(isEnableSoftEncode, "1") != 0) {
+      return false;
+   }
+   switch (format) {
+   case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+      return true;
+   default:
+      return false;
+   }
+}
+
+#include "log/log.h"
+bool
+radv_need_soft_encode(const VkImageCreateInfo *pCreateInfo) {
+   if (property_get("sys.vmi.vk.texturecompress", isEnableSoftEncode, "0") && strcmp(isEnableSoftEncode, "1") != 0) {
+      return false;
+   }
+   // 过滤掉对稀疏纹理的压缩，对该部分纹理进行压缩时可能造成GPU reset。 
+   if (pCreateInfo->flags & (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_RESIDENCY_BIT |
+      VK_IMAGE_CREATE_SPARSE_ALIASED_BIT)) {
+      return false;
+   }
+   // 首先检查图像的用途，防止压缩 swapchain 的 images；并只对 VK_IMAGE_TYPE_2D 类型纹理进行压缩
+   if (!(pCreateInfo->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || pCreateInfo->imageType != VK_IMAGE_TYPE_2D) {
+   	return false;
+   }  
+   // 对指定格式纹理进行压缩
+   switch (pCreateInfo->format) {
+   case VK_FORMAT_R8G8B8A8_SRGB:
+   case VK_FORMAT_R8G8B8A8_UNORM:
+   {
+      const VkImageAspectFlags aspects = vk_format_aspects(pCreateInfo->format);
+      if (aspects & VK_IMAGE_ASPECT_COLOR_BIT) {
+         // 如果是颜色附件，不让他压缩成BC格式，否则会出现找不到管线进行clear操作
+         return false;
+      }
+   }
+   case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+      break;
+   default:
+      return false;
+   }  
+   // 检查图像大小
+   if (pCreateInfo->extent.width >= 256 && pCreateInfo->extent.height >= 256) {
+      return true;
+   }
+   return false;
+}
+
+VkFormat
+radv_translate_rgb2BC(VkFormat format)
+{
+   switch (format) {
+   case VK_FORMAT_R8G8B8_SRGB:
+   case VK_FORMAT_R8G8B8A8_SRGB:
+   case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+      return VK_FORMAT_BC7_SRGB_BLOCK;
+   case VK_FORMAT_R8G8B8_UNORM:
+   case VK_FORMAT_R8G8B8A8_UNORM:
+   case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+      return VK_FORMAT_BC7_UNORM_BLOCK;
+   default:
+      return format;
+   }
+}
+
 VkResult
 radv_image_create(VkDevice _device, const struct radv_image_create_info *create_info,
                   const VkAllocationCallbacks *alloc, VkImage *pImage, bool is_internal)
@@ -1335,6 +1425,17 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
 
    unsigned plane_count = radv_get_internal_plane_count(pdev, format);
 
+   const VkExternalMemoryImageCreateInfo *external_info =
+      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
+   bool needSoftEncode = !external_info && radv_need_soft_encode(pCreateInfo);
+   bool needSoftDecode = needSoftEncode && radv_need_soft_decode(format);
+   VkFormat softDecodeFormat = radv_translate_etc(format);
+   VkFormat softEncodeFormat = radv_translate_rgb2BC(format);
+   // plane_count 影响纹理数据拷贝的过程，需要根据最终格式进行判断
+   if (needSoftEncode) {
+      plane_count = vk_format_get_plane_count(softEncodeFormat);
+   }
+
    const size_t image_struct_size = sizeof(*image) + sizeof(struct radv_image_plane) * plane_count;
 
    image = vk_zalloc2(&device->vk.alloc, alloc, image_struct_size, 8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
@@ -1343,8 +1444,23 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
 
    vk_image_init(&device->vk, &image->vk, pCreateInfo);
 
+   image->isNeedSoftDecode = needSoftDecode;
+   image->isNeedSoftEncode = needSoftEncode;
+   image->srcFormat = format;
+   image->unpackETCFormat = format;
+
    image->plane_count = vk_format_get_plane_count(format);
    image->disjoint = image->plane_count > 1 && pCreateInfo->flags & VK_IMAGE_CREATE_DISJOINT_BIT;
+
+   //满足要求的 ETC2 纹理使用软解
+   if (needSoftDecode) {
+      image->unpackETCFormat = softDecodeFormat;
+      image->vk.format = softDecodeFormat;
+   }
+   // 软解的ETC2、原始RGB/A纹理使用软编
+   if (needSoftEncode) {
+      image->vk.format = softEncodeFormat;
+   }
 
    image->exclusive = pCreateInfo->sharingMode == VK_SHARING_MODE_EXCLUSIVE;
    if (pCreateInfo->sharingMode == VK_SHARING_MODE_CONCURRENT) {
@@ -1358,9 +1474,6 @@ radv_image_create(VkDevice _device, const struct radv_image_create_info *create_
       /* This queue never really accesses the image. */
       image->queue_family_mask &= ~(1u << RADV_QUEUE_SPARSE);
    }
-
-   const VkExternalMemoryImageCreateInfo *external_info =
-      vk_find_struct_const(pCreateInfo->pNext, EXTERNAL_MEMORY_IMAGE_CREATE_INFO);
 
    image->shareable = external_info;
 

@@ -3225,6 +3225,7 @@ struct gl_dispatch
  */
 struct gl_context
 {
+   bool FlushSwitch; // 解决优酷弹幕花屏问题
    /** State possibly shared with other contexts in the address space */
    struct gl_shared_state *Shared;
 

@@ -16,6 +16,7 @@
 #include "vk_shader_module.h"
 
 #include "ac_formats.h"
+#include "log/log.h"
 
 enum { DEPTH_CLEAR_SLOW, DEPTH_CLEAR_FAST };
 
@@ -224,6 +225,11 @@ get_color_pipeline(struct radv_device *device, uint32_t samples, uint32_t frag_o
 {
    struct radv_meta_state *state = &device->meta_state;
    const uint32_t fs_key = radv_format_meta_fs_key(device, format);
+   // fs_key 最大值为 NUM_META_FS_KEYS - 1，数组索引越界时需要报告异常并返回。
+   if (fs_key >= NUM_META_FS_KEYS) {
+      ALOGE("Invalid fs key. if sys.vmi.vk.texturecompress is enabled, disable it and restart app.");
+      return VK_ERROR_FORMAT_NOT_SUPPORTED;
+   }
    const uint32_t samples_log2 = ffs(samples) - 1;
    VkResult result = VK_SUCCESS;
    VkPipeline *pipeline;

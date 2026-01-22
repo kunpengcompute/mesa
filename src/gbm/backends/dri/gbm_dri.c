@@ -1045,6 +1045,40 @@ gbm_dri_bo_map(struct gbm_bo *_bo,
                                map_data);
 }
 
+static void *
+gbm_dri_bo_map_native(struct gbm_bo *_bo,
+              uint32_t x, uint32_t y,
+              uint32_t width, uint32_t height,
+              uint32_t flags, uint32_t *stride, void **map_data)
+{
+   struct gbm_dri_device *dri = gbm_dri_device(_bo->gbm);
+   struct gbm_dri_bo *bo = gbm_dri_bo(_bo);
+
+   /* If it's a dumb buffer, we already have a mapping */
+   if (bo->map) {
+      *map_data = (char *)bo->map + (bo->base.v0.stride * y) + (x * 4);
+      *stride = bo->base.v0.stride;
+      return *map_data;
+   }
+
+   mtx_lock(&dri->mutex);
+   if (!dri->context) {
+      unsigned error;
+
+      dri->context = driCreateContextAttribs(dri->screen,
+                                             __DRI_API_OPENGL,
+                                             NULL, NULL, 0, NULL,
+                                             &error, NULL);
+   }
+   assert(dri->context);
+   mtx_unlock(&dri->mutex);
+
+   /* GBM flags and DRI flags are the same, so just pass them on */
+   return dri2_map_image_native(dri->context, bo->image, x, y,
+                               width, height, flags, (int *)stride,
+                               map_data);
+}
+
 static void
 gbm_dri_bo_unmap(struct gbm_bo *_bo, void *map_data)
 {
@@ -1170,6 +1204,7 @@ dri_device_create(int fd, uint32_t gbm_backend_version)
    dri->base.v0.bo_create = gbm_dri_bo_create;
    dri->base.v0.bo_import = gbm_dri_bo_import;
    dri->base.v0.bo_map = gbm_dri_bo_map;
+   dri->base.v0.bo_map_native = gbm_dri_bo_map_native;
    dri->base.v0.bo_unmap = gbm_dri_bo_unmap;
    dri->base.v0.is_format_supported = gbm_dri_is_format_supported;
    dri->base.v0.get_format_modifier_plane_count =

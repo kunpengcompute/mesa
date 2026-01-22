@@ -675,7 +675,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device 
       .EXT_line_rasterization = true,
       .EXT_load_store_op_none = true,
       .EXT_map_memory_placed = true,
-      .EXT_memory_budget = true,
+      .EXT_memory_budget = false, // 解决安兔兔GPU跑分crash问题
       .EXT_memory_priority = true,
       .EXT_mesh_shader = radv_taskmesh_enabled(pdev),
       .EXT_multi_draw = true,

@@ -50,6 +50,11 @@ struct radv_image {
    bool dcc_sign_reinterpret;
    bool support_comp_to_single;
 
+   bool isNeedSoftEncode;// 是否需要使用 软编
+   bool isNeedSoftDecode;// 是否需要使用 软解
+	VkFormat srcFormat; //用于保存纹理的原始格式
+	VkFormat unpackETCFormat;//用于保存ETC纹理解压后的格式
+
    struct radv_image_binding bindings[3];
    bool tc_compatible_cmask;
 
@@ -306,6 +311,23 @@ radv_image_get_iterate256(const struct radv_device *device, struct radv_image *i
 
    /* ITERATE_256 is required for depth or stencil MSAA images that are TC-compatible HTILE. */
    return pdev->info.gfx_level >= GFX10 && radv_image_is_tc_compat_htile(image) && image->vk.samples > 1;
+}
+
+static VkFormat
+radv_translate_etc(VkFormat format)
+{
+   switch (format) {
+   case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+      return VK_FORMAT_R8G8B8A8_UNORM;
+   case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
+   case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+      return  VK_FORMAT_R8G8B8A8_SRGB;
+   default:
+      return format;
+   }
 }
 
 bool radv_are_formats_dcc_compatible(const struct radv_physical_device *pdev, const void *pNext, VkFormat format,

@@ -38,6 +38,7 @@
 
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
+#include <cutils/properties.h>
 
 /**
  * Return the string for a glGetString(GL_SHADING_LANGUAGE_VERSION) query.
@@ -146,6 +147,11 @@ _mesa_GetString( GLenum name )
          return (const GLubyte *) vendor;
       }
       case GL_RENDERER: {
+         const char* rendererPropName = "ro.hardware.gpurenderer";
+         static char rendererProp[PROPERTY_VALUE_MAX];
+         if (property_get(rendererPropName, rendererProp, NULL) > 0) {
+            return (const GLubyte *) rendererProp;
+         }
          const GLubyte *str = (const GLubyte *)screen->get_name(screen);
          if (str)
             return str;

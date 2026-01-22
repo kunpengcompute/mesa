@@ -1797,6 +1797,17 @@ dri2_blit_image(struct dri_context *ctx, struct dri_image *dst, struct dri_image
 }
 
 void *
+dri2_map_image_native(struct dri_context *ctx, struct dri_image *image,
+                int x0, int y0, int width, int height,
+                unsigned int flags, int *stride, void **data)
+{
+    dri_image_fence_sync(ctx, image);
+    struct pipe_resource *resource = image->texture;
+    pipe_reference_described(NULL, &resource->reference, (debug_reference_descriptor)debug_describe_resource);
+    return resource;
+}
+
+void *
 dri2_map_image(struct dri_context *ctx, struct dri_image *image,
                 int x0, int y0, int width, int height,
                 unsigned int flags, int *stride, void **data)

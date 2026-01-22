@@ -236,7 +236,7 @@ vlVaGetConfigAttributes(VADriverContextP ctx, VAProfile profile, VAEntrypoint en
                                              PIPE_VIDEO_CAP_MAX_HEIGHT);
             value = value ? value : VA_ATTRIB_NOT_SUPPORTED;
          } break;
-#if VA_CHECK_VERSION(1, 21, 0)
+#if VA_CHECK_VERSION(2, 21, 0)
          case VAConfigAttribDecJPEG:
          {
             VAConfigAttribValDecJPEG attr_jpeg = { .value = 0 };
@@ -528,7 +528,7 @@ vlVaGetConfigAttributes(VADriverContextP ctx, VAProfile profile, VAEntrypoint en
                value = encode_tile_support;
          } break;
 #endif
-#if VA_CHECK_VERSION(1, 21, 0)
+#if VA_CHECK_VERSION(2, 21, 0)
          case VAConfigAttribEncMaxTileRows:
          {
             int max_tile_rows = pscreen->get_video_param(pscreen, ProfileToPipe(profile),

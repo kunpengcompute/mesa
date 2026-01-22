@@ -33,6 +33,8 @@ elif cpu_family == 'x86'
   blake3_defs += blake3_x86_no_simd_defs
 elif cpu_family == 'aarch64'
   files_blake3 += ['blake3_neon.c']
+elif cpu_family == 'arm'
+  files_blake3 += ['blake3_neon.c']
 endif
 
 blake3 = static_library(

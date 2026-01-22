@@ -533,6 +533,10 @@ radv_image_view_init(struct radv_image_view *iview, struct radv_device *device,
       plane_count = vk_format_get_plane_count(iview->vk.format);
    }
 
+   if (image->isNeedSoftDecode) {
+      iview->vk.format = radv_translate_etc(iview->vk.format);
+   }
+
    /* when the view format is emulated, redirect the view to the hidden plane 1 */
    if (radv_is_format_emulated(pdev, iview->vk.format)) {
       assert(radv_is_format_emulated(pdev, image->vk.format));
@@ -662,7 +666,15 @@ radv_CreateImageView(VkDevice _device, const VkImageViewCreateInfo *pCreateInfo,
    if (view == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   radv_image_view_init(view, device, pCreateInfo, &(struct radv_image_view_extra_create_info){.from_client = true});
+   // 纹理为 RGB 纹理时，需要修改 view 的 format
+   VkImageViewCreateInfo pCreateInfoTemp;
+
+   memcpy(&pCreateInfoTemp, pCreateInfo, sizeof(VkImageViewCreateInfo));
+   VK_FROM_HANDLE(radv_image, image, pCreateInfoTemp.image);
+   if (image->isNeedSoftEncode) {
+      pCreateInfoTemp.format = image->vk.format;
+   }
+   radv_image_view_init(view, device, &pCreateInfoTemp, &(struct radv_image_view_extra_create_info){.from_client = true});
 
    *pView = radv_image_view_to_handle(view);
 

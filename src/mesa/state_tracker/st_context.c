@@ -69,6 +69,7 @@
 #include "util/thread_sched.h"
 #include "cso_cache/cso_context.h"
 #include "compiler/glsl/glsl_parser_extras.h"
+#include <cutils/properties.h>
 
 DEBUG_GET_ONCE_BOOL_OPTION(mesa_mvp_dp4, "MESA_MVP_DP4", false)
 
@@ -429,6 +430,7 @@ st_have_perfquery(struct st_context *ctx)
           pipe->get_intel_perf_query_data;
 }
 
+static char isEnableHardEncode[PROPERTY_VALUE_MAX];
 static struct st_context *
 st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
                        const struct st_config_options *options)
@@ -535,6 +537,8 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
                                                    PIPE_TEXTURE_2D, 0, 0,
                                                    PIPE_BIND_SAMPLER_VIEW);
    st->transcode_astc = options->transcode_astc &&
+                        property_get("sys.vmi.gl.texturecompress", isEnableHardEncode, "0") &&
+                        strcmp(isEnableHardEncode, "1") == 0 &&
                         screen->is_format_supported(screen, PIPE_FORMAT_DXT5_SRGBA,
                                                     PIPE_TEXTURE_2D, 0, 0,
                                                     PIPE_BIND_SAMPLER_VIEW) &&
@@ -847,6 +851,7 @@ st_create_context(gl_api api, struct pipe_context *pipe,
       return NULL;
    }
 
+   ctx->FlushSwitch = shareCtx;
    st_debug_init();
 
    if (pipe->screen->get_disk_shader_cache)

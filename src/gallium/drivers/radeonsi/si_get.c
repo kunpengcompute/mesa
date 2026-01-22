@@ -705,7 +705,7 @@ static int si_get_video_param(struct pipe_screen *screen, enum pipe_video_profil
          if (codec != PIPE_VIDEO_FORMAT_UNKNOWN && QUERYABLE_KERNEL)
             return KERNEL_ENC_CAP(codec, max_height);
          else
-            return (sscreen->info.family < CHIP_TONGA) ? 1152 : 2304;
+            return (sscreen->info.family < CHIP_TONGA) ? 1152 : 4096; // 解决分辨率高大于2304时vaCreateContext失败问题
       case PIPE_VIDEO_CAP_PREFERED_FORMAT:
          if (profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10)
             return PIPE_FORMAT_P010;

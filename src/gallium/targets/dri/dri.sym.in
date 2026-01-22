@@ -44,6 +44,7 @@
 		dri2_blit_image;
 		dri2_get_capabilities;
 		dri2_map_image;
+		dri2_map_image_native;
 		dri2_unmap_image;
 		dri_query_dma_buf_formats;
 		dri_query_dma_buf_modifiers;

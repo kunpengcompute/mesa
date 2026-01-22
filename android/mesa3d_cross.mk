@@ -79,27 +79,31 @@ MESA3D_GBM_BINS := \
 
 MESA3D_GLES_BINS := \
     $($(M_TARGET_PREFIX)MESA3D_GALLIUM_BIN) \
+    $($(M_TARGET_PREFIX)MESA3D_RADEONSI_DRI_VIDEO_BIN) \
     $($(M_TARGET_PREFIX)MESA3D_LIBEGL_BIN)    \
     $($(M_TARGET_PREFIX)MESA3D_LIBGLESV1_BIN) \
     $($(M_TARGET_PREFIX)MESA3D_LIBGLESV2_BIN) \
     $($(M_TARGET_PREFIX)MESA3D_LIBGLAPI_BIN)  \
 
 MESON_GEN_NINJA := \
-	cd $(MESON_OUT_DIR) && PATH=/usr/bin:/usr/local/bin:$$PATH meson ./build     \
+	cd $(MESON_OUT_DIR) && PATH=/usr/bin:/usr/local/bin:$$PATH meson15.py ./build     \
 	--cross-file $(call relative-to-absolute,$(MESON_GEN_DIR))/aosp_cross        \
 	--buildtype=release                                                          \
+	-Dgbm-backends-path=/vendor/$(MESA3D_LIB_DIR)/dri                              \
 	-Dplatforms=android                                                          \
 	-Dplatform-sdk-version=$(PLATFORM_SDK_VERSION)                               \
-	-Dgallium-drivers=$(subst $(space),$(comma),$(BOARD_MESA3D_GALLIUM_DRIVERS)) \
+	-Dgallium-drivers=radeonsi \
 	-Dvulkan-drivers=$(subst $(space),$(comma),$(subst radeon,amd,$(BOARD_MESA3D_VULKAN_DRIVERS)))   \
 	-Dgbm=enabled                                                                \
-	-Dgbm-backends-path=/vendor/$(MESA3D_LIB_DIR)                                \
-	-Degl=$(if $(BOARD_MESA3D_GALLIUM_DRIVERS),enabled,disabled)                 \
-	-Dllvm=$(if $(MESON_GEN_LLVM_STUB),enabled,disabled)                         \
+	-Degl=enabled                                                                \
+	-Dllvm=disabled                                                                \
 	-Dcpp_rtti=false                                                             \
-	-Dlmsensors=disabled                                                         \
-	-Dandroid-libbacktrace=disabled                                              \
-	$(BOARD_MESA3D_MESON_ARGS)                                                   \
+	-Dlmsensors=disabled                                                          \
+	-Dandroid-libbacktrace=enabled                                                \
+	$(BOARD_MESA3D_MESON_ARGS)                                                    \
+	-Dgallium-va=enabled                                                           \
+	-Dandroid-stub=true                                                            \
+	-Degl-native-platform=android                                                  \
 
 MESON_BUILD := PATH=/usr/bin:/bin:/sbin:$$PATH ninja -C $(MESON_OUT_DIR)/build
 
@@ -290,11 +294,16 @@ endif
 	$(MESON_BUILD)
 	touch $@
 
+MESON_COPY_LIBGALLIUM := \
+	cp $($(M_TARGET_PREFIX)MESA3D_DRI_GBM_BIN) $(MESA3D_GALLIUM_DIR)
+
+$(MESON_OUT_DIR)/install/.install.timestamp: MESON_COPY_LIBGALLIUM:=$(MESON_COPY_LIBGALLIUM)
 $(MESON_OUT_DIR)/install/.install.timestamp: MESON_BUILD:=$(MESON_BUILD)
 $(MESON_OUT_DIR)/install/.install.timestamp: $(MESON_OUT_DIR)/.build.timestamp
 	rm -rf $(dir $@)
 	mkdir -p $(dir $@)
 	DESTDIR=$(call relative-to-absolute,$(dir $@)) $(MESON_BUILD) install
+	$(MESON_COPY_LIBGALLIUM)
 	touch $@
 
 $(MESA3D_GBM_BINS) $(MESA3D_GLES_BINS): $(MESON_OUT_DIR)/install/.install.timestamp
@@ -309,3 +318,9 @@ $(MESON_OUT_DIR)/install/usr/local/lib/libvulkan_$(MESA_VK_LIB_SUFFIX_$1).so: $(
 endef
 
 $(foreach driver,$(BOARD_MESA3D_VULKAN_DRIVERS), $(eval $(call vulkan_target,$(driver))))
+
+$($(M_TARGET_PREFIX)TARGET_OUT_VENDOR_SHARED_LIBRARIES)/dri/.symlinks.timestamp: $(MESON_OUT_DIR)/install/.install.timestamp
+	# Create Symlinks
+	mkdir -p $(dir $@)
+	ln -s -f libgallium_dri.so $(dir $@)/radeonsi_dri.so
+	touch $@

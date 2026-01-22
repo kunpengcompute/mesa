@@ -26,7 +26,7 @@ if with_platform_android and get_option('platform-sdk-version') >= 30
 endif
 
 libgbm = shared_library(
-  libgbm_name,
+  'gbm',
   files_gbm,
   include_directories : incs_gbm,
   c_args : [args_gbm],
